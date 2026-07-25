@@ -1,0 +1,13 @@
+{
+  "transactions": [
+    {
+      "entry_reference": "demo-001",
+      "transaction_amount": { "currency": "EUR", "amount": "12.34" },
+      "credit_debit_indicator": "DBIT",
+      "status": "PDNG",
+      "booking_date": "2026-07-23",
+      "remittance_information": ["COMPRA DEMO"]
+    }
+  ],
+  "continuation_key": "page-2"
+}

@@ -1,0 +1,18 @@
+[
+  {
+    "priority": 10,
+    "field": "descriptionNormalized",
+    "operator": "contains",
+    "value": "MERCADONA",
+    "category": "Alimentación",
+    "subcategory": "Supermercado"
+  },
+  {
+    "priority": 20,
+    "field": "descriptionNormalized",
+    "operator": "contains",
+    "value": "IBERDROLA",
+    "category": "Vivienda",
+    "subcategory": "Electricidad"
+  }
+]
