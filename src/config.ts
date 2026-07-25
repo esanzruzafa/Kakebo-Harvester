@@ -29,6 +29,8 @@ const envSchema = z.object({
   RETAIN_RAW_DATA: booleanString,
   CSV_SEPARATOR: z.string().length(1),
   EXPORT_KEEP_BACKUP: booleanString,
+  APP_TLS_PFX_PATH: z.string().min(1).optional(),
+  APP_TLS_PFX_PASSPHRASE_PATH: z.string().min(1).optional(),
   NODE_USE_SYSTEM_CA: z.enum(["0", "1"]).optional(),
   SESSION_ENCRYPTION_KEY: z
     .string()
@@ -66,8 +68,30 @@ export interface AppConfig {
   retainRawData: boolean;
   csvSeparator: string;
   exportKeepBackup: boolean;
+  tlsPfxPath?: string;
+  tlsPfxPassphrasePath?: string;
   useSystemCa: boolean;
   sessionEncryptionKey: Buffer;
+}
+
+const loopbackHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+
+function isLoopbackUrl(url: URL): boolean {
+  return loopbackHosts.has(url.hostname);
+}
+
+export function isRedirectUrlAllowed(
+  environment: AppEnvironment,
+  redirectUrl: string
+): boolean {
+  try {
+    const redirect = new URL(redirectUrl);
+    return environment === "sandbox"
+      ? isLoopbackUrl(redirect) && ["http:", "https:"].includes(redirect.protocol)
+      : isLoopbackUrl(redirect) && redirect.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function absolutePath(path: string): string {
@@ -80,7 +104,9 @@ function assertEnvironmentIsolation(config: AppConfig): void {
     config.privateKeyPath,
     config.databasePath,
     config.rawDataDirectory,
-    config.exportDirectory
+    config.exportDirectory,
+    ...(config.tlsPfxPath ? [config.tlsPfxPath] : []),
+    ...(config.tlsPfxPassphrasePath ? [config.tlsPfxPassphrasePath] : [])
   ];
 
   if (!paths.every((path) => path.toLowerCase().includes(expected))) {
@@ -95,9 +121,28 @@ function assertEnvironmentIsolation(config: AppConfig): void {
     );
   }
 
-  const redirect = new URL(config.redirectUrl);
-  if (!["localhost", "127.0.0.1", "::1"].includes(redirect.hostname)) {
-    throw new ConfigurationError("El callback de la PoC debe apuntar exclusivamente a localhost.");
+  const appBaseUrl = new URL(config.appBaseUrl);
+  if (!isLoopbackUrl(appBaseUrl)) {
+    throw new ConfigurationError(
+      "APP_BASE_URL debe apuntar a localhost porque Kakebo Harvester se ejecuta localmente."
+    );
+  }
+
+  if (!isRedirectUrlAllowed(config.appEnv, config.redirectUrl)) {
+    throw new ConfigurationError(
+      config.appEnv === "sandbox"
+        ? "El callback de sandbox debe apuntar a localhost."
+        : "El callback de producción debe usar HTTPS y apuntar a localhost."
+    );
+  }
+
+  if (
+    config.appEnv === "production" &&
+    (!config.tlsPfxPath || !config.tlsPfxPassphrasePath)
+  ) {
+    throw new ConfigurationError(
+      "Producción requiere APP_TLS_PFX_PATH y APP_TLS_PFX_PASSPHRASE_PATH."
+    );
   }
 }
 
@@ -147,6 +192,12 @@ export function loadConfig(envFile?: string): AppConfig {
   }
 
   const env = result.data;
+  const tlsPfxPath = env.APP_TLS_PFX_PATH
+    ? absolutePath(env.APP_TLS_PFX_PATH)
+    : undefined;
+  const tlsPfxPassphrasePath = env.APP_TLS_PFX_PASSPHRASE_PATH
+    ? absolutePath(env.APP_TLS_PFX_PASSPHRASE_PATH)
+    : undefined;
   const config: AppConfig = {
     appEnv: env.APP_ENV,
     appPort: env.APP_PORT,
@@ -168,6 +219,8 @@ export function loadConfig(envFile?: string): AppConfig {
     retainRawData: env.RETAIN_RAW_DATA,
     csvSeparator: env.CSV_SEPARATOR,
     exportKeepBackup: env.EXPORT_KEEP_BACKUP,
+    ...(tlsPfxPath ? { tlsPfxPath } : {}),
+    ...(tlsPfxPassphrasePath ? { tlsPfxPassphrasePath } : {}),
     useSystemCa:
       env.NODE_USE_SYSTEM_CA === undefined
         ? process.platform === "win32"

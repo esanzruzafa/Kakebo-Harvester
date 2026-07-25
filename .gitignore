@@ -8,6 +8,8 @@ coverage/
 .env
 .env.*
 !.env.example
+!.env.sandbox.example
+!.env.production.example
 private/*
 !private/.gitkeep
 data/**/*.sqlite

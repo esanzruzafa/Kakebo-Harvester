@@ -265,6 +265,14 @@ Buenas prácticas:
 - Documentar cómo crear un `.env.sandbox` y `.env.production`.
 - No registrar en logs la clave, el JWT completo, códigos de autorización ni datos bancarios completos.
 
+Para producción local:
+
+- usar `https://localhost:8000/callback` como redirect URL;
+- servir Fastify con el PFX local generado mediante `npm run setup:https`;
+- guardar el PFX y su contraseña bajo `private/`, fuera de Git;
+- mantener sandbox en `http://localhost:8000/callback`;
+- no utilizar GitHub Pages ni exponer SQLite, el PEM de Enable Banking o el servidor local a Internet.
+
 ---
 
 ## 8. Autenticación de la aplicación
@@ -775,7 +783,8 @@ La aplicación no debe modificar directamente las tablas dinámicas ni gráficos
 - No almacenar credenciales del banco.
 - No almacenar OTP/SMS.
 - No registrar tokens completos.
-- No exponer el callback fuera de localhost durante la PoC.
+- No exponer el callback fuera de localhost.
+- Usar HTTP local únicamente en sandbox y HTTPS local en producción.
 - Validar `state`.
 - Usar tiempos de expiración para autorizaciones pendientes.
 - Proteger el archivo PEM con permisos del usuario.

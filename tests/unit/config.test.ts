@@ -2,7 +2,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveEnvironmentFile } from "../../src/config.js";
+import {
+  isRedirectUrlAllowed,
+  resolveEnvironmentFile
+} from "../../src/config.js";
 import { ConfigurationError } from "../../src/errors.js";
 
 let root: string | undefined;
@@ -29,5 +32,28 @@ describe("environment file selection", () => {
     ]);
 
     expect(() => resolveEnvironmentFile(undefined, root)).toThrow(ConfigurationError);
+  });
+});
+
+describe("redirect URL isolation", () => {
+  it("keeps sandbox callbacks on the local loopback server", () => {
+    expect(
+      isRedirectUrlAllowed("sandbox", "http://localhost:8000/callback")
+    ).toBe(true);
+    expect(
+      isRedirectUrlAllowed("sandbox", "https://example.com/callback")
+    ).toBe(false);
+  });
+
+  it("requires an HTTPS loopback callback in production", () => {
+    expect(
+      isRedirectUrlAllowed("production", "https://localhost:8000/callback")
+    ).toBe(true);
+    expect(
+      isRedirectUrlAllowed("production", "http://localhost:8000/callback")
+    ).toBe(false);
+    expect(
+      isRedirectUrlAllowed("production", "https://example.com/callback")
+    ).toBe(false);
   });
 });

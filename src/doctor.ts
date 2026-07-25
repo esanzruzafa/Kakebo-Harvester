@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { access, mkdir, open } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { AppConfig } from "./config.js";
+import { isRedirectUrlAllowed, type AppConfig } from "./config.js";
 import type { EnableBankingClient } from "./enable-banking/client.js";
 import {
   BankUnavailableError,
@@ -50,6 +50,21 @@ export async function runDoctor(
     checks.push({ check: "Clave privada", ok: false, detail: "no se puede leer" });
   }
 
+  if (config.appEnv === "production") {
+    for (const [check, path] of [
+      ["Certificado HTTPS local", config.tlsPfxPath],
+      ["Contraseña HTTPS local", config.tlsPfxPassphrasePath]
+    ] as const) {
+      try {
+        if (!path) throw new Error("missing path");
+        await access(path, constants.R_OK);
+        checks.push({ check, ok: true, detail: "legible" });
+      } catch {
+        checks.push({ check, ok: false, detail: "no se puede leer" });
+      }
+    }
+  }
+
   for (const [check, directory] of [
     ["Directorio SQLite", dirname(config.databasePath)],
     ["Directorio de exportación", config.exportDirectory],
@@ -66,7 +81,7 @@ export async function runDoctor(
   const redirect = new URL(config.redirectUrl);
   checks.push({
     check: "Redirect URL",
-    ok: ["localhost", "127.0.0.1", "::1"].includes(redirect.hostname),
+    ok: isRedirectUrlAllowed(config.appEnv, config.redirectUrl),
     detail: `${redirect.protocol}//${redirect.host}${redirect.pathname}`
   });
   checks.push({

@@ -7,7 +7,7 @@ export default tseslint.config(
       "dist/**",
       "data/**",
       "coverage/**",
-      "legal-site/**",
+      "legal/**",
       "eslint.config.js"
     ]
   },

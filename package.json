@@ -14,6 +14,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "setup:https": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-local-https.ps1",
     "check": "npm run lint && npm run typecheck && npm test"
   },
   "dependencies": {

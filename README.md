@@ -9,7 +9,7 @@ La implementación está preparada para sandbox y producción restringida, pero 
 - JWT RS256 nuevo por solicitud, con vida de cinco minutos.
 - Identificadores de sesión cifrados localmente con AES-256-GCM.
 - `state` aleatorio; SQLite conserva únicamente su hash y lo acepta una sola vez durante 15 minutos.
-- Callback enlazado exclusivamente a `127.0.0.1`.
+- Callback enlazado exclusivamente al equipo local: HTTP en sandbox y HTTPS en producción.
 - Importes guardados como cadenas decimales exactas, nunca calculados con `number`.
 - IBAN enmascarado; el modelo normalizado y el CSV no contienen el IBAN completo.
 - Respuestas raw opcionales, fuera de Git y con permisos locales restrictivos.
@@ -107,16 +107,24 @@ npm run cli -- export
 
 No reutilices la aplicación, el PEM, la base de datos ni las sesiones de sandbox.
 
-1. Crea otra aplicación en el Control Panel y selecciona `PRODUCTION`.
-2. Registra el mismo callback local.
-3. Usa **Activate by linking accounts** para vincular exclusivamente tus cuentas.
-4. Guarda el nuevo PEM como `private/enable-banking-production.pem`.
-5. Copia `.env.example` a `.env.production`.
-6. Cambia `APP_ENV=production`, el ID, el PEM y todas las rutas a `data/production/...`.
-7. Genera una clave de cifrado distinta.
-8. Ejecuta `doctor` y comprueba que la aplicación y las rutas son de producción.
-9. Autoriza de nuevo la cuenta mediante `connect`; el vínculo del Control Panel no sustituye el consentimiento API.
-10. Prueba primero 30 días, valida los datos y solo después amplía a 90 días si el banco lo permite.
+1. Prepara una vez el certificado HTTPS local:
+
+```powershell
+npm run setup:https
+```
+
+El certificado se instala únicamente en el almacén de confianza de tu usuario de Windows. El PFX y su contraseña se guardan en `private/`, fuera de Git.
+
+2. Crea otra aplicación en el Control Panel y selecciona `PRODUCTION`.
+3. Registra exactamente `https://localhost:8000/callback` como redirect URL.
+4. Usa **Activate by linking accounts** para vincular exclusivamente tus cuentas.
+5. Guarda el nuevo PEM como `private/enable-banking-production.pem`.
+6. Copia `.env.production.example` a `.env.production`.
+7. Completa el ID de aplicación y genera una clave `SESSION_ENCRYPTION_KEY` distinta.
+8. Selecciona `.env.production` y ejecuta `doctor`.
+9. Mantén `npm run cli -- server` activo durante la autorización. En producción escuchará mediante HTTPS; sandbox seguirá usando HTTP.
+10. Autoriza de nuevo la cuenta mediante `connect`; el vínculo del Control Panel no sustituye el consentimiento API.
+11. Prueba primero 30 días, valida los datos y solo después amplía a 90 días si el banco lo permite.
 
 Si la autorización funciona pero no aparecen cuentas, verifica antes que esa cuenta concreta esté vinculada a la aplicación restringida.
 
@@ -196,6 +204,7 @@ El comando intenta cerrar la sesión remota, elimina las sesiones locales y marc
 ## Resolución de problemas
 
 - `CONFIGURATION_ERROR`: revisa campos vacíos, URL local, clave base64 y que todas las rutas incluyan el entorno.
+- Error HTTPS local: ejecuta `npm run setup:https`, comprueba las dos rutas `APP_TLS_*` y reinicia el navegador si estaba abierto durante la instalación del certificado.
 - `PRIVATE_KEY_ERROR`: verifica ruta, formato PKCS#8 PEM y permisos del usuario.
 - HTTP 401/403: confirma el application ID, el PEM y el entorno; no se reintenta.
 - `SELF_SIGNED_CERT_IN_CHAIN`: en Windows la aplicación carga por defecto las autoridades instaladas en el sistema antes de la primera conexión. Requiere Node 22.19 o superior; en versiones anteriores configura `NODE_EXTRA_CA_CERTS` antes de arrancar. Puede desactivarse con `NODE_USE_SYSTEM_CA=0`. No desactives la validación TLS.
@@ -225,6 +234,7 @@ No requiere cambios de código: consulta `banks`, ejecuta `connect` con el nombr
 - No se ha validado contra credenciales, cuenta bancaria ni sandbox reales.
 - Las cabeceras PSU especiales que ciertos conectores indiquen en `required_psu_headers` todavía requieren soporte específico.
 - La rotación de `SESSION_ENCRYPTION_KEY` no está automatizada.
+- La preparación automática del certificado HTTPS local utiliza el almacén de certificados de Windows.
 - Los raw JSON no se cifran: se excluyen de Git, se crean con permisos locales restrictivos y pueden desactivarse con `RETAIN_RAW_DATA=false`.
 - No existe interfaz para editar alias; puede hacerse directamente en la columna `accounts.account_alias`.
 - La categorización automática es deliberadamente básica.
