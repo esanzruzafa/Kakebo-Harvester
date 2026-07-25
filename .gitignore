@@ -1,5 +1,4 @@
 node_modules/
-legal-site/
 dist/
 coverage/
 .env
@@ -16,3 +15,4 @@ data/**/exports/*
 *.log
 npm-debug.log*
 .DS_Store
+config/categorization-rules.json
