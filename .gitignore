@@ -1,4 +1,8 @@
 node_modules/
+.next/
+out/
+.open-next/
+*.tsbuildinfo
 dist/
 coverage/
 .env
