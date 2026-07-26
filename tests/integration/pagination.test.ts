@@ -34,6 +34,15 @@ describe("paginated transaction synchronization", () => {
       .run(now);
     database
       .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES (
+           'session', 'connection', 'encrypted-session', ?, 'AUTHORIZED'
+         )`
+      )
+      .run(now);
+    database
+      .prepare(
         `INSERT INTO accounts (
            id, bank_connection_id, provider_account_id, identification_hash,
            name, active, first_seen_at, last_seen_at

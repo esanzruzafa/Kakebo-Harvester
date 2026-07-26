@@ -47,8 +47,19 @@ export class SessionExpiredError extends KakeboError {
 }
 
 export class ReauthorizationRequiredError extends KakeboError {
-  public constructor(message = "Hace falta volver a autorizar la conexión bancaria.") {
+  public constructor(
+    message = "Hace falta volver a autorizar la conexión bancaria.",
+    public readonly connectionIds: readonly string[] = []
+  ) {
     super(message, "REAUTHORIZATION_REQUIRED", 10);
+  }
+}
+
+export class SyncAlreadyRunningError extends KakeboError {
+  public constructor(
+    message = "Ya hay otra sincronización en curso. Espera a que termine."
+  ) {
+    super(message, "SYNC_ALREADY_RUNNING", 11);
   }
 }
 

@@ -1,30 +1,20 @@
-import { readFileSync } from "node:fs";
-import { z } from "zod";
+import {
+  CategorizationRulesStore,
+  type CategorizationRule
+} from "../settings/categorization-rules-store.js";
 import { normalizeText } from "../utils/text.js";
 
-const ruleSchema = z.object({
-  priority: z.number().int(),
-  field: z.literal("descriptionNormalized"),
-  operator: z.enum(["contains", "equals", "startsWith", "regex"]),
-  value: z.string().min(1),
-  category: z.string().min(1),
-  subcategory: z.string().optional()
-});
-
-type Rule = z.infer<typeof ruleSchema>;
-
 export class Categorizer {
-  private readonly rules: Rule[];
+  private rules: CategorizationRule[] = [];
+  private readonly store: CategorizationRulesStore;
 
   public constructor(path = "config/categorization-rules.json") {
-    try {
-      this.rules = z
-        .array(ruleSchema)
-        .parse(JSON.parse(readFileSync(path, "utf8")))
-        .sort((left, right) => left.priority - right.priority);
-    } catch {
-      this.rules = [];
-    }
+    this.store = new CategorizationRulesStore(path);
+    this.reload();
+  }
+
+  public reload(): void {
+    this.rules = this.store.loadSync();
   }
 
   public categorize(descriptionNormalized: string): {
@@ -32,6 +22,7 @@ export class Categorizer {
     subcategory: string | null;
   } {
     for (const rule of this.rules) {
+      if (!rule.enabled) continue;
       const value = normalizeText(rule.value);
       const matches =
         rule.operator === "contains"

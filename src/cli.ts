@@ -3,6 +3,7 @@ import type { SqliteDatabase } from "./storage/database.js";
 import type { EnableBankingClient } from "./enable-banking/client.js";
 import type { AuthorizationService } from "./auth/authorization-service.js";
 import type { SyncService, SyncSummary } from "./sync/sync-service.js";
+import { SyncRunner } from "./sync/sync-runner.js";
 import { getSyncWindow } from "./sync/sync-window.js";
 import { CsvExporter } from "./export/csv-exporter.js";
 import { AccountRepository } from "./storage/repositories/account-repository.js";
@@ -93,6 +94,7 @@ interface CliDependencies {
 export async function runCli(argv: string[], dependencies: CliDependencies): Promise<void> {
   const { config, database, client, authorization, sync, logger } = dependencies;
   const { command, options } = parseArguments(argv);
+  const syncRunner = new SyncRunner(config, database, sync);
 
   switch (command) {
     case "help":
@@ -197,33 +199,43 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
         required(options, "from"),
         value(options, "to")
       );
-      const accounts = await sync.syncAccounts();
-      const balances = await sync.syncBalances();
-      const summary = await sync.syncTransactions(window.dateFrom, window.dateTo);
-      const exported = await new CsvExporter(config, database).export();
-      console.log(`Cuentas: ${accounts}; saldos: ${balances}; CSV: ${exported.path}`);
-      printSummary(summary);
+      const result = await syncRunner.run({
+        steps: ["accounts", "balances", "transactions", "export"],
+        dateFrom: window.dateFrom,
+        dateTo: window.dateTo
+      });
+      console.log(
+        `Accounts: ${result.accounts ?? 0}; balances: ${result.balances ?? 0}; export: ${result.export?.path ?? "not generated"}`
+      );
+      printSummary(result.transactions ?? emptySyncSummary());
       return;
     }
     case "sync-all": {
       const window = getSyncWindow(config.syncLookbackDays);
-      const accounts = await sync.syncAccounts();
-      const balances = await sync.syncBalances();
-      const summary = await sync.syncTransactions(window.dateFrom, window.dateTo);
-      const exported = await new CsvExporter(config, database).export();
+      const result = await syncRunner.run({
+        steps: ["accounts", "balances", "transactions", "export"],
+        dateFrom: window.dateFrom,
+        dateTo: window.dateTo
+      });
+      const summary = result.transactions ?? emptySyncSummary();
       logger.info(
-        { accounts, balances, ...summary, exportRows: exported.rows },
+        {
+          accounts: result.accounts ?? 0,
+          balances: result.balances ?? 0,
+          ...summary,
+          exportRows: result.export?.rows ?? 0
+        },
         "Full synchronization completed"
       );
       console.log(
-        `Cuentas: ${accounts}; saldos: ${balances}; movimientos recibidos: ${summary.received}; CSV: ${exported.path}`
+        `Accounts: ${result.accounts ?? 0}; balances: ${result.balances ?? 0}; movements received: ${summary.received}; export: ${result.export?.path ?? "not generated"}`
       );
       printSummary(summary);
       return;
     }
     case "export": {
       const result = await new CsvExporter(config, database).export();
-      console.log(`CSV generado: ${result.path} (${result.rows} filas)`);
+      console.log(`Export generated: ${result.path} (${result.rows} rows)`);
       return;
     }
     case "disconnect": {
@@ -274,4 +286,15 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
     default:
       throw new Error(`Comando desconocido: ${command}. Usa "help" para ver los comandos.`);
   }
+}
+
+function emptySyncSummary(): SyncSummary {
+  return {
+    pages: 0,
+    received: 0,
+    inserted: 0,
+    updated: 0,
+    duplicates: 0,
+    pendingReconciled: 0
+  };
 }

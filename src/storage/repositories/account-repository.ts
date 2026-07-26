@@ -15,8 +15,32 @@ export interface StoredAccount {
   account_alias: string | null;
   account_type: string | null;
   product_type: string | null;
+  sync_enabled: number;
+  export_enabled: number;
   bank_name: string;
   connection_alias: string;
+}
+
+export interface EditableAccount {
+  id: string;
+  identificationHash: string | null;
+  bank: string;
+  connection: string;
+  account: string;
+  masked: string | null;
+  currency: string | null;
+  productType: string | null;
+  alias: string;
+  providerActive: boolean;
+  syncEnabled: boolean;
+  exportEnabled: boolean;
+}
+
+export interface AccountSettingsUpdate {
+  id: string;
+  alias: string;
+  syncEnabled: boolean;
+  exportEnabled: boolean;
 }
 
 function providerText(value: unknown): string | null {
@@ -122,9 +146,89 @@ export class AccountRepository {
         `SELECT a.*, c.bank_name, c.alias AS connection_alias
          FROM accounts a
          JOIN bank_connections c ON c.id = a.bank_connection_id
-         WHERE a.active = 1 ${where}
+         WHERE a.active = 1
+           AND a.sync_enabled = 1
+           AND c.status = 'AUTHORIZED'
+           AND c.reauthorization_required = 0
+           ${where}
          ORDER BY c.bank_name, COALESCE(a.account_alias, a.display_name, a.name)`
       )
       .all(...(connectionId ? [connectionId] : [])) as StoredAccount[];
+  }
+
+  public listEditable(): EditableAccount[] {
+    const rows = this.database
+      .prepare(
+        `SELECT
+           a.id,
+           a.identification_hash,
+           c.bank_name,
+           c.alias AS connection_alias,
+           COALESCE(a.display_name, a.name, 'Account') AS account_name,
+           a.iban_masked,
+           a.currency,
+           COALESCE(a.product_type, a.account_type) AS product_type,
+           a.account_alias,
+           a.active,
+           a.sync_enabled,
+           a.export_enabled
+         FROM accounts a
+         JOIN bank_connections c ON c.id = a.bank_connection_id
+         ORDER BY c.bank_name, account_name`
+      )
+      .all() as Array<{
+      id: string;
+      identification_hash: string | null;
+      bank_name: string;
+      connection_alias: string;
+      account_name: string;
+      iban_masked: string | null;
+      currency: string | null;
+      product_type: string | null;
+      account_alias: string | null;
+      active: number;
+      sync_enabled: number;
+      export_enabled: number;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      identificationHash: row.identification_hash,
+      bank: row.bank_name,
+      connection: row.connection_alias,
+      account: row.account_name,
+      masked: row.iban_masked,
+      currency: row.currency,
+      productType: row.product_type,
+      alias: row.account_alias ?? "",
+      providerActive: row.active === 1,
+      syncEnabled: row.sync_enabled === 1,
+      exportEnabled: row.export_enabled === 1
+    }));
+  }
+
+  public updateSettings(updates: AccountSettingsUpdate[]): void {
+    const update = this.database.prepare(
+      `UPDATE accounts SET
+         account_alias = ?, sync_enabled = ?, export_enabled = ?
+       WHERE id = ?`
+    );
+    const transaction = this.database.transaction(() => {
+      for (const item of updates) {
+        const alias = item.alias.trim();
+        if (alias.length > 120) {
+          throw new Error("Account aliases cannot exceed 120 characters.");
+        }
+        const result = update.run(
+          alias || null,
+          item.syncEnabled ? 1 : 0,
+          item.exportEnabled ? 1 : 0,
+          item.id
+        );
+        if (result.changes !== 1) {
+          throw new Error(`Unknown account: ${item.id}`);
+        }
+      }
+    });
+    transaction();
   }
 }

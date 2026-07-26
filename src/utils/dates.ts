@@ -1,10 +1,23 @@
 export function todayIso(now = new Date()): string {
-  return now.toISOString().slice(0, 10);
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export function daysAgoIso(days: number, now = new Date()): string {
   const date = new Date(now);
-  date.setUTCDate(date.getUTCDate() - days);
+  date.setDate(date.getDate() - days);
+  return todayIso(date);
+}
+
+export function monthsAgoIso(months: number, now = new Date()): string {
+  const date = new Date(now);
+  const originalDay = date.getDate();
+  date.setDate(1);
+  date.setMonth(date.getMonth() - months);
+  const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  date.setDate(Math.min(originalDay, lastDay));
   return todayIso(date);
 }
 

@@ -22,11 +22,41 @@ describe("authorization state", () => {
       bankConnectionId: connectionId,
       bankName: "Demo",
       redirectUrl: "http://localhost:8000/callback",
-      environment: "sandbox"
+      environment: "sandbox",
+      purpose: "connect"
     });
 
     expect(store.consume("secret-state").bankConnectionId).toBe(connectionId);
     expect(() => store.consume("secret-state")).toThrow(InvalidStateError);
+    database.close();
+  });
+
+  it("invalidates an older pending state for the same connection", () => {
+    const database = createDatabase(":memory:");
+    const connectionId = createId();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES (?, 'enable-banking', 'sandbox', 'Demo', 'ES', 'personal',
+                   'Demo personal', 'PENDING_AUTHORIZATION', ?)`
+      )
+      .run(connectionId, new Date().toISOString());
+    const store = new StateStore(database);
+    const pending = {
+      bankConnectionId: connectionId,
+      bankName: "Demo",
+      redirectUrl: "http://localhost:8000/callback",
+      environment: "sandbox",
+      purpose: "reauthorize" as const
+    };
+
+    store.save("old-state", pending);
+    store.save("new-state", pending);
+
+    expect(() => store.consume("old-state")).toThrow(InvalidStateError);
+    expect(store.consume("new-state").bankConnectionId).toBe(connectionId);
     database.close();
   });
 });

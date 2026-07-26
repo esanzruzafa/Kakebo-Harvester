@@ -4,6 +4,8 @@ out/
 .open-next/
 *.tsbuildinfo
 dist/
+release/
+Kakebo-Harvester-*.exe
 coverage/
 .env
 .env.*
@@ -22,3 +24,10 @@ data/**/exports/*
 npm-debug.log*
 .DS_Store
 config/categorization-rules.json
+config/accounts.json
+config/categories.json
+config/export-settings.json
+config/export-settings.json.state.json
+config/ui-settings.json
+config/*.backup
+Ideas.md

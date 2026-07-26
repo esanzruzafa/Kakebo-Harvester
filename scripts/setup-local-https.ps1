@@ -1,19 +1,60 @@
+param(
+  [string]$PrivateDirectory = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "private"),
+  [string]$PfxPath = "",
+  [string]$PassphrasePath = "",
+  [string]$CaThumbprintPath = "",
+  [switch]$Force
+)
+
 $ErrorActionPreference = "Stop"
 
-$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$privateDirectory = Join-Path $projectRoot "private"
-$pfxPath = Join-Path $privateDirectory "local-https-production.pfx"
-$passphrasePath = Join-Path $privateDirectory "local-https-production.passphrase"
-$caThumbprintPath = Join-Path $privateDirectory "local-https-production-ca.thumbprint"
+$privateDirectoryPath = [IO.Path]::GetFullPath($PrivateDirectory)
+$resolvedPfxPath = if ($PfxPath) {
+  [IO.Path]::GetFullPath($PfxPath)
+} else {
+  Join-Path $privateDirectoryPath "local-https-production.pfx"
+}
+$resolvedPassphrasePath = if ($PassphrasePath) {
+  [IO.Path]::GetFullPath($PassphrasePath)
+} else {
+  Join-Path $privateDirectoryPath "local-https-production.passphrase"
+}
+$resolvedCaThumbprintPath = if ($CaThumbprintPath) {
+  [IO.Path]::GetFullPath($CaThumbprintPath)
+} else {
+  Join-Path $privateDirectoryPath "local-https-production-ca.thumbprint"
+}
 
-New-Item -ItemType Directory -Path $privateDirectory -Force | Out-Null
+@(
+  $privateDirectoryPath,
+  [IO.Path]::GetDirectoryName($resolvedPfxPath),
+  [IO.Path]::GetDirectoryName($resolvedPassphrasePath),
+  [IO.Path]::GetDirectoryName($resolvedCaThumbprintPath)
+) | Select-Object -Unique | ForEach-Object {
+  New-Item -ItemType Directory -Path $_ -Force | Out-Null
+}
 
-if (
-  (Test-Path -LiteralPath $pfxPath) -or
-  (Test-Path -LiteralPath $passphrasePath) -or
-  (Test-Path -LiteralPath $caThumbprintPath)
-) {
-  throw "Ya existe la configuración TLS local. Elimina manualmente los tres archivos si quieres regenerarla."
+$existingPaths = @($resolvedPfxPath, $resolvedPassphrasePath, $resolvedCaThumbprintPath) |
+  Where-Object { Test-Path -LiteralPath $_ }
+
+if ($existingPaths.Count -gt 0 -and -not $Force) {
+  throw "Local TLS files already exist. Use -Force only when you intend to regenerate them."
+}
+
+if ($Force -and (Test-Path -LiteralPath $resolvedCaThumbprintPath)) {
+  $previousThumbprint = (Get-Content -LiteralPath $resolvedCaThumbprintPath -Raw).Trim()
+  if ($previousThumbprint -match "^[A-Fa-f0-9]{40}$") {
+    $previousTrustedCertificate = "Cert:\CurrentUser\Root\$previousThumbprint"
+    if (Test-Path -LiteralPath $previousTrustedCertificate) {
+      Remove-Item -LiteralPath $previousTrustedCertificate -Force
+    }
+  }
+}
+
+if ($Force) {
+  foreach ($path in $existingPaths) {
+    Remove-Item -LiteralPath $path -Force
+  }
 }
 
 $randomBytes = New-Object byte[] 32
@@ -59,10 +100,10 @@ try {
   Export-Certificate -Cert $certificateAuthority -FilePath $temporaryCertificate | Out-Null
   Import-Certificate -FilePath $temporaryCertificate -CertStoreLocation "Cert:\CurrentUser\Root" |
     Out-Null
-  Export-PfxCertificate -Cert $serverCertificate -FilePath $pfxPath -Password $securePassphrase |
+  Export-PfxCertificate -Cert $serverCertificate -FilePath $resolvedPfxPath -Password $securePassphrase |
     Out-Null
-  Set-Content -LiteralPath $passphrasePath -Value $passphrase -Encoding Ascii -NoNewline
-  Set-Content -LiteralPath $caThumbprintPath -Value $certificateAuthority.Thumbprint -Encoding Ascii -NoNewline
+  Set-Content -LiteralPath $resolvedPassphrasePath -Value $passphrase -Encoding Ascii -NoNewline
+  Set-Content -LiteralPath $resolvedCaThumbprintPath -Value $certificateAuthority.Thumbprint -Encoding Ascii -NoNewline
 } finally {
   if (Test-Path -LiteralPath $temporaryCertificate) {
     Remove-Item -LiteralPath $temporaryCertificate -Force
@@ -71,6 +112,6 @@ try {
   Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificateAuthority.Thumbprint)" -Force
 }
 
-Write-Host "CA local y certificado HTTPS de localhost creados para el usuario actual."
-Write-Host "PFX: $pfxPath"
-Write-Host "Contraseña: $passphrasePath"
+Write-Host "The local certificate authority and localhost HTTPS certificate are ready."
+Write-Host "PFX: $resolvedPfxPath"
+Write-Host "Passphrase: $resolvedPassphrasePath"

@@ -1,0 +1,10 @@
+[
+  {
+    "name": "Food",
+    "subcategories": ["Groceries", "Restaurants"]
+  },
+  {
+    "name": "Transport",
+    "subcategories": ["Public transport", "Fuel"]
+  }
+]

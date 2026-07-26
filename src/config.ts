@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
 import { ConfigurationError } from "./errors.js";
@@ -31,6 +31,11 @@ const envSchema = z.object({
   EXPORT_KEEP_BACKUP: booleanString,
   APP_TLS_PFX_PATH: z.string().min(1).optional(),
   APP_TLS_PFX_PASSPHRASE_PATH: z.string().min(1).optional(),
+  CATEGORIZATION_RULES_PATH: z.string().min(1).optional(),
+  ACCOUNTS_CONFIG_PATH: z.string().min(1).optional(),
+  CATEGORIES_CONFIG_PATH: z.string().min(1).optional(),
+  EXPORT_SETTINGS_PATH: z.string().min(1).optional(),
+  UI_SETTINGS_PATH: z.string().min(1).optional(),
   NODE_USE_SYSTEM_CA: z.enum(["0", "1"]).optional(),
   SESSION_ENCRYPTION_KEY: z
     .string()
@@ -70,6 +75,11 @@ export interface AppConfig {
   exportKeepBackup: boolean;
   tlsPfxPath?: string;
   tlsPfxPassphrasePath?: string;
+  categorizationRulesPath: string;
+  accountsConfigPath: string;
+  categoriesConfigPath: string;
+  exportSettingsPath: string;
+  uiSettingsPath: string;
   useSystemCa: boolean;
   sessionEncryptionKey: Buffer;
 }
@@ -94,8 +104,8 @@ export function isRedirectUrlAllowed(
   }
 }
 
-function absolutePath(path: string): string {
-  return isAbsolute(path) ? path : resolve(process.cwd(), path);
+function absolutePath(path: string, baseDirectory = process.cwd()): string {
+  return isAbsolute(path) ? path : resolve(baseDirectory, path);
 }
 
 function assertEnvironmentIsolation(config: AppConfig): void {
@@ -151,7 +161,7 @@ export function resolveEnvironmentFile(
   baseDirectory = process.cwd()
 ): string | undefined {
   if (explicitPath) {
-    const path = absolutePath(explicitPath);
+    const path = absolutePath(explicitPath, baseDirectory);
     if (!existsSync(path)) {
       throw new ConfigurationError(`No existe el archivo de entorno indicado: ${path}.`);
     }
@@ -173,10 +183,17 @@ export function resolveEnvironmentFile(
   return undefined;
 }
 
-export function loadConfig(envFile?: string): AppConfig {
+export function loadConfig(
+  envFile?: string,
+  options: { overrideEnvironment?: boolean } = {}
+): AppConfig {
   const selectedEnvironmentFile = resolveEnvironmentFile(envFile);
   if (selectedEnvironmentFile) {
-    loadDotenv({ path: selectedEnvironmentFile, override: false, quiet: true });
+    loadDotenv({
+      path: selectedEnvironmentFile,
+      override: options.overrideEnvironment ?? false,
+      quiet: true
+    });
   } else if (!process.env["APP_ENV"]) {
     throw new ConfigurationError(
       "No se encontró .env, .env.sandbox ni .env.production. Copia .env.example y completa sus valores."
@@ -192,11 +209,14 @@ export function loadConfig(envFile?: string): AppConfig {
   }
 
   const env = result.data;
+  const baseDirectory = selectedEnvironmentFile
+    ? dirname(selectedEnvironmentFile)
+    : process.cwd();
   const tlsPfxPath = env.APP_TLS_PFX_PATH
-    ? absolutePath(env.APP_TLS_PFX_PATH)
+    ? absolutePath(env.APP_TLS_PFX_PATH, baseDirectory)
     : undefined;
   const tlsPfxPassphrasePath = env.APP_TLS_PFX_PASSPHRASE_PATH
-    ? absolutePath(env.APP_TLS_PFX_PASSPHRASE_PATH)
+    ? absolutePath(env.APP_TLS_PFX_PASSPHRASE_PATH, baseDirectory)
     : undefined;
   const config: AppConfig = {
     appEnv: env.APP_ENV,
@@ -204,11 +224,11 @@ export function loadConfig(envFile?: string): AppConfig {
     appBaseUrl: env.APP_BASE_URL,
     apiBaseUrl: env.ENABLE_BANKING_API_BASE_URL.replace(/\/$/, ""),
     applicationId: env.ENABLE_BANKING_APPLICATION_ID,
-    privateKeyPath: absolutePath(env.ENABLE_BANKING_PRIVATE_KEY_PATH),
+    privateKeyPath: absolutePath(env.ENABLE_BANKING_PRIVATE_KEY_PATH, baseDirectory),
     redirectUrl: env.ENABLE_BANKING_REDIRECT_URL,
-    databasePath: absolutePath(env.DATABASE_PATH),
-    rawDataDirectory: absolutePath(env.RAW_DATA_DIRECTORY),
-    exportDirectory: absolutePath(env.EXPORT_DIRECTORY),
+    databasePath: absolutePath(env.DATABASE_PATH, baseDirectory),
+    rawDataDirectory: absolutePath(env.RAW_DATA_DIRECTORY, baseDirectory),
+    exportDirectory: absolutePath(env.EXPORT_DIRECTORY, baseDirectory),
     defaultCountry: env.DEFAULT_COUNTRY,
     defaultPsuType: env.DEFAULT_PSU_TYPE,
     defaultLanguage: env.DEFAULT_LANGUAGE,
@@ -221,6 +241,26 @@ export function loadConfig(envFile?: string): AppConfig {
     exportKeepBackup: env.EXPORT_KEEP_BACKUP,
     ...(tlsPfxPath ? { tlsPfxPath } : {}),
     ...(tlsPfxPassphrasePath ? { tlsPfxPassphrasePath } : {}),
+    categorizationRulesPath: absolutePath(
+      env.CATEGORIZATION_RULES_PATH ?? "config/categorization-rules.json",
+      baseDirectory
+    ),
+    accountsConfigPath: absolutePath(
+      env.ACCOUNTS_CONFIG_PATH ?? "config/accounts.json",
+      baseDirectory
+    ),
+    categoriesConfigPath: absolutePath(
+      env.CATEGORIES_CONFIG_PATH ?? "config/categories.json",
+      baseDirectory
+    ),
+    exportSettingsPath: absolutePath(
+      env.EXPORT_SETTINGS_PATH ?? "config/export-settings.json",
+      baseDirectory
+    ),
+    uiSettingsPath: absolutePath(
+      env.UI_SETTINGS_PATH ?? "config/ui-settings.json",
+      baseDirectory
+    ),
     useSystemCa:
       env.NODE_USE_SYSTEM_CA === undefined
         ? process.platform === "win32"

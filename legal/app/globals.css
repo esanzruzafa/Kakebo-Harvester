@@ -135,6 +135,14 @@ h1 {
   gap: 24px;
 }
 
+.cards-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.cards-three .card {
+  min-height: 310px;
+}
+
 .card {
   position: relative;
   overflow: hidden;
@@ -234,6 +242,136 @@ h1 {
   background: #faf4e8;
 }
 
+.product-shell {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 24px 112px;
+}
+
+.product-hero {
+  padding: 104px 0 80px;
+}
+
+.product-hero h1 {
+  max-width: 880px;
+}
+
+.hero-actions {
+  display: flex;
+  margin-top: 34px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+
+.download-link,
+.secondary-link {
+  display: inline-flex;
+  min-height: 48px;
+  padding: 12px 18px;
+  align-items: center;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.download-link {
+  color: var(--surface);
+  background: var(--green);
+}
+
+.download-link:hover {
+  background: var(--green-dark);
+}
+
+.secondary-link {
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.release-note {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.product-section {
+  padding: 72px 0;
+  border-top: 1px solid var(--line);
+}
+
+.product-section > h2 {
+  max-width: 700px;
+  margin: 8px 0 32px;
+  font-size: clamp(2rem, 5vw, 3.5rem);
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.feature-grid article {
+  padding: 28px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.feature-grid article > strong {
+  color: var(--gold);
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.feature-grid h3 {
+  margin: 28px 0 8px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.5rem;
+}
+
+.feature-grid p,
+.guide-steps,
+.faq-list p {
+  color: var(--muted);
+}
+
+.guide-section {
+  max-width: 850px;
+}
+
+.guide-steps {
+  display: grid;
+  padding-left: 24px;
+  gap: 14px;
+}
+
+.guide-steps code,
+.faq-list code {
+  color: var(--ink);
+  background: rgba(31, 90, 69, 0.07);
+}
+
+.faq-list {
+  display: grid;
+  gap: 10px;
+}
+
+.faq-list details {
+  padding: 20px 22px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.faq-list summary {
+  cursor: pointer;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.12rem;
+  font-weight: 700;
+}
+
+.faq-list p {
+  margin: 14px 0 0;
+}
+
 .site-footer {
   border-top: 1px solid var(--line);
 }
@@ -262,6 +400,8 @@ h1 {
   }
 
   .cards,
+  .cards-three,
+  .feature-grid,
   .legal-shell {
     grid-template-columns: 1fr;
   }

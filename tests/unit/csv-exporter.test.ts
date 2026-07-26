@@ -1,8 +1,12 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CsvExporter } from "../../src/export/csv-exporter.js";
+import {
+  ExportSettingsStore,
+  createDefaultExportSettings
+} from "../../src/settings/export-settings-store.js";
 import { createDatabase } from "../../src/storage/database.js";
 import { testConfig } from "../helpers.js";
 
@@ -52,6 +56,11 @@ describe("CSV export", () => {
       )
       .run(now, now, now);
 
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = "csv";
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(
+      settings
+    );
     const result = await new CsvExporter(config, database).export();
     const content = await readFile(result.path, "utf8");
     expect(content.charCodeAt(0)).toBe(0xfeff);
@@ -60,6 +69,49 @@ describe("CSV export", () => {
     expect(content.replace(/^\uFEFF/, "").split(/\r?\n/)[0]).toContain(
       "MovementKey;Date;ValueDate"
     );
+    database.close();
+  });
+
+  it("archives the previous result when the export profile changes", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-profile-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = "csv";
+    settings.columns = settings.columns.slice(0, 2);
+    const store = new ExportSettingsStore(config.exportSettingsPath, settings);
+    await store.save(settings);
+    const exporter = new CsvExporter(config, database);
+    await exporter.export();
+
+    const firstColumn = settings.columns[0];
+    if (!firstColumn) throw new Error("The default export profile has no columns.");
+    settings.columns[0] = {
+      ...firstColumn,
+      header: "Custom key"
+    };
+    await store.save(settings);
+    const result = await exporter.export();
+    const content = await readFile(result.path, "utf8");
+    const archived = await readdir(join(config.exportDirectory, "archive"));
+    expect(content).toContain("Custom key;Date");
+    expect(archived).toHaveLength(1);
+    expect(archived[0]).toMatch(/^kakebo_movements_.+\.csv$/u);
+    database.close();
+  });
+
+  it("creates a real XLSX workbook", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-xlsx-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = "xlsx";
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(
+      settings
+    );
+    const result = await new CsvExporter(config, database).export();
+    const content = await readFile(result.path);
+    expect(content.subarray(0, 2).toString("ascii")).toBe("PK");
     database.close();
   });
 });

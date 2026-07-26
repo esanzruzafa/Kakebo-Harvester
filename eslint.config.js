@@ -17,7 +17,9 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: {
         projectService: {
-          allowDefaultProject: ["eslint.config.js"]
+          allowDefaultProject: [
+            "eslint.config.js"
+          ]
         },
         tsconfigRootDir: import.meta.dirname
       }
@@ -28,6 +30,25 @@ export default tseslint.config(
         "error",
         { "allowNumber": true }
       ]
+    }
+  },
+  {
+    files: [
+      "scripts/copy-desktop-assets.mjs",
+      "src/desktop/preload.cjs",
+      "src/desktop/audit-preload.cjs"
+    ],
+    languageOptions: {
+      parserOptions: {
+        projectService: false
+      }
+    },
+    rules: {
+      ...tseslint.configs.disableTypeChecked.rules,
+      "no-undef": "off",
+      "@typescript-eslint/no-require-imports": "off",
+      "@typescript-eslint/no-unsafe-call": "off",
+      "@typescript-eslint/no-unsafe-return": "off"
     }
   }
 );

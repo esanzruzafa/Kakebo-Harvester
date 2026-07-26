@@ -26,6 +26,11 @@ export function testConfig(root: string): AppConfig {
     retainRawData: false,
     csvSeparator: ";",
     exportKeepBackup: false,
+    categorizationRulesPath: join(sandboxRoot, "categorization-rules.json"),
+    accountsConfigPath: join(sandboxRoot, "accounts.json"),
+    categoriesConfigPath: join(sandboxRoot, "categories.json"),
+    exportSettingsPath: join(sandboxRoot, "export-settings.json"),
+    uiSettingsPath: join(sandboxRoot, "ui-settings.json"),
     useSystemCa: false,
     sessionEncryptionKey: Buffer.alloc(32, 7)
   };

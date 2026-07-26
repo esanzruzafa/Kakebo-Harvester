@@ -1,6 +1,6 @@
 import type { AppConfig } from "../config.js";
 import type { EnableBankingClient } from "../enable-banking/client.js";
-import { ReauthorizationRequiredError } from "../errors.js";
+import { KakeboError, ReauthorizationRequiredError } from "../errors.js";
 import type { SqliteDatabase } from "../storage/database.js";
 import { RawStore } from "../storage/raw-store.js";
 import {
@@ -42,7 +42,7 @@ export class SyncService {
   private readonly accounts: AccountRepository;
   private readonly transactions: TransactionRepository;
   private readonly rawStore: RawStore;
-  private readonly categorizer = new Categorizer();
+  private readonly categorizer: Categorizer;
 
   public constructor(
     private readonly config: AppConfig,
@@ -52,6 +52,39 @@ export class SyncService {
     this.accounts = new AccountRepository(database);
     this.transactions = new TransactionRepository(database);
     this.rawStore = new RawStore(config);
+    this.categorizer = new Categorizer(config.categorizationRulesPath);
+  }
+
+  public listConnectionsRequiringAuthorization(): string[] {
+    const rows = this.database
+      .prepare(
+        `SELECT c.id
+         FROM bank_connections c
+         WHERE c.environment = ?
+           AND c.status NOT IN ('REVOKED', 'DENIED')
+           AND (
+             c.status <> 'AUTHORIZED'
+             OR c.reauthorization_required = 1
+             OR (c.valid_until IS NOT NULL AND c.valid_until <= ?)
+             OR NOT EXISTS (
+               SELECT 1 FROM provider_sessions s
+               WHERE s.bank_connection_id = c.id AND s.status = 'AUTHORIZED'
+             )
+           )
+         ORDER BY c.created_at`
+      )
+      .all(this.config.appEnv, new Date().toISOString()) as Array<{ id: string }>;
+    return rows.map((row) => row.id);
+  }
+
+  private assertConnectionsReady(): void {
+    const connectionIds = this.listConnectionsRequiringAuthorization();
+    if (connectionIds.length > 0) {
+      throw new ReauthorizationRequiredError(
+        "Una o más conexiones bancarias requieren autorización.",
+        connectionIds
+      );
+    }
   }
 
   private listSessions(): ActiveSession[] {
@@ -82,6 +115,7 @@ export class SyncService {
   }
 
   public async syncAccounts(): Promise<number> {
+    this.assertConnectionsReady();
     let count = 0;
     for (const stored of this.listSessions()) {
       try {
@@ -102,6 +136,7 @@ export class SyncService {
       } catch (error) {
         if (error instanceof ReauthorizationRequiredError) {
           this.markReauthorization(stored.connection_id, error);
+          throw new ReauthorizationRequiredError(error.message, [stored.connection_id]);
         }
         throw error;
       }
@@ -109,43 +144,62 @@ export class SyncService {
     return count;
   }
 
-  public async syncBalances(): Promise<number> {
-    let count = 0;
+  public async syncBalances(desktopRunId?: string): Promise<number> {
+    this.assertConnectionsReady();
+    const snapshots: Array<{
+      account: StoredAccount;
+      response: Awaited<ReturnType<EnableBankingClient["getBalances"]>>;
+      rawPath: string | null;
+      extractedAt: string;
+    }> = [];
     for (const account of this.accounts.listActive()) {
       try {
         const response = await this.client.getBalances(account.provider_account_id);
         const raw = await this.rawStore.write("balances", account.id, response);
-        const extractedAt = new Date().toISOString();
-        const insert = this.database.prepare(
-          `INSERT INTO balances (
-             id, account_id, balance_type, name, amount, currency,
-             reference_date, extracted_at, raw_response_path
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        );
-        const transaction = this.database.transaction(() => {
-          for (const balance of response.balances) {
-            insert.run(
-              createId(),
-              account.id,
-              balance.balance_type ?? null,
-              balance.name ?? null,
-              balance.balance_amount.amount,
-              balance.balance_amount.currency,
-              balance.reference_date ?? balance.last_change_date_time ?? null,
-              extractedAt,
-              raw.path
-            );
-            count += 1;
-          }
+        snapshots.push({
+          account,
+          response,
+          rawPath: raw.path,
+          extractedAt: new Date().toISOString()
         });
-        transaction();
       } catch (error) {
+        let reportedError = error;
         if (error instanceof ReauthorizationRequiredError) {
           this.markReauthorization(account.bank_connection_id, error);
+          reportedError = new ReauthorizationRequiredError(error.message, [
+            account.bank_connection_id
+          ]);
         }
-        throw error;
+        throw reportedError;
       }
     }
+    const insert = this.database.prepare(
+      `INSERT INTO balances (
+         id, account_id, balance_type, name, amount, currency,
+         reference_date, extracted_at, raw_response_path, desktop_run_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    let count = 0;
+    const transaction = this.database.transaction(() => {
+      for (const snapshot of snapshots) {
+        for (const balance of snapshot.response.balances) {
+          insert.run(
+            createId(),
+            snapshot.account.id,
+            balance.balance_type ?? null,
+            balance.name ?? null,
+            balance.balance_amount.amount,
+            balance.balance_amount.currency,
+            balance.reference_date ?? balance.last_change_date_time ?? null,
+            snapshot.extractedAt,
+            snapshot.rawPath,
+            desktopRunId ?? null
+          );
+          count += 1;
+        }
+      }
+    });
+    transaction();
     return count;
   }
 
@@ -211,6 +265,8 @@ export class SyncService {
     dateFrom: string,
     dateTo: string
   ): Promise<SyncSummary> {
+    this.assertConnectionsReady();
+    this.categorizer.reload();
     const total = emptySummary();
     for (const account of this.accounts.listActive()) {
       const runId = createId();
@@ -245,8 +301,12 @@ export class SyncService {
             runId
           );
       } catch (error) {
+        let reportedError = error;
         if (error instanceof ReauthorizationRequiredError) {
           this.markReauthorization(account.bank_connection_id, error);
+          reportedError = new ReauthorizationRequiredError(error.message, [
+            account.bank_connection_id
+          ]);
         }
         this.database
           .prepare(
@@ -254,8 +314,13 @@ export class SyncService {
                finished_at = ?, status = 'FAILED', error_code = ?, error_message_safe = ?
              WHERE id = ?`
           )
-          .run(new Date().toISOString(), "SYNC_ERROR", safeMessage(error), runId);
-        throw error;
+          .run(
+            new Date().toISOString(),
+            reportedError instanceof KakeboError ? reportedError.code : "SYNC_ERROR",
+            safeMessage(reportedError),
+            runId
+          );
+        throw reportedError;
       }
     }
     this.database
@@ -265,5 +330,28 @@ export class SyncService {
       )
       .run(new Date().toISOString());
     return total;
+  }
+
+  public recategorizeTransactions(): number {
+    this.categorizer.reload();
+    const rows = this.database
+      .prepare(
+        `SELECT id, description_normalized
+         FROM transactions
+         WHERE reviewed = 0`
+      )
+      .all() as Array<{ id: string; description_normalized: string | null }>;
+    const update = this.database.prepare(
+      `UPDATE transactions SET category_auto = ?, subcategory_auto = ?
+       WHERE id = ? AND reviewed = 0`
+    );
+    const transaction = this.database.transaction(() => {
+      for (const row of rows) {
+        const category = this.categorizer.categorize(row.description_normalized ?? "");
+        update.run(category.category, category.subcategory, row.id);
+      }
+    });
+    transaction();
+    return rows.length;
   }
 }

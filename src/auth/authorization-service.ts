@@ -1,5 +1,6 @@
 import type { AppConfig, PsuType } from "../config.js";
 import type { EnableBankingClient } from "../enable-banking/client.js";
+import type { Aspsp } from "../enable-banking/schemas.js";
 import type { SqliteDatabase } from "../storage/database.js";
 import { RawStore } from "../storage/raw-store.js";
 import { AccountRepository } from "../storage/repositories/account-repository.js";
@@ -7,6 +8,27 @@ import { createAuthorizationState, createId, encryptSecret } from "../utils/cryp
 import { AuthorizationDeniedError, KakeboError } from "../errors.js";
 import { safeMessage } from "../utils/text.js";
 import { StateStore } from "./state-store.js";
+
+export interface AuthorizationStartResult {
+  url: string;
+  connectionAlias: string;
+  connectionId: string;
+}
+
+export interface AuthorizationCompletionResult {
+  connectionId: string;
+  bankName: string;
+  status: "authorized" | "denied" | "failed";
+  message?: string;
+}
+
+interface ConnectionRow {
+  id: string;
+  bank_name: string;
+  bank_country: string;
+  psu_type: PsuType;
+  alias: string;
+}
 
 export class AuthorizationService {
   private readonly states: StateStore;
@@ -23,13 +45,13 @@ export class AuthorizationService {
     this.rawStore = new RawStore(config);
   }
 
-  public async connect(input: {
-    bankSearch: string;
-    country: string;
-    psuType: PsuType;
-  }): Promise<{ url: string; connectionAlias: string }> {
-    const banks = await this.client.listBanks(input.country, input.psuType);
-    const needle = input.bankSearch.toLocaleLowerCase();
+  private async findBank(
+    bankSearch: string,
+    country: string,
+    psuType: PsuType
+  ): Promise<Aspsp> {
+    const banks = await this.client.listBanks(country, psuType);
+    const needle = bankSearch.toLocaleLowerCase();
     const exact = banks.find((bank) => bank.name.toLocaleLowerCase() === needle);
     const candidates = exact
       ? [exact]
@@ -38,16 +60,67 @@ export class AuthorizationService {
       const names = candidates.slice(0, 10).map((bank) => bank.name).join(", ");
       throw new Error(
         candidates.length === 0
-          ? `No se encontró "${input.bankSearch}" en ${input.country}.`
+          ? `No se encontró "${bankSearch}" en ${country}.`
           : `La búsqueda es ambigua. Coincidencias: ${names}`
       );
     }
     const bank = candidates[0];
     if (!bank) throw new Error("No bank selected.");
+    return bank;
+  }
 
-    const connectionId = createId();
-    const connectionAlias = `${bank.name} ${input.psuType}`;
-    const now = new Date().toISOString();
+  private async start(
+    connection: ConnectionRow,
+    bank: Aspsp,
+    purpose: "connect" | "reauthorize"
+  ): Promise<AuthorizationStartResult> {
+    const state = createAuthorizationState();
+    this.states.save(state, {
+      bankConnectionId: connection.id,
+      bankName: bank.name,
+      redirectUrl: this.config.redirectUrl,
+      environment: this.config.appEnv,
+      purpose
+    });
+    const authorization = await this.client.startAuthorization({
+      bank,
+      state,
+      redirectUrl: this.config.redirectUrl,
+      psuType: connection.psu_type,
+      language: this.config.defaultLanguage
+    });
+    this.database
+      .prepare(
+        `UPDATE bank_connections SET
+           status = ?, error_code = NULL, error_message_safe = NULL
+         WHERE id = ?`
+      )
+      .run(
+        purpose === "reauthorize"
+          ? "PENDING_REAUTHORIZATION"
+          : "PENDING_AUTHORIZATION",
+        connection.id
+      );
+    return {
+      url: authorization.url,
+      connectionAlias: connection.alias,
+      connectionId: connection.id
+    };
+  }
+
+  public async connect(input: {
+    bankSearch: string;
+    country: string;
+    psuType: PsuType;
+  }): Promise<AuthorizationStartResult> {
+    const bank = await this.findBank(input.bankSearch, input.country, input.psuType);
+    const connection: ConnectionRow = {
+      id: createId(),
+      bank_name: bank.name,
+      bank_country: bank.country,
+      psu_type: input.psuType,
+      alias: `${bank.name} ${input.psuType}`
+    };
     this.database
       .prepare(
         `INSERT INTO bank_connections (
@@ -56,31 +129,34 @@ export class AuthorizationService {
          ) VALUES (?, 'enable-banking', ?, ?, ?, ?, ?, 'PENDING_AUTHORIZATION', ?)`
       )
       .run(
-        connectionId,
+        connection.id,
         this.config.appEnv,
-        bank.name,
-        bank.country,
-        input.psuType,
-        connectionAlias,
-        now
+        connection.bank_name,
+        connection.bank_country,
+        connection.psu_type,
+        connection.alias,
+        new Date().toISOString()
       );
+    return await this.start(connection, bank, "connect");
+  }
 
-    const state = createAuthorizationState();
-    this.states.save(state, {
-      bankConnectionId: connectionId,
-      bankName: bank.name,
-      redirectUrl: this.config.redirectUrl,
-      environment: this.config.appEnv
-    });
-
-    const authorization = await this.client.startAuthorization({
-      bank,
-      state,
-      redirectUrl: this.config.redirectUrl,
-      psuType: input.psuType,
-      language: this.config.defaultLanguage
-    });
-    return { url: authorization.url, connectionAlias };
+  public async reauthorize(connectionId: string): Promise<AuthorizationStartResult> {
+    const connection = this.database
+      .prepare(
+        `SELECT id, bank_name, bank_country, psu_type, alias
+         FROM bank_connections
+         WHERE id = ? AND environment = ? AND status <> 'REVOKED'`
+      )
+      .get(connectionId, this.config.appEnv) as ConnectionRow | undefined;
+    if (!connection) {
+      throw new Error("The bank connection does not exist or has been revoked.");
+    }
+    const bank = await this.findBank(
+      connection.bank_name,
+      connection.bank_country,
+      connection.psu_type
+    );
+    return await this.start(connection, bank, "reauthorize");
   }
 
   public async complete(input: {
@@ -88,24 +164,35 @@ export class AuthorizationService {
     code?: string;
     error?: string;
     errorDescription?: string;
-  }): Promise<void> {
+  }): Promise<AuthorizationCompletionResult> {
     if (!input.state) throw new AuthorizationDeniedError("El callback no contiene state.");
     const pending = this.states.consume(input.state);
-    if (input.error) {
+    if (input.error || !input.code) {
+      const message = (
+        input.errorDescription ??
+        (input.error ? "Autorización denegada." : "El callback no contiene code.")
+      ).slice(0, 300);
       this.database
         .prepare(
-          `UPDATE bank_connections
-           SET status = 'DENIED', error_code = ?, error_message_safe = ?
+          `UPDATE bank_connections SET
+             status = ?, reauthorization_required = ?,
+             error_code = ?, error_message_safe = ?
            WHERE id = ?`
         )
         .run(
-          input.error,
-          (input.errorDescription ?? "Autorización denegada.").slice(0, 300),
+          pending.purpose === "reauthorize" ? "REAUTHORIZATION_REQUIRED" : "DENIED",
+          pending.purpose === "reauthorize" ? 1 : 0,
+          input.error ?? "MISSING_AUTHORIZATION_CODE",
+          message,
           pending.bankConnectionId
         );
-      throw new AuthorizationDeniedError();
+      return {
+        connectionId: pending.bankConnectionId,
+        bankName: pending.bankName,
+        status: "denied",
+        message
+      };
     }
-    if (!input.code) throw new AuthorizationDeniedError("El callback no contiene code.");
 
     try {
       const session = await this.client.authorizeSession(input.code);
@@ -113,6 +200,18 @@ export class AuthorizationService {
       const now = new Date().toISOString();
       const validUntil = session.access?.valid_until ?? null;
       const dbTransaction = this.database.transaction(() => {
+        this.database
+          .prepare(
+            `UPDATE provider_sessions SET status = 'SUPERSEDED'
+             WHERE bank_connection_id = ? AND status = 'AUTHORIZED'`
+          )
+          .run(pending.bankConnectionId);
+        this.database
+          .prepare(
+            `UPDATE accounts SET active = 0
+             WHERE bank_connection_id = ?`
+          )
+          .run(pending.bankConnectionId);
         this.database
           .prepare(
             `INSERT INTO provider_sessions (
@@ -141,19 +240,35 @@ export class AuthorizationService {
         }
       });
       dbTransaction();
+      return {
+        connectionId: pending.bankConnectionId,
+        bankName: pending.bankName,
+        status: "authorized"
+      };
     } catch (error) {
+      const message = safeMessage(error);
       this.database
         .prepare(
           `UPDATE bank_connections SET
-             status = 'AUTHORIZATION_FAILED', error_code = ?, error_message_safe = ?
+             status = ?, reauthorization_required = ?,
+             error_code = ?, error_message_safe = ?
            WHERE id = ?`
         )
         .run(
+          pending.purpose === "reauthorize"
+            ? "REAUTHORIZATION_REQUIRED"
+            : "AUTHORIZATION_FAILED",
+          pending.purpose === "reauthorize" ? 1 : 0,
           error instanceof KakeboError ? error.code : "CALLBACK_ERROR",
-          safeMessage(error),
+          message,
           pending.bankConnectionId
         );
-      throw error;
+      return {
+        connectionId: pending.bankConnectionId,
+        bankName: pending.bankName,
+        status: "failed",
+        message
+      };
     }
   }
 }

@@ -1,0 +1,30 @@
+{
+  "format": "xlsx",
+  "csv": {
+    "fieldSeparator": ";",
+    "decimalSeparator": ",",
+    "dateFormat": "dd/mm/yyyy",
+    "includeBom": true
+  },
+  "columns": [
+    { "field": "movementKey", "header": "MovementKey", "enabled": true },
+    { "field": "date", "header": "Date", "enabled": true },
+    { "field": "valueDate", "header": "ValueDate", "enabled": true },
+    { "field": "bank", "header": "Bank", "enabled": true },
+    { "field": "account", "header": "Account", "enabled": true },
+    { "field": "accountAlias", "header": "AccountAlias", "enabled": true },
+    { "field": "productType", "header": "ProductType", "enabled": true },
+    { "field": "description", "header": "Description", "enabled": true },
+    { "field": "merchant", "header": "Merchant", "enabled": true },
+    { "field": "counterparty", "header": "Counterparty", "enabled": true },
+    { "field": "amount", "header": "Amount", "enabled": true },
+    { "field": "currency", "header": "Currency", "enabled": true },
+    { "field": "direction", "header": "Direction", "enabled": true },
+    { "field": "status", "header": "Status", "enabled": true },
+    { "field": "categoryAuto", "header": "CategoryAuto", "enabled": true },
+    { "field": "subcategoryAuto", "header": "SubcategoryAuto", "enabled": true },
+    { "field": "reviewed", "header": "Reviewed", "enabled": true },
+    { "field": "source", "header": "Source", "enabled": true },
+    { "field": "importedAt", "header": "ImportedAt", "enabled": true }
+  ]
+}

@@ -7,6 +7,7 @@ export interface PendingAuthorization {
   bankName: string;
   redirectUrl: string;
   environment: string;
+  purpose: "connect" | "reauthorize";
 }
 
 interface PendingRow {
@@ -14,6 +15,7 @@ interface PendingRow {
   bank_name: string;
   redirect_url: string;
   environment: string;
+  purpose: "connect" | "reauthorize";
   expires_at: string;
   consumed_at: string | null;
 }
@@ -28,22 +30,34 @@ export class StateStore {
   ): void {
     const createdAt = new Date();
     const expiresAt = new Date(createdAt.getTime() + ttlMinutes * 60_000);
-    this.database
-      .prepare(
-        `INSERT INTO pending_authorizations (
-           state_hash, bank_connection_id, bank_name, redirect_url,
-           environment, created_at, expires_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        sha256(state),
-        pending.bankConnectionId,
-        pending.bankName,
-        pending.redirectUrl,
-        pending.environment,
-        createdAt.toISOString(),
-        expiresAt.toISOString()
-      );
+    const createdAtIso = createdAt.toISOString();
+    const transaction = this.database.transaction(() => {
+      this.database
+        .prepare(
+          `UPDATE pending_authorizations
+           SET consumed_at = ?
+           WHERE bank_connection_id = ? AND consumed_at IS NULL`
+        )
+        .run(createdAtIso, pending.bankConnectionId);
+      this.database
+        .prepare(
+          `INSERT INTO pending_authorizations (
+             state_hash, bank_connection_id, bank_name, redirect_url,
+             environment, purpose, created_at, expires_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          sha256(state),
+          pending.bankConnectionId,
+          pending.bankName,
+          pending.redirectUrl,
+          pending.environment,
+          pending.purpose,
+          createdAtIso,
+          expiresAt.toISOString()
+        );
+    });
+    transaction();
   }
 
   public consume(state: string): PendingAuthorization {
@@ -52,7 +66,7 @@ export class StateStore {
       const row = this.database
         .prepare(
           `SELECT bank_connection_id, bank_name, redirect_url, environment,
-                  expires_at, consumed_at
+                  purpose, expires_at, consumed_at
            FROM pending_authorizations WHERE state_hash = ?`
         )
         .get(hash) as PendingRow | undefined;
@@ -71,7 +85,8 @@ export class StateStore {
         bankConnectionId: row.bank_connection_id,
         bankName: row.bank_name,
         redirectUrl: row.redirect_url,
-        environment: row.environment
+        environment: row.environment,
+        purpose: row.purpose
       };
     });
     return transaction();

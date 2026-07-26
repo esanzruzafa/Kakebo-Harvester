@@ -86,12 +86,18 @@ export class EnableBankingClient {
         if (response.ok) {
           return (await response.json()) as unknown;
         }
+        const body = (await response.text()).slice(0, 500);
+        const providerCode = providerErrorCode(body);
+        if (
+          providerCode === "EXPIRED_SESSION" ||
+          providerCode === "REVOKED_SESSION"
+        ) {
+          throw new ReauthorizationRequiredError();
+        }
         if (response.status === 401 || response.status === 403) {
           throw new EnableBankingAuthenticationError();
         }
         if ([400, 404, 422].includes(response.status)) {
-          const body = (await response.text()).slice(0, 500);
-          const providerCode = providerErrorCode(body);
           if (/expired|revoked|session/i.test(body)) {
             throw new ReauthorizationRequiredError();
           }

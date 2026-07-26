@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Execution history · Kakebo Harvester</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="audit-window">
+    <main class="audit-window-content">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="audit-kicker">Local audit</p>
+          <h1 id="audit-title">Execution history</h1>
+        </div>
+        <button id="close-audit" class="button secondary" type="button">Close</button>
+      </header>
+      <p class="panel-description audit-window-description" id="audit-description">
+        Complete list of persistent synchronization runs and account balance snapshots.
+      </p>
+      <div class="audit-run-list" id="audit-runs"></div>
+    </main>
+    <script type="module" src="./audit-renderer.js"></script>
+  </body>
+</html>

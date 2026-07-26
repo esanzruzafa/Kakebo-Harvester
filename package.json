@@ -3,13 +3,23 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Kakebo Harvester: aplicación local y de solo lectura para importar datos de Enable Banking y exportarlos a Kakebo.",
+  "main": "dist/src/desktop/main.js",
+  "description": "Local, read-only desktop application for importing financial data through Enable Banking.",
+  "author": "Eduardo Sanz",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "cli": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run build:core && npm run build:assets",
+    "build:core": "tsc -p tsconfig.json",
+    "build:assets": "node scripts/copy-desktop-assets.mjs",
+    "desktop": "npm run build && electron .",
+    "desktop:rebuild-native": "electron-rebuild -f -w better-sqlite3",
+    "desktop:pack": "npm run build && electron-builder --dir --win",
+    "desktop:dist": "npm run build && electron-builder --win portable --config.directories.output=release/portable",
+    "desktop:release": "npm run check && npm run desktop:rebuild-native && npm run desktop:dist",
+    "desktop:installer": "npm run build && electron-builder --win nsis",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
@@ -23,15 +33,62 @@
     "fastify": "^5.4.0",
     "jose": "^6.0.12",
     "pino": "^9.7.0",
+    "write-excel-file": "^4.1.1",
     "zod": "^4.0.14"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.1.0",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
     "eslint": "^9.32.0",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.38.0",
     "vitest": "^3.2.4"
+  },
+  "build": {
+    "appId": "com.kakeboharvester.desktop",
+    "productName": "Kakebo Harvester",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+    ],
+    "files": [
+      "dist/src/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "scripts/setup-local-https.ps1",
+        "to": "scripts/setup-local-https.ps1"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "executableName": "Kakebo Harvester",
+      "artifactName": "Kakebo-Harvester-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "npmRebuild": true
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "electron@43.2.0": true
   }
 }
