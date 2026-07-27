@@ -61,6 +61,7 @@ describe("desktop run repository", () => {
       amount: "123.45",
       currency: "EUR"
     });
+    expect(runs[0]?.totals).toEqual([{ amount: "123.45", currency: "EUR" }]);
     expect(
       repository.countBetween(new Date(2020, 0, 1), new Date(2030, 0, 1))
     ).toBe(1);

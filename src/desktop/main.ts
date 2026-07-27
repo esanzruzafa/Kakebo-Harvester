@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
   app,
@@ -10,9 +11,14 @@ import {
   ipcMain,
   Menu,
   shell,
-  type IpcMainInvokeEvent
+  type IpcMainInvokeEvent,
+  type MessageBoxOptions
 } from "electron";
 import { z } from "zod";
+import {
+  CardImportService,
+  cardImportRequestSchema
+} from "../cards/card-import-service.js";
 import {
   createKakeboApplication,
   type KakeboApplication
@@ -28,6 +34,10 @@ import {
   exportOutputPath
 } from "../export/csv-exporter.js";
 import { AccountsConfigStore } from "../settings/accounts-config-store.js";
+import {
+  CardImportProfilesStore,
+  cardImportProfileSchema
+} from "../settings/card-import-profiles-store.js";
 import {
   CategoriesStore,
   categoryDefinitionSchema
@@ -87,6 +97,14 @@ const editableAccountSchema = z.object({
   exportEnabled: z.boolean()
 });
 
+const auditHistoryLimitSchema = z.union([
+  z.literal(5),
+  z.literal(10),
+  z.literal(20),
+  z.literal(50),
+  z.literal(100)
+]);
+
 const openPathTargetSchema = z.enum([
   "root",
   "export-directory",
@@ -95,6 +113,7 @@ const openPathTargetSchema = z.enum([
   "accounts-config",
   "categories-config",
   "export-settings",
+  "card-import-profiles",
   "ui-settings"
 ]);
 
@@ -207,6 +226,7 @@ let domainApplication: KakeboApplication | undefined;
 let callbackServer: Awaited<ReturnType<typeof startCallbackServer>> | undefined;
 let mainWindow: BrowserWindow | undefined;
 let auditWindow: BrowserWindow | undefined;
+let loadingWindow: BrowserWindow | undefined;
 let rootDirectory = "";
 let environmentFile = "";
 let coordinator: AuthorizationCoordinator | undefined;
@@ -310,6 +330,21 @@ function assertAuditSender(event: IpcMainInvokeEvent): void {
   if (quitting) throw new Error("The application is closing.");
 }
 
+function assertApplicationSender(event: IpcMainInvokeEvent): void {
+  const candidates = [mainWindow, auditWindow].filter(
+    (window): window is BrowserWindow => Boolean(window && !window.isDestroyed())
+  );
+  const trusted = candidates.some(
+    (window) =>
+      event.sender.id === window.webContents.id &&
+      event.senderFrame?.url === window.webContents.getURL()
+  );
+  if (!trusted) {
+    throw new Error("Rejected IPC request from an untrusted application window.");
+  }
+  if (quitting) throw new Error("The application is closing.");
+}
+
 function trackOperation<Result>(operation: Promise<Result>): Promise<Result> {
   activeOperations.add(operation);
   void operation
@@ -368,16 +403,49 @@ async function generateLocalHttps(
   configureTlsTrust(application.config.useSystemCa);
 }
 
-async function ensureLocalHttps(application: KakeboApplication): Promise<boolean> {
+async function localHttpsIsTrusted(
+  application: KakeboApplication
+): Promise<boolean> {
   if (
-    application.config.tlsPfxPath &&
-    application.config.tlsPfxPassphrasePath &&
-    existsSync(application.config.tlsPfxPath) &&
-    existsSync(application.config.tlsPfxPassphrasePath)
+    !application.config.tlsPfxPath ||
+    !application.config.tlsPfxPassphrasePath ||
+    !existsSync(application.config.tlsPfxPath) ||
+    !existsSync(application.config.tlsPfxPassphrasePath)
   ) {
-    return true;
+    return false;
   }
-  const confirmation = await dialog.showMessageBox({
+  if (process.platform !== "win32") return true;
+  const thumbprintPath = join(
+    dirname(application.config.tlsPfxPath),
+    "local-https-production-ca.thumbprint"
+  );
+  try {
+    const thumbprint = (await readFile(thumbprintPath, "utf8")).trim();
+    if (!/^[A-Fa-f0-9]{40}$/u.test(thumbprint)) return false;
+    const certificatePath = `Cert:\\CurrentUser\\Root\\${thumbprint}`;
+    await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `if (Test-Path -LiteralPath '${certificatePath}') { exit 0 } else { exit 1 }`
+      ],
+      {
+        windowsHide: true,
+        timeout: 10_000,
+        maxBuffer: 100_000
+      }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureLocalHttps(application: KakeboApplication): Promise<boolean> {
+  if (await localHttpsIsTrusted(application)) return true;
+  const options: MessageBoxOptions = {
     type: "info",
     title: "Kakebo Harvester",
     message: tr(
@@ -395,11 +463,20 @@ async function ensureLocalHttps(application: KakeboApplication): Promise<boolean
     defaultId: 1,
     cancelId: 0,
     noLink: true
-  });
+  };
+  const confirmation =
+    loadingWindow && !loadingWindow.isDestroyed()
+      ? await dialog.showMessageBox(loadingWindow, options)
+      : await dialog.showMessageBox(options);
   if (confirmation.response !== 1) {
     return false;
   }
   await generateLocalHttps(application, true);
+  if (!(await localHttpsIsTrusted(application))) {
+    throw new Error(
+      "The local HTTPS certificate was generated but is not trusted by this Windows user."
+    );
+  }
   return true;
 }
 
@@ -410,6 +487,7 @@ function connections(application: KakeboApplication): ConnectionView[] {
               reauthorization_required
        FROM bank_connections
        WHERE environment = ?
+         AND provider = 'enable-banking'
        ORDER BY created_at`
     )
     .all(application.config.appEnv) as Array<{
@@ -477,8 +555,13 @@ async function bootstrap(application: KakeboApplication): Promise<DesktopBootstr
     );
   }
   const exportSettings = await exportSettingsStore(application).ensure();
+  const cardImportProfiles = await new CardImportProfilesStore(
+    application.config.cardImportProfilesPath
+  ).ensure();
   const audit = new DesktopRunRepository(application.database);
   const year = currentYearBounds();
+  const auditHistoryLimit =
+    localization?.getAuditHistoryLimit() ?? 10;
   return {
     appName: "Kakebo Harvester",
     version: app.getVersion(),
@@ -492,7 +575,9 @@ async function bootstrap(application: KakeboApplication): Promise<DesktopBootstr
     rules,
     categories,
     exportSettings,
-    recentRuns: audit.list(6),
+    cardImportProfiles,
+    recentRuns: audit.list(auditHistoryLimit),
+    auditHistoryLimit,
     runsThisYear: audit.countBetween(year.start, year.end),
     language: localization?.getLanguage() ?? "en",
     translations: localization?.getTranslations() ?? {},
@@ -505,6 +590,7 @@ async function bootstrap(application: KakeboApplication): Promise<DesktopBootstr
       accountsConfig: application.config.accountsConfigPath,
       categoriesConfig: application.config.categoriesConfigPath,
       exportSettings: application.config.exportSettingsPath,
+      cardImportProfiles: application.config.cardImportProfilesPath,
       uiSettings: application.config.uiSettingsPath
     },
     scheduledCommand: `"${scheduledExecutable()}" --scheduled-sync`
@@ -521,6 +607,13 @@ function registerIpc(application: KakeboApplication): void {
     application.config.categoriesConfigPath
   );
   const exportStore = exportSettingsStore(application);
+  const cardProfilesStore = new CardImportProfilesStore(
+    application.config.cardImportProfilesPath
+  );
+  const cardImport = new CardImportService(
+    application.config,
+    application.database
+  );
   const audit = new DesktopRunRepository(application.database);
   const runner = new SyncRunner(
     application.config,
@@ -621,12 +714,75 @@ function registerIpc(application: KakeboApplication): void {
       )
     );
   });
+  ipcMain.handle("cards:profiles:save", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    return await cardProfilesStore.save(
+      z.array(cardImportProfileSchema).parse(input)
+    );
+  });
+  ipcMain.handle("cards:files:select", async (event) => {
+    assertTrustedSender(event);
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, {
+          title: tr("cards.selectDialog", "Select card statements"),
+          properties: ["openFile", "multiSelections"],
+          filters: [
+            {
+              name: tr("cards.xlsxFiles", "Excel workbooks"),
+              extensions: ["xlsx"]
+            }
+          ]
+        })
+      : await dialog.showOpenDialog({
+          title: tr("cards.selectDialog", "Select card statements"),
+          properties: ["openFile", "multiSelections"],
+          filters: [
+            {
+              name: tr("cards.xlsxFiles", "Excel workbooks"),
+              extensions: ["xlsx"]
+            }
+          ]
+        });
+    return result.canceled
+      ? []
+      : result.filePaths.map((path) => ({ path, name: basename(path) }));
+  });
+  ipcMain.handle("cards:import", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    if (activeSync) {
+      throw new Error(
+        tr(
+          "error.cardsDuringSync",
+          "Wait for the synchronization to finish before importing card files."
+        )
+      );
+    }
+    const request = cardImportRequestSchema.parse(input);
+    return await trackOperation(
+      withSynchronizationLock(application, async () => {
+        const imported = await cardImport.import(request);
+        const exported = await new CsvExporter(
+          application.config,
+          application.database
+        ).export();
+        await accountsStore.save(accountRepository.listEditable());
+        return { ...imported, exportPath: exported.path };
+      })
+    );
+  });
   ipcMain.handle("language:set", async (event, input: unknown) => {
     assertTrustedSender(event);
     const language: AppLanguage = z.enum(["en", "es"]).parse(input);
     if (!localization) throw new Error("Localization is unavailable.");
     await localization.setLanguage(language);
     return await bootstrap(application);
+  });
+  ipcMain.handle("audit:limit:set", async (event, input: unknown) => {
+    assertApplicationSender(event);
+    const limit = auditHistoryLimitSchema.parse(input);
+    if (!localization) throw new Error("Localization is unavailable.");
+    await localization.setAuditHistoryLimit(limit);
+    return audit.list(limit);
   });
   ipcMain.handle("rules:reapply", async (event) => {
     assertTrustedSender(event);
@@ -667,8 +823,11 @@ function registerIpc(application: KakeboApplication): void {
   });
   ipcMain.handle("audit:list", (event) => {
     assertAuditSender(event);
+    const limit =
+      localization?.getAuditHistoryLimit() ?? 10;
     return {
-      runs: audit.list(),
+      runs: audit.list(limit),
+      limit,
       language: localization?.getLanguage() ?? "en",
       translations: localization?.getTranslations() ?? {}
     };
@@ -771,6 +930,12 @@ function registerIpc(application: KakeboApplication): void {
     if (target === "export-settings" && !existsSync(data.paths.exportSettings)) {
       await exportStore.save(data.exportSettings);
     }
+    if (
+      target === "card-import-profiles" &&
+      !existsSync(data.paths.cardImportProfiles)
+    ) {
+      await cardProfilesStore.save(data.cardImportProfiles);
+    }
     const paths: Record<OpenPathTarget, string> = {
       root: data.paths.root,
       "export-directory": data.paths.exportDirectory,
@@ -779,6 +944,7 @@ function registerIpc(application: KakeboApplication): void {
       "accounts-config": data.paths.accountsConfig,
       "categories-config": data.paths.categoriesConfig,
       "export-settings": data.paths.exportSettings,
+      "card-import-profiles": data.paths.cardImportProfiles,
       "ui-settings": data.paths.uiSettings
     };
     const error = await shell.openPath(paths[target]);
@@ -864,10 +1030,10 @@ async function createAuditWindow(): Promise<void> {
     "audit.html"
   );
   auditWindow = new BrowserWindow({
-    width: 900,
-    height: 650,
-    minWidth: 720,
-    minHeight: 500,
+    width: 1080,
+    height: 780,
+    minWidth: 864,
+    minHeight: 600,
     ...(mainWindow ? { parent: mainWindow } : {}),
     show: false,
     backgroundColor: "#f4f0e7",
@@ -878,7 +1044,7 @@ async function createAuditWindow(): Promise<void> {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
-      zoomFactor: 0.75
+      zoomFactor: 0.9
     }
   });
   auditWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -891,9 +1057,50 @@ async function createAuditWindow(): Promise<void> {
   if (!auditWindow.isDestroyed() && !auditWindow.isVisible()) {
     auditWindow.show();
   }
-  auditWindow.webContents.setZoomFactor(0.75);
+  auditWindow.webContents.setZoomFactor(0.9);
   auditWindow.on("closed", () => {
     auditWindow = undefined;
+  });
+}
+
+async function createLoadingWindow(): Promise<void> {
+  const rendererPath = join(
+    app.getAppPath(),
+    "dist",
+    "src",
+    "desktop",
+    "loading.html"
+  );
+  loadingWindow = new BrowserWindow({
+    width: 560,
+    height: 220,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    show: false,
+    frame: false,
+    center: true,
+    alwaysOnTop: true,
+    backgroundColor: "#fffdf8",
+    title: "Kakebo Harvester",
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true
+    }
+  });
+  loadingWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  loadingWindow.webContents.on("will-navigate", (event) =>
+    event.preventDefault()
+  );
+  loadingWindow.webContents.session.setPermissionRequestHandler(
+    (_webContents, _permission, callback) => callback(false)
+  );
+  await loadingWindow.loadFile(rendererPath);
+  loadingWindow.show();
+  loadingWindow.on("closed", () => {
+    loadingWindow = undefined;
   });
 }
 
@@ -902,10 +1109,10 @@ async function createWindow(): Promise<void> {
   const rendererPath = join(app.getAppPath(), "dist", "src", "desktop", "index.html");
   Menu.setApplicationMenu(null);
   mainWindow = new BrowserWindow({
-    width: 960,
-    height: 630,
-    minWidth: 760,
-    minHeight: 520,
+    width: 1152,
+    height: 756,
+    minWidth: 912,
+    minHeight: 624,
     show: false,
     backgroundColor: "#f4f0e7",
     title: "Kakebo Harvester",
@@ -915,7 +1122,7 @@ async function createWindow(): Promise<void> {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
-      zoomFactor: 0.75
+      zoomFactor: 0.9
     }
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -928,7 +1135,9 @@ async function createWindow(): Promise<void> {
   if (!mainWindow.isDestroyed() && !mainWindow.isVisible()) {
     mainWindow.show();
   }
-  mainWindow.webContents.setZoomFactor(0.75);
+  loadingWindow?.destroy();
+  loadingWindow = undefined;
+  mainWindow.webContents.setZoomFactor(0.9);
   mainWindow.on("closed", () => {
     mainWindow = undefined;
   });
@@ -967,6 +1176,7 @@ async function runScheduled(): Promise<void> {
 }
 
 async function runDesktop(): Promise<void> {
+  await createLoadingWindow();
   environmentFile = findEnvironmentFile();
   rootDirectory = dirname(environmentFile);
   process.chdir(rootDirectory);
@@ -1041,6 +1251,8 @@ void app
     try {
       await runDesktop();
     } catch (error) {
+      loadingWindow?.destroy();
+      loadingWindow = undefined;
       dialog.showErrorBox("Kakebo Harvester", safeMessage(error));
       app.quit();
     }
@@ -1055,7 +1267,11 @@ app.on("activate", () => {
 });
 
 app.on("second-instance", () => {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    loadingWindow?.show();
+    loadingWindow?.focus();
+    return;
+  }
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
@@ -1071,6 +1287,7 @@ app.on("before-quit", (event) => {
   quitting = true;
   mainWindow?.hide();
   auditWindow?.hide();
+  loadingWindow?.hide();
   coordinator?.cancelAll("The application is closing.");
   shutdownPromise ??= (async () => {
     await Promise.allSettled([...activeOperations]);

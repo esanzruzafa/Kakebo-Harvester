@@ -1,6 +1,10 @@
 import type { AppConfig } from "../config.js";
 import type { EnableBankingClient } from "../enable-banking/client.js";
-import { KakeboError, ReauthorizationRequiredError } from "../errors.js";
+import {
+  KakeboError,
+  ReauthorizationRequiredError,
+  TransactionsPeriodError
+} from "../errors.js";
 import type { SqliteDatabase } from "../storage/database.js";
 import { RawStore } from "../storage/raw-store.js";
 import {
@@ -61,6 +65,7 @@ export class SyncService {
         `SELECT c.id
          FROM bank_connections c
          WHERE c.environment = ?
+           AND c.provider = 'enable-banking'
            AND c.status NOT IN ('REVOKED', 'DENIED')
            AND (
              c.status <> 'AUTHORIZED'
@@ -94,7 +99,8 @@ export class SyncService {
                 s.provider_session_id_ciphertext AS session_ciphertext
          FROM bank_connections c
          JOIN provider_sessions s ON s.bank_connection_id = c.id
-         WHERE c.status = 'AUTHORIZED' AND s.status = 'AUTHORIZED'
+         WHERE c.provider = 'enable-banking'
+         AND c.status = 'AUTHORIZED' AND s.status = 'AUTHORIZED'
          AND s.created_at = (
            SELECT MAX(s2.created_at) FROM provider_sessions s2
            WHERE s2.bank_connection_id = c.id AND s2.status = 'AUTHORIZED'
@@ -211,12 +217,30 @@ export class SyncService {
     const summary = emptySummary();
     const seenKeys = new Set<string>();
     let continuationKey: string | undefined;
-    for (let page = 1; page <= this.config.maxTransactionPages; page += 1) {
-      const response = await this.client.getTransactions(account.provider_account_id, {
-        dateFrom,
-        dateTo,
-        ...(continuationKey ? { continuationKey } : {})
-      });
+    let page = 1;
+    let strategy: "longest" | undefined;
+    while (page <= this.config.maxTransactionPages) {
+      let response;
+      try {
+        response = await this.client.getTransactions(
+          account.provider_account_id,
+          {
+            dateFrom,
+            ...(strategy ? { strategy } : { dateTo }),
+            ...(continuationKey ? { continuationKey } : {})
+          }
+        );
+      } catch (error) {
+        if (
+          error instanceof TransactionsPeriodError &&
+          strategy === undefined &&
+          continuationKey === undefined
+        ) {
+          strategy = "longest";
+          continue;
+        }
+        throw error;
+      }
       const raw = await this.rawStore.write("transactions", account.id, response, String(page));
       this.database
         .prepare(
@@ -227,7 +251,6 @@ export class SyncService {
         .run(createId(), account.id, new Date().toISOString(), page, raw.path, raw.fingerprint);
 
       summary.pages += 1;
-      summary.received += response.transactions.length;
       const databaseTransaction = this.database.transaction(() => {
         for (const providerTransaction of response.transactions) {
           const normalized = mapTransaction({
@@ -236,6 +259,17 @@ export class SyncService {
             environment: this.config.appEnv,
             rawPath: raw.path
           });
+          const movementDate =
+            normalized.booking_date ??
+            normalized.transaction_datetime?.slice(0, 10) ??
+            normalized.value_date;
+          if (
+            movementDate &&
+            (movementDate < dateFrom || movementDate > dateTo)
+          ) {
+            continue;
+          }
+          summary.received += 1;
           const category = this.categorizer.categorize(normalized.description_normalized);
           normalized.category_auto = category.category;
           normalized.subcategory_auto = category.subcategory;
@@ -255,6 +289,7 @@ export class SyncService {
       }
       seenKeys.add(nextKey);
       continuationKey = nextKey;
+      page += 1;
     }
     throw new Error(
       `Se alcanzó MAX_TRANSACTION_PAGES=${this.config.maxTransactionPages}; sincronización detenida.`

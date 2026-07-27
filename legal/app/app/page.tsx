@@ -52,7 +52,8 @@ export default function ApplicationPage() {
             <h3>Organize</h3>
             <p>
               Add account aliases and maintain ordered categorization rules with
-              dependent category and subcategory lists.
+              dependent category and subcategory lists. Merge overlapping XLSX
+              statements from cards that are not exposed through Open Banking.
             </p>
           </article>
           <article>
@@ -60,15 +61,16 @@ export default function ApplicationPage() {
             <h3>Export</h3>
             <p>
               Choose XLSX or CSV, fields, order, column names and regional CSV
-              separators without changing source code.
+              separators without changing source code. New XLSX rows receive a
+              temporary soft highlight.
             </p>
           </article>
           <article>
             <strong>04</strong>
             <h3>Audit</h3>
             <p>
-              Review persistent runs and the account balance snapshot captured
-              for every execution.
+              Expand grouped runs, compare account snapshots and see the total
+              balance for every execution.
             </p>
           </article>
         </div>
@@ -141,11 +143,21 @@ export default function ApplicationPage() {
             </p>
           </details>
           <details>
+            <summary>Can I import movements from cards manually?</summary>
+            <p>
+              Yes. Select one or more overlapping XLSX statements and assign a
+              reusable profile for each physical card. Kakebo Harvester
+              deduplicates, categorizes and includes new rows in the configured
+              export.
+            </p>
+          </details>
+          <details>
             <summary>How do I move it to another computer?</summary>
             <p>
               Close the app, copy the complete private application folder, and
-              regenerate local HTTPS for the new Windows user. No source-code
-              change is required.
+              start it as the new Windows user. Kakebo Harvester detects that
+              the copied local CA is not trusted and offers to prepare HTTPS.
+              No source-code change is required.
             </p>
           </details>
           <details>

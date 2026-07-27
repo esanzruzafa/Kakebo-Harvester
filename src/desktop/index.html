@@ -30,6 +30,10 @@
             <span class="nav-icon" aria-hidden="true">◫</span>
             <span data-i18n="nav.accounts">Accounts and aliases</span>
           </button>
+          <button class="nav-item" type="button" data-tab="cards">
+            <span class="nav-icon" aria-hidden="true">▤</span>
+            <span data-i18n="nav.cards">Card imports</span>
+          </button>
           <button class="nav-item" type="button" data-tab="categories">
             <span class="nav-icon" aria-hidden="true">⌁</span>
             <span data-i18n="nav.categories">Categorization</span>
@@ -209,6 +213,16 @@
                 <h2 data-i18n="audit.recent">Recent activity</h2>
               </div>
               <div class="audit-heading-actions">
+                <label class="field audit-limit-field">
+                  <span data-i18n="audit.showLatest">Show latest</span>
+                  <select id="recent-runs-limit" class="select compact-select">
+                    <option value="5">5</option>
+                    <option value="10">10</option>
+                    <option value="20">20</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                  </select>
+                </label>
                 <span class="year-counter">
                   <strong id="runs-this-year">0</strong>
                   <span data-i18n="audit.thisYear">runs this year</span>
@@ -253,15 +267,117 @@
                     <th data-i18n="accounts.column.account">Bank and account</th>
                     <th data-i18n="accounts.column.identifier">Identifier</th>
                     <th data-i18n="accounts.column.alias">Alias</th>
-                    <th data-i18n="accounts.column.sync" data-i18n-title="accounts.column.sync.tooltip">
-                      Synchronize
+                    <th>
+                      <span data-i18n="accounts.column.sync">Synchronize</span>
+                      <span
+                        class="tooltip-help"
+                        tabindex="0"
+                        data-tooltip="Request new balances and movements for this account during synchronization. Existing data is preserved when disabled."
+                        data-i18n-tooltip="accounts.column.sync.tooltip"
+                        aria-label="Synchronization help"
+                      >?</span>
                     </th>
-                    <th data-i18n="accounts.column.export" data-i18n-title="accounts.column.export.tooltip">
-                      Export
+                    <th>
+                      <span data-i18n="accounts.column.export">Export</span>
+                      <span
+                        class="tooltip-help"
+                        tabindex="0"
+                        data-tooltip="Include this account's movements in generated export files. Its stored history is preserved when disabled."
+                        data-i18n-tooltip="accounts.column.export.tooltip"
+                        aria-label="Export help"
+                      >?</span>
                     </th>
                   </tr>
                 </thead>
                 <tbody id="accounts-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="view" id="view-cards">
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="cards.importKicker">Manual statements</p>
+                <h2 data-i18n="cards.importTitle">Merge card movements</h2>
+                <p class="panel-description" data-i18n="cards.importDescription">
+                  Select overlapping XLSX statements, choose one saved profile per file, and import only movements that are not already stored.
+                </p>
+              </div>
+              <div class="button-row">
+                <button id="select-card-files" class="button secondary" type="button" data-i18n="cards.selectFiles">
+                  Select XLSX files
+                </button>
+                <button id="import-card-files" class="button primary" type="button" data-i18n="cards.importSelected">
+                  Import selected
+                </button>
+              </div>
+            </div>
+            <div class="profile-warning">
+              <strong data-i18n="cards.identityTitle">One profile per physical card</strong>
+              <span data-i18n="cards.identityHelp">
+                Reuse the same profile every time you import that card. Its stable profile id is part of the deduplication key.
+              </span>
+            </div>
+            <div class="table-wrap">
+              <table class="editable-table card-files-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="common.include">Include</th>
+                    <th data-i18n="cards.column.file">Workbook</th>
+                    <th data-i18n="cards.column.profile">Card profile</th>
+                  </tr>
+                </thead>
+                <tbody id="card-files-body"></tbody>
+              </table>
+            </div>
+            <div id="card-import-result" class="run-result" hidden></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="cards.profileKicker">Reusable mappings</p>
+                <h2 data-i18n="cards.profileTitle">Card import profiles</h2>
+                <p class="panel-description" data-i18n="cards.profileDescription">
+                  Configure the worksheet, first data row, Excel columns, regional formats, and card identity.
+                </p>
+              </div>
+              <div class="button-row">
+                <button class="button secondary" type="button" data-open-path="card-import-profiles" data-i18n="common.openJson">
+                  Open JSON
+                </button>
+                <button id="add-card-profile" class="button secondary" type="button" data-i18n="cards.addProfile">
+                  Add profile
+                </button>
+                <button id="save-card-profiles" class="button primary" type="button" data-i18n="cards.saveProfiles">
+                  Save profiles
+                </button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="editable-table card-profiles-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="cards.column.enabled">Enabled</th>
+                    <th data-i18n="cards.column.profileName">Profile</th>
+                    <th data-i18n="cards.column.bank">Bank</th>
+                    <th data-i18n="cards.column.card">Card</th>
+                    <th data-i18n="cards.column.sheet">Sheet</th>
+                    <th data-i18n="cards.column.startRow">First row</th>
+                    <th data-i18n="cards.column.date">Date</th>
+                    <th data-i18n="cards.column.description">Description</th>
+                    <th data-i18n="cards.column.valueDate">Value date</th>
+                    <th data-i18n="cards.column.amount">Amount</th>
+                    <th data-i18n="cards.column.dateFormat">Date format</th>
+                    <th data-i18n="cards.column.decimal">Decimal</th>
+                    <th data-i18n="cards.column.invert">Invert sign</th>
+                    <th data-i18n="cards.column.currency">Currency</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="card-profiles-body"></tbody>
               </table>
             </div>
           </article>

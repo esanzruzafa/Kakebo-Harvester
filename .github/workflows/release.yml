@@ -46,9 +46,6 @@ jobs:
       - name: Validate source
         run: npm run check
 
-      - name: Rebuild native dependency for Electron
-        run: npm run desktop:rebuild-native
-
       - name: Build portable executable
         run: npm run desktop:dist
 

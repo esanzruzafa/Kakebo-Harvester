@@ -2,6 +2,7 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { unzipSync } from "fflate";
 import { CsvExporter } from "../../src/export/csv-exporter.js";
 import {
   ExportSettingsStore,
@@ -112,6 +113,87 @@ describe("CSV export", () => {
     const result = await new CsvExporter(config, database).export();
     const content = await readFile(result.path);
     expect(content.subarray(0, 2).toString("ascii")).toBe("PK");
+    database.close();
+  });
+
+  it("highlights only movements added since the previous XLSX export", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-xlsx-new-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, name, active,
+           first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider', 'Account', 1, ?, ?)`
+      )
+      .run(now, now);
+    const insert = database.prepare(
+      `INSERT INTO transactions (
+         id, movement_key, reconciliation_key, provider, environment,
+         bank_connection_id, account_id, status, booking_date, amount, currency,
+         direction, description_raw, description_normalized, reviewed,
+         first_seen_at, last_seen_at, imported_at, raw_fingerprint
+       ) VALUES (?, ?, ?, 'enable-banking', 'sandbox', 'connection', 'account',
+                 'booked', ?, ?, 'EUR', 'expense', ?, ?, 0, ?, ?, ?, ?)`
+    );
+    insert.run(
+      "transaction-1",
+      "movement-1",
+      "reconcile-1",
+      "2026-07-01",
+      "-10.00",
+      "First",
+      "FIRST",
+      now,
+      now,
+      now,
+      "raw-1"
+    );
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = "xlsx";
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(
+      settings
+    );
+    const exporter = new CsvExporter(config, database);
+    await exporter.export();
+
+    insert.run(
+      "transaction-2",
+      "movement-2",
+      "reconcile-2",
+      "2026-07-02",
+      "-20.00",
+      "Second",
+      "SECOND",
+      now,
+      now,
+      now,
+      "raw-2"
+    );
+    const withNewRow = await exporter.export();
+    const highlightedWorkbook = unzipSync(await readFile(withNewRow.path));
+    const highlightedStyles = Buffer.from(
+      highlightedWorkbook["xl/styles.xml"] ?? []
+    ).toString("utf8");
+    expect(highlightedStyles.toUpperCase()).toContain("FFE6EFE9");
+
+    const withoutNewRows = await exporter.export();
+    const resetWorkbook = unzipSync(await readFile(withoutNewRows.path));
+    const resetStyles = Buffer.from(
+      resetWorkbook["xl/styles.xml"] ?? []
+    ).toString("utf8");
+    expect(resetStyles.toUpperCase()).not.toContain("FFE6EFE9");
     database.close();
   });
 });

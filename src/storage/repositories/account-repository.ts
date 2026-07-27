@@ -148,6 +148,7 @@ export class AccountRepository {
          JOIN bank_connections c ON c.id = a.bank_connection_id
          WHERE a.active = 1
            AND a.sync_enabled = 1
+           AND c.provider = 'enable-banking'
            AND c.status = 'AUTHORIZED'
            AND c.reauthorization_required = 0
            ${where}
@@ -171,7 +172,8 @@ export class AccountRepository {
            a.account_alias,
            a.active,
            a.sync_enabled,
-           a.export_enabled
+           a.export_enabled,
+           c.provider
          FROM accounts a
          JOIN bank_connections c ON c.id = a.bank_connection_id
          ORDER BY c.bank_name, account_name`
@@ -189,6 +191,7 @@ export class AccountRepository {
       active: number;
       sync_enabled: number;
       export_enabled: number;
+      provider: string;
     }>;
     return rows.map((row) => ({
       id: row.id,
@@ -200,7 +203,7 @@ export class AccountRepository {
       currency: row.currency,
       productType: row.product_type,
       alias: row.account_alias ?? "",
-      providerActive: row.active === 1,
+      providerActive: row.active === 1 && row.provider === "enable-banking",
       syncEnabled: row.sync_enabled === 1,
       exportEnabled: row.export_enabled === 1
     }));

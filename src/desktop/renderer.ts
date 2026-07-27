@@ -1,7 +1,9 @@
 import type {
   AuthorizationUiResult,
-  DesktopBootstrap
+  DesktopBootstrap,
+  SelectedCardFile
 } from "./contracts.js";
+import type { CardImportProfile } from "../settings/card-import-profiles-store.js";
 import type { CategoryDefinition } from "../settings/categories-store.js";
 import type { CategorizationRule } from "../settings/categorization-rules-store.js";
 import type {
@@ -26,6 +28,9 @@ let currentTranslations: Record<string, string> = {};
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let progressEntries: ProgressEntry[] = [];
 let progressExpanded = false;
+let selectedCardFiles: Array<
+  SelectedCardFile & { included: boolean; profileId: string }
+> = [];
 
 function element<T extends HTMLElement>(
   id: string,
@@ -65,6 +70,16 @@ function applyTranslations(): void {
   )) {
     const key = item.dataset["i18nTitle"];
     if (key) item.title = t(key, item.title || key);
+  }
+  for (const item of document.querySelectorAll<HTMLElement>(
+    "[data-i18n-tooltip]"
+  )) {
+    const key = item.dataset["i18nTooltip"];
+    if (!key) continue;
+    const value = t(key, item.dataset["tooltip"] || key);
+    item.dataset["tooltip"] = value;
+    item.title = value;
+    item.setAttribute("aria-label", value);
   }
   for (const item of document.querySelectorAll<HTMLElement>(
     "[data-i18n-aria-label]"
@@ -298,7 +313,10 @@ function renderConnections(): void {
   }
 }
 
-function balanceLabel(account: AuditRunView["accounts"][number]): string {
+function balanceLabel(account: {
+  amount: string | null;
+  currency: string | null;
+}): string {
   if (account.amount === null) return t("audit.noBalance", "No balance");
   const amount = Number(account.amount);
   if (!Number.isFinite(amount)) {
@@ -316,11 +334,16 @@ function balanceLabel(account: AuditRunView["accounts"][number]): string {
   }
 }
 
-function createAuditRun(run: AuditRunView): HTMLElement {
-  const article = document.createElement("article");
+function createAuditRun(run: AuditRunView, expanded = false): HTMLElement {
+  const article = document.createElement("details");
   article.className = "audit-run";
-  const header = document.createElement("div");
+  article.open = expanded;
+  const header = document.createElement("summary");
   header.className = "audit-run-header";
+  const toggle = document.createElement("span");
+  toggle.className = "audit-run-toggle";
+  toggle.setAttribute("aria-hidden", "true");
+  toggle.textContent = "›";
   const title = document.createElement("div");
   title.className = "audit-run-title";
   const started = document.createElement("strong");
@@ -330,10 +353,21 @@ function createAuditRun(run: AuditRunView): HTMLElement {
     .map((step) => t(`step.${step}`, step))
     .join(" · ");
   title.append(started, steps);
+  const meta = document.createElement("div");
+  meta.className = "audit-run-meta";
   const range = document.createElement("span");
   range.className = "audit-run-range";
   range.textContent = `${run.dateFrom} → ${run.dateTo}`;
-  header.append(title, range, badge(run.status));
+  const total = document.createElement("strong");
+  total.className = "audit-run-total";
+  total.textContent =
+    run.totals.length === 0
+      ? t("audit.noBalance", "No balance")
+      : tf("audit.total", "Total: {amount}", {
+          amount: run.totals.map(balanceLabel).join(" + ")
+        });
+  meta.append(range, total);
+  header.append(toggle, title, meta, badge(run.status));
 
   const accounts = document.createElement("div");
   accounts.className = "audit-account-list";
@@ -373,6 +407,9 @@ function createAuditRun(run: AuditRunView): HTMLElement {
 
 function renderRecentRuns(): void {
   element("runs-this-year").textContent = String(state.runsThisYear);
+  element<HTMLSelectElement>("recent-runs-limit").value = String(
+    state.auditHistoryLimit
+  );
   const container = element<HTMLDivElement>("recent-runs");
   container.replaceChildren();
   if (state.recentRuns.length === 0) {
@@ -385,7 +422,9 @@ function renderRecentRuns(): void {
     container.append(empty);
     return;
   }
-  container.append(...state.recentRuns.map(createAuditRun));
+  container.append(
+    ...state.recentRuns.map((run, index) => createAuditRun(run, index === 0))
+  );
 }
 
 function textInput(
@@ -466,6 +505,234 @@ function renderAccounts(): void {
     exportInput.dataset["field"] = "exportEnabled";
     exportCell.append(exportInput);
   }
+}
+
+function optionSelect<T extends string>(
+  values: readonly T[],
+  selected: T,
+  labels: Partial<Record<T, string>> = {}
+): HTMLSelectElement {
+  const select = document.createElement("select");
+  select.className = "select";
+  for (const value of values) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = labels[value] ?? value;
+    option.selected = selected === value;
+    select.append(option);
+  }
+  return select;
+}
+
+function renderCardFiles(): void {
+  const body = element<HTMLTableSectionElement>("card-files-body");
+  body.replaceChildren();
+  const profiles = state.cardImportProfiles.filter((profile) => profile.enabled);
+  if (selectedCardFiles.length === 0) {
+    const row = body.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 3;
+    cell.className = "empty-state";
+    cell.textContent = t(
+      "cards.noFiles",
+      "No workbooks selected. Choose one or more XLSX statements."
+    );
+    return;
+  }
+  selectedCardFiles.forEach((file, index) => {
+    if (!profiles.some((profile) => profile.id === file.profileId)) {
+      file.profileId = profiles[0]?.id ?? "";
+    }
+    const row = body.insertRow();
+    row.dataset["cardFileIndex"] = String(index);
+    const includeCell = row.insertCell();
+    const include = checkbox(
+      file.included,
+      tf("cards.includeFileAria", "Include {file}", { file: file.name })
+    );
+    include.addEventListener("change", () => {
+      file.included = include.checked;
+    });
+    includeCell.append(include);
+
+    const fileCell = row.insertCell();
+    const fileName = document.createElement("div");
+    fileName.className = "table-primary";
+    const name = document.createElement("strong");
+    name.textContent = file.name;
+    const path = document.createElement("span");
+    path.textContent = file.path;
+    fileName.append(name, path);
+    fileCell.append(fileName);
+
+    const profileCell = row.insertCell();
+    const select = document.createElement("select");
+    select.className = "select";
+    for (const profile of profiles) {
+      const option = document.createElement("option");
+      option.value = profile.id;
+      option.textContent = `${profile.name} · ${profile.cardName}`;
+      option.selected = profile.id === file.profileId;
+      select.append(option);
+    }
+    select.disabled = profiles.length === 0;
+    select.addEventListener("change", () => {
+      file.profileId = select.value;
+    });
+    profileCell.append(select);
+  });
+}
+
+function renderCardProfiles(): void {
+  const body = element<HTMLTableSectionElement>("card-profiles-body");
+  body.replaceChildren();
+  state.cardImportProfiles.forEach((profile, index) => {
+    const row = body.insertRow();
+    row.dataset["cardProfileIndex"] = String(index);
+    row.dataset["cardProfileId"] = profile.id;
+
+    const enabledCell = row.insertCell();
+    const enabled = checkbox(
+      profile.enabled,
+      tf("cards.enableProfileAria", "Enable {profile}", {
+        profile: profile.name
+      })
+    );
+    enabled.dataset["field"] = "enabled";
+    enabledCell.append(enabled);
+
+    const addText = (
+      value: string,
+      field: string,
+      options: { required?: boolean; maxLength?: number } = {}
+    ): void => {
+      const cell = row.insertCell();
+      const input = textInput(value);
+      input.dataset["field"] = field;
+      input.required = options.required ?? false;
+      if (options.maxLength) input.maxLength = options.maxLength;
+      cell.append(input);
+    };
+    addText(profile.name, "name", { required: true, maxLength: 120 });
+    addText(profile.bankName, "bankName", { required: true, maxLength: 120 });
+    addText(profile.cardName, "cardName", { required: true, maxLength: 120 });
+    addText(profile.sheet, "sheet", { maxLength: 120 });
+
+    const startCell = row.insertCell();
+    const startRow = textInput(String(profile.startRow), "input", "number");
+    startRow.min = "1";
+    startRow.max = "1048576";
+    startRow.dataset["field"] = "startRow";
+    startCell.append(startRow);
+
+    addText(profile.columns.date, "date", { required: true, maxLength: 3 });
+    addText(profile.columns.description, "description", {
+      required: true,
+      maxLength: 3
+    });
+    addText(profile.columns.valueDate ?? "", "valueDate", { maxLength: 3 });
+    addText(profile.columns.amount, "amount", { required: true, maxLength: 3 });
+
+    const dateFormatCell = row.insertCell();
+    const dateFormat = optionSelect(
+      ["auto", "dmy", "ymd", "mdy"] as const,
+      profile.dateFormat,
+      {
+        auto: t("common.auto", "Auto"),
+        dmy: "DD/MM/YYYY",
+        ymd: "YYYY-MM-DD",
+        mdy: "MM/DD/YYYY"
+      }
+    );
+    dateFormat.dataset["field"] = "dateFormat";
+    dateFormatCell.append(dateFormat);
+
+    const decimalCell = row.insertCell();
+    const decimal = optionSelect(
+      ["auto", ",", "."] as const,
+      profile.decimalSeparator,
+      { auto: t("common.auto", "Auto") }
+    );
+    decimal.dataset["field"] = "decimalSeparator";
+    decimalCell.append(decimal);
+
+    const invertCell = row.insertCell();
+    const invert = checkbox(
+      profile.invertAmountSign,
+      tf("cards.invertAria", "Invert amount signs for {profile}", {
+        profile: profile.name
+      })
+    );
+    invert.dataset["field"] = "invertAmountSign";
+    invertCell.append(invert);
+
+    addText(profile.currency, "currency", { required: true, maxLength: 3 });
+
+    const deleteCell = row.insertCell();
+    const remove = button("×", "icon-button");
+    remove.disabled = state.cardImportProfiles.length <= 1;
+    remove.setAttribute(
+      "aria-label",
+      tf("cards.deleteProfileAria", "Delete profile {number}", {
+        number: index + 1
+      })
+    );
+    remove.addEventListener("click", () => {
+      const profiles = cardProfileValues();
+      profiles.splice(index, 1);
+      state.cardImportProfiles = profiles;
+      renderCardProfiles();
+      renderCardFiles();
+    });
+    deleteCell.append(remove);
+  });
+}
+
+function cardProfileValues(): CardImportProfile[] {
+  return [
+    ...document.querySelectorAll<HTMLTableRowElement>(
+      "#card-profiles-body tr[data-card-profile-index]"
+    )
+  ].map((row) => {
+    const readInput = (field: string): HTMLInputElement => {
+      const value = row.querySelector(`[data-field="${field}"]`);
+      if (!(value instanceof HTMLInputElement)) {
+        throw new Error(`Missing card profile input: ${field}`);
+      }
+      return value;
+    };
+    const readSelect = (field: string): HTMLSelectElement => {
+      const value = row.querySelector(`[data-field="${field}"]`);
+      if (!(value instanceof HTMLSelectElement)) {
+        throw new Error(`Missing card profile select: ${field}`);
+      }
+      return value;
+    };
+    const valueDate = readInput("valueDate").value.trim().toUpperCase();
+    return {
+      id: row.dataset["cardProfileId"] ?? "",
+      enabled: readInput("enabled").checked,
+      name: readInput("name").value,
+      bankName: readInput("bankName").value,
+      cardName: readInput("cardName").value,
+      sheet: readInput("sheet").value,
+      startRow: Number(readInput("startRow").value),
+      columns: {
+        date: readInput("date").value.trim().toUpperCase(),
+        description: readInput("description").value.trim().toUpperCase(),
+        valueDate: valueDate || null,
+        amount: readInput("amount").value.trim().toUpperCase()
+      },
+      dateFormat: readSelect(
+        "dateFormat"
+      ).value as CardImportProfile["dateFormat"],
+      decimalSeparator: readSelect(
+        "decimalSeparator"
+      ).value as CardImportProfile["decimalSeparator"],
+      invertAmountSign: readInput("invertAmountSign").checked,
+      currency: readInput("currency").value.trim().toUpperCase()
+    };
+  });
 }
 
 function ruleOperator(value: CategorizationRule["operator"]): HTMLSelectElement {
@@ -790,6 +1057,8 @@ function renderAll(): void {
   renderConnections();
   renderRecentRuns();
   renderAccounts();
+  renderCardFiles();
+  renderCardProfiles();
   renderRules();
   renderCategories();
   renderExportSettings();
@@ -1124,6 +1393,31 @@ function setupActions(): void {
     progressExpanded = !progressExpanded;
     renderProgress();
   });
+  element<HTMLSelectElement>("recent-runs-limit").addEventListener(
+    "change",
+    (event) => {
+      void (async () => {
+        const select = event.currentTarget as HTMLSelectElement;
+        select.disabled = true;
+        try {
+          const limit = Number(select.value) as
+            | 5
+            | 10
+            | 20
+            | 50
+            | 100;
+          state.recentRuns = await window.kakebo.setAuditHistoryLimit(limit);
+          state.auditHistoryLimit = limit;
+          renderRecentRuns();
+        } catch (error) {
+          select.value = String(state.auditHistoryLimit);
+          showToast(errorMessage(error), true);
+        } finally {
+          select.disabled = false;
+        }
+      })();
+    }
+  );
 
   onClick(element<HTMLButtonElement>("start-sync"), async () => {
     const start = element<HTMLButtonElement>("start-sync");
@@ -1240,6 +1534,120 @@ function setupActions(): void {
       showToast(errorMessage(error), true);
     } finally {
       save.disabled = false;
+    }
+  });
+
+  onClick(element<HTMLButtonElement>("select-card-files"), async () => {
+    try {
+      const files = await window.kakebo.selectCardFiles();
+      if (files.length === 0) return;
+      const firstProfile = state.cardImportProfiles.find(
+        (profile) => profile.enabled
+      );
+      if (!firstProfile) {
+        throw new Error(
+          t(
+            "cards.noEnabledProfiles",
+            "Enable and save at least one card profile first."
+          )
+        );
+      }
+      selectedCardFiles = files.map((file) => ({
+        ...file,
+        included: true,
+        profileId: firstProfile.id
+      }));
+      renderCardFiles();
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    }
+  });
+
+  element<HTMLButtonElement>("add-card-profile").addEventListener("click", () => {
+    const current = cardProfileValues();
+    const template = current.at(-1) ?? state.cardImportProfiles.at(-1);
+    const id = `card-${crypto.randomUUID()}`;
+    current.push({
+      id,
+      enabled: true,
+      name: "",
+      bankName: template?.bankName ?? "",
+      cardName: "",
+      sheet: template?.sheet ?? "",
+      startRow: template?.startRow ?? 1,
+      columns: template?.columns ?? {
+        date: "A",
+        description: "B",
+        valueDate: "C",
+        amount: "D"
+      },
+      dateFormat: template?.dateFormat ?? "auto",
+      decimalSeparator: template?.decimalSeparator ?? "auto",
+      invertAmountSign: template?.invertAmountSign ?? false,
+      currency: template?.currency ?? "EUR"
+    });
+    state.cardImportProfiles = current;
+    renderCardProfiles();
+  });
+
+  onClick(element<HTMLButtonElement>("save-card-profiles"), async () => {
+    const save = element<HTMLButtonElement>("save-card-profiles");
+    save.disabled = true;
+    try {
+      state.cardImportProfiles = await window.kakebo.saveCardImportProfiles(
+        cardProfileValues()
+      );
+      renderCardProfiles();
+      renderCardFiles();
+      showToast(t("toast.cardProfilesSaved", "Card import profiles saved."));
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      save.disabled = false;
+    }
+  });
+
+  onClick(element<HTMLButtonElement>("import-card-files"), async () => {
+    const importButton = element<HTMLButtonElement>("import-card-files");
+    importButton.disabled = true;
+    importButton.textContent = t("cards.importing", "Importing…");
+    try {
+      state.cardImportProfiles = await window.kakebo.saveCardImportProfiles(
+        cardProfileValues()
+      );
+      const files = selectedCardFiles
+        .filter((file) => file.included)
+        .map((file) => ({ path: file.path, profileId: file.profileId }));
+      if (files.length === 0) {
+        throw new Error(
+          t("cards.selectAtLeastOne", "Select at least one workbook to import.")
+        );
+      }
+      const result = await window.kakebo.importCardFiles({ files });
+      const summary = element<HTMLElement>("card-import-result");
+      summary.textContent = tf(
+        "cards.importSummary",
+        "{rows} rows read · {inserted} new · {duplicates} already stored · {updated} updated",
+        {
+          rows: result.rows,
+          inserted: result.inserted,
+          duplicates: result.duplicates,
+          updated: result.updated + result.reconciled
+        }
+      );
+      summary.hidden = false;
+      showToast(
+        t(
+          "toast.cardsImported",
+          "Card movements were merged, categorized, and exported."
+        )
+      );
+      await refresh();
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      importButton.disabled = false;
+      importButton.textContent = t("cards.importSelected", "Import selected");
     }
   });
 

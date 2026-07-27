@@ -27,20 +27,26 @@ The production desktop application provides:
 
 - a manual date range from three calendar months ago through today by default;
 - full, movement-and-export, export-only, and custom synchronization steps;
+- automatic fallback to the longest transaction history available when a bank rejects the exact requested period;
 - an automatic local HTTPS callback server and interactive bank reauthorization;
-- a compact interface rendered at 75% scale;
+- a 90% interface scale and 1152 × 756 initial window;
+- an extraction splash plus an animated in-app loading window;
 - live progress with a current-only view and an expandable complete view;
 - account aliases and separate synchronize/export switches;
+- configurable, deduplicated XLSX imports for card statements;
 - ordered categorization rules with drag-and-drop;
 - configurable dependent category and subcategory picklists;
 - configurable export fields, order, column names, XLSX/CSV format, and CSV regional options;
 - English and Spanish interfaces loaded from external translation files, with immediate switching;
-- persistent execution audit records with an account balance snapshot for each run;
+- collapsible execution audit records with account snapshots and totals by currency;
+- a persistent selector for the latest 5, 10, 20, 50, or 100 audit runs;
 - a current-year execution counter, full audit window, and confirmed history cleanup;
 - shortcuts to the latest export and confirmed deletion of generated result files;
 - diagnostics, local file shortcuts, and a Windows Task Scheduler command.
 
 The desktop interface is production-only. The CLI continues to support sandbox and production.
+
+When an ASPSP returns `WRONG_TRANSACTIONS_PERIOD`, Kakebo Harvester retries that account with Enable Banking's `longest` strategy. Pagination continues with the same request parameters, and only movements inside the date interval selected in the application are added to SQLite and exports.
 
 ## Export profiles
 
@@ -58,6 +64,11 @@ The Export tab can change:
 - CSV field separator, decimal separator, date format, and UTF-8 BOM.
 
 The same profile is used by manual runs, the CLI, and Task Scheduler. It is stored in `config/export-settings.json`.
+
+For XLSX, the first successful export after this feature is installed establishes
+the movement baseline. Every later export rebuilds the workbook without old row
+fills and applies a soft green fill only to movements whose stable key was not in
+the preceding successful export. CSV output has no row-highlighting concept.
 
 Changing the format, enabled fields, order, headers, or CSV options never overwrites a structurally incompatible result. On the next export, Kakebo Harvester moves the previous active result to `data/production/exports/archive/` and then writes the new result atomically. Normal dated backups can additionally be enabled with `EXPORT_KEEP_BACKUP=true`.
 
@@ -78,6 +89,32 @@ The **Delete result files** action removes only Kakebo Harvester's current and a
 
 Example files are under `config/`.
 
+## Manual card statements
+
+The **Card imports** tab merges one or more `.xlsx` statements into the same
+normalized SQLite transaction store used by bank movements. Each selected file
+is explicitly included or excluded and assigned a saved profile.
+
+A profile represents one physical card and defines:
+
+- its stable, hidden profile id, bank, and display name;
+- worksheet name, or the first worksheet when blank;
+- the first data row;
+- Excel column letters for date, description, optional value date, and amount;
+- date layout, decimal separator, optional amount-sign inversion, and currency.
+
+The default Kutxabank profile starts at row 9 and maps `A=fecha`,
+`B=concepto`, `C=fecha valor`, and `D=importe de la operación`. Duplicate or
+overlapping statements are safe to reimport. The movement key hashes the physical
+card profile, normalized dates, amount, currency, description, and an occurrence
+number for otherwise identical rows. Reuse the same profile for the same physical
+card; changing its id creates a different card identity.
+
+Importing selected files is atomic. Valid rows are deduplicated, categorized with
+the current rules, and followed by a normal configured XLSX/CSV export. Manual
+card accounts appear in the aliases table and can be excluded from exports, but
+they are never sent to Enable Banking.
+
 ## Local execution audit
 
 Every manual or scheduled synchronization creates one persistent audit run. Each run stores:
@@ -88,7 +125,12 @@ Every manual or scheduled synchronization creates one persistent audit run. Each
 - a snapshot of the selected balance for each active account;
 - a safe error message when applicable.
 
-Recent runs are separated visually in the main window. The full history opens in a dedicated read-only window. **Clear history** asks for confirmation and removes only audit runs and their stored snapshots; exports and operational balance data remain unchanged.
+Runs are grouped in collapsible sections. Each header shows the sum of available
+account balances, separately for each currency. Both the main view and the
+dedicated history window use a scrollable latest-X list; the selected limit is
+stored in `config/ui-settings.json`. **Clear history** asks for confirmation and
+removes only audit runs and their stored snapshots; exports and operational
+balance data remain unchanged.
 
 The current-year counter uses the Windows clock and timezone.
 
@@ -111,6 +153,7 @@ Kakebo-Harvester/
 │   ├── accounts.json
 │   ├── categorization-rules.json
 │   ├── categories.json
+│   ├── card-import-profiles.json
 │   ├── export-settings.json
 │   └── ui-settings.json
 └── data/
@@ -121,7 +164,10 @@ Kakebo-Harvester/
             └── archive/
 ```
 
-`accounts.json`, `categories.json`, `export-settings.json`, and `ui-settings.json` are created when needed. SQLite is authoritative for account aliases and switches; `accounts.json` is a readable snapshot.
+`accounts.json`, `categories.json`, `card-import-profiles.json`,
+`export-settings.json`, and `ui-settings.json` are created when needed. SQLite is
+authoritative for account aliases and switches; `accounts.json` is a readable
+snapshot.
 
 The executable searches for `.env.production` in this order:
 
@@ -159,7 +205,17 @@ Generate the encryption key from a source checkout:
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
-The local HTTPS certificate is separate from any code-signing certificate. Moving to another computer does not require code changes: copy the complete private application directory while Kakebo Harvester is closed, then regenerate local HTTPS for the new Windows user.
+The local HTTPS certificate is separate from any code-signing certificate.
+Moving to another computer does not require code changes. Kakebo Harvester checks
+that the copied CA thumbprint is trusted by the current Windows user; when it is
+not, startup offers to regenerate local HTTPS before opening the callback server.
+
+For a fresh computer, copy the executable, `.env.production`, Enable Banking PEM,
+and the configuration you want to retain. The application creates missing
+database and output directories. For a migration with history, close the app and
+scheduled task first, then copy the complete `data/production` directory together
+with `.env.production`, its unchanged `SESSION_ENCRYPTION_KEY`, `private/`, and
+`config/`. Run Doctor and a short synchronization after HTTPS preparation.
 
 ## Sandbox and CLI
 
@@ -212,7 +268,6 @@ From a clean checkout:
 ```powershell
 npm ci
 npm run check
-npm run desktop:rebuild-native
 npm run desktop:dist
 ```
 
@@ -228,7 +283,31 @@ The portable file is created at:
 release/portable/Kakebo-Harvester-<version>-x64.exe
 ```
 
-`better-sqlite3` is a native dependency. `desktop:rebuild-native` rebuilds it for Electron before packaging. If CLI development or tests will continue in the same checkout after packaging, restore the Node.js binary and rerun validation:
+The release directory can also contain build intermediates:
+
+- `release/portable/Kakebo-Harvester-<version>-x64.exe` is the single-file
+  portable distribution and the only artifact uploaded to GitHub Releases;
+- `release/portable/win-unpacked/` contains the same application already
+  extracted. It starts faster but the whole directory must stay together and is
+  intended for local diagnostics;
+- `release/win-unpacked/` and `release/win-unpacked.tmp/` are intermediates from
+  directory packaging or interrupted builds and should not be distributed;
+- an NSIS setup executable appears only after `npm run desktop:installer`; it
+  installs shortcuts and an uninstaller but is no longer a self-contained
+  portable folder.
+
+The portable target is the recommended distribution for this project. It keeps
+the private runtime folder relocatable and requires no installation. Its
+trade-off is extraction on every launch; the packaging splash makes that phase
+visible, followed by the animated Electron loading window.
+
+`better-sqlite3` is a native dependency. Every packaging command forcibly
+rebuilds it for Electron and disables the packager's implicit native rebuild so
+that a Node.js binary cannot be copied into the application by mistake. The
+portable build then opens an in-memory database with the packaged module and
+fails if its Electron ABI is incompatible. If CLI development or tests will
+continue in the same checkout after packaging, restore the Node.js binary and
+rerun validation:
 
 ```powershell
 npm rebuild better-sqlite3
@@ -274,6 +353,10 @@ Technical implementation details are documented in [`docs/DESKTOP_APP.md`](docs/
 ## Known limitations
 
 - Bank coverage, available balance types, and transaction history vary by ASPSP.
+- Manual card import supports `.xlsx`, not legacy binary `.xls`.
+- A bank statement without transaction ids cannot perfectly distinguish two
+  physically different rows whose card, dates, amount, currency, and description
+  are all identical; their stable occurrence order is used as the final key part.
 - PSD2 does not guarantee mortgages, loans, investments, insurance, or every card.
 - Automatic categorization is deliberately simple.
 - `SESSION_ENCRYPTION_KEY` rotation is not automated.

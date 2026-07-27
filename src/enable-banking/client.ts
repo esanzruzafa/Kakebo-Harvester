@@ -5,7 +5,8 @@ import {
   EnableBankingAuthenticationError,
   MalformedProviderResponseError,
   RateLimitError,
-  ReauthorizationRequiredError
+  ReauthorizationRequiredError,
+  TransactionsPeriodError
 } from "../errors.js";
 import { createApplicationJwt } from "./jwt.js";
 import {
@@ -94,6 +95,9 @@ export class EnableBankingClient {
         ) {
           throw new ReauthorizationRequiredError();
         }
+        if (providerCode === "WRONG_TRANSACTIONS_PERIOD") {
+          throw new TransactionsPeriodError();
+        }
         if (response.status === 401 || response.status === 403) {
           throw new EnableBankingAuthenticationError();
         }
@@ -118,6 +122,7 @@ export class EnableBankingClient {
         if (
           error instanceof EnableBankingAuthenticationError ||
           error instanceof ReauthorizationRequiredError ||
+          error instanceof TransactionsPeriodError ||
           error instanceof MalformedProviderResponseError ||
           error instanceof RateLimitError ||
           error instanceof BankUnavailableError
@@ -215,13 +220,19 @@ export class EnableBankingClient {
 
   public async getTransactions(
     accountId: string,
-    query: { dateFrom: string; dateTo: string; continuationKey?: string }
+    query: {
+      dateFrom: string;
+      dateTo?: string;
+      continuationKey?: string;
+      strategy?: "longest";
+    }
   ) {
     const value = await this.request(`/accounts/${encodeURIComponent(accountId)}/transactions`, {
       query: {
         date_from: query.dateFrom,
         date_to: query.dateTo,
-        continuation_key: query.continuationKey
+        continuation_key: query.continuationKey,
+        strategy: query.strategy
       }
     });
     return this.parse(transactionsResponseSchema, value, "los movimientos");

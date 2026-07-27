@@ -1,4 +1,7 @@
-import type { TranslationDictionary } from "../settings/localization-store.js";
+import type {
+  AuditHistoryLimit,
+  TranslationDictionary
+} from "../settings/localization-store.js";
 import type { AuditRunView } from "../storage/repositories/desktop-run-repository.js";
 
 let language = "en";
@@ -44,7 +47,10 @@ function badge(status: string): HTMLSpanElement {
   return result;
 }
 
-function balance(run: AuditRunView["accounts"][number]): string {
+function balance(run: {
+  amount: string | null;
+  currency: string | null;
+}): string {
   if (run.amount === null) return t("audit.noBalance", "No balance");
   const amount = Number(run.amount);
   if (!Number.isFinite(amount)) {
@@ -62,11 +68,16 @@ function balance(run: AuditRunView["accounts"][number]): string {
   }
 }
 
-function renderRun(run: AuditRunView): HTMLElement {
-  const article = document.createElement("article");
+function renderRun(run: AuditRunView, expanded = false): HTMLElement {
+  const article = document.createElement("details");
   article.className = "audit-run";
-  const header = document.createElement("div");
+  article.open = expanded;
+  const header = document.createElement("summary");
   header.className = "audit-run-header";
+  const toggle = document.createElement("span");
+  toggle.className = "audit-run-toggle";
+  toggle.setAttribute("aria-hidden", "true");
+  toggle.textContent = "›";
   const title = document.createElement("div");
   title.className = "audit-run-title";
   const date = document.createElement("strong");
@@ -76,10 +87,22 @@ function renderRun(run: AuditRunView): HTMLElement {
     .map((step) => t(`step.${step}`, step))
     .join(" · ");
   title.append(date, steps);
+  const meta = document.createElement("div");
+  meta.className = "audit-run-meta";
   const range = document.createElement("span");
   range.className = "audit-run-range";
   range.textContent = `${run.dateFrom} → ${run.dateTo}`;
-  header.append(title, range, badge(run.status));
+  const total = document.createElement("strong");
+  total.className = "audit-run-total";
+  total.textContent =
+    run.totals.length === 0
+      ? t("audit.noBalance", "No balance")
+      : t("audit.total", "Total: {amount}").replace(
+          "{amount}",
+          run.totals.map(balance).join(" + ")
+        );
+  meta.append(range, total);
+  header.append(toggle, title, meta, badge(run.status));
 
   const accounts = document.createElement("div");
   accounts.className = "audit-account-list";
@@ -112,6 +135,21 @@ function renderRun(run: AuditRunView): HTMLElement {
   return article;
 }
 
+function renderRuns(runs: AuditRunView[]): void {
+  const container = element<HTMLDivElement>("audit-runs");
+  container.replaceChildren();
+  if (runs.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = t("audit.empty", "There are no synchronization runs.");
+    container.append(empty);
+    return;
+  }
+  container.append(
+    ...runs.map((run, index) => renderRun(run, index === 0))
+  );
+}
+
 async function initialize(): Promise<void> {
   const api = window.kakeboAudit;
   if (!api) throw new Error("The audit bridge is unavailable.");
@@ -129,20 +167,32 @@ async function initialize(): Promise<void> {
     "audit.historyDescription",
     "Complete list of persistent synchronization runs and account balance snapshots."
   );
+  element("audit-limit-label").textContent = t(
+    "audit.showLatest",
+    "Show latest"
+  );
+  const limit = element<HTMLSelectElement>("audit-limit");
+  limit.value = String(data.limit);
+  limit.addEventListener("change", () => {
+    void (async () => {
+      limit.disabled = true;
+      try {
+        renderRuns(
+          await api.setHistoryLimit(
+            Number(limit.value) as AuditHistoryLimit
+          )
+        );
+      } finally {
+        limit.disabled = false;
+      }
+    })();
+  });
   const close = element<HTMLButtonElement>("close-audit");
   close.textContent = t("common.close", "Close");
   close.addEventListener("click", () => {
     void api.close();
   });
-  const container = element<HTMLDivElement>("audit-runs");
-  if (data.runs.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "empty-state";
-    empty.textContent = t("audit.empty", "There are no synchronization runs.");
-    container.append(empty);
-  } else {
-    container.append(...data.runs.map(renderRun));
-  }
+  renderRuns(data.runs);
 }
 
 void initialize();

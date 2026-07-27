@@ -1,9 +1,15 @@
 import type { DoctorCheck } from "../doctor.js";
+import type {
+  CardImportRequest,
+  CardImportResult
+} from "../cards/card-import-service.js";
+import type { CardImportProfile } from "../settings/card-import-profiles-store.js";
 import type { CategoryDefinition } from "../settings/categories-store.js";
 import type { CategorizationRule } from "../settings/categorization-rules-store.js";
 import type { ExportSettings } from "../settings/export-settings-store.js";
 import type {
   AppLanguage,
+  AuditHistoryLimit,
   TranslationDictionary
 } from "../settings/localization-store.js";
 import type { EditableAccount } from "../storage/repositories/account-repository.js";
@@ -37,7 +43,9 @@ export interface DesktopBootstrap {
   rules: CategorizationRule[];
   categories: CategoryDefinition[];
   exportSettings: ExportSettings;
+  cardImportProfiles: CardImportProfile[];
   recentRuns: AuditRunView[];
+  auditHistoryLimit: AuditHistoryLimit;
   runsThisYear: number;
   language: AppLanguage;
   translations: TranslationDictionary;
@@ -50,6 +58,7 @@ export interface DesktopBootstrap {
     accountsConfig: string;
     categoriesConfig: string;
     exportSettings: string;
+    cardImportProfiles: string;
     uiSettings: string;
   };
   scheduledCommand: string;
@@ -70,7 +79,17 @@ export type OpenPathTarget =
   | "accounts-config"
   | "categories-config"
   | "export-settings"
+  | "card-import-profiles"
   | "ui-settings";
+
+export interface SelectedCardFile {
+  path: string;
+  name: string;
+}
+
+export interface CardImportUiResult extends CardImportResult {
+  exportPath: string;
+}
 
 export interface KakeboDesktopApi {
   bootstrap: () => Promise<DesktopBootstrap>;
@@ -81,7 +100,15 @@ export interface KakeboDesktopApi {
     categories: CategoryDefinition[]
   ) => Promise<CategoryDefinition[]>;
   saveExportSettings: (settings: ExportSettings) => Promise<ExportSettings>;
+  saveCardImportProfiles: (
+    profiles: CardImportProfile[]
+  ) => Promise<CardImportProfile[]>;
+  selectCardFiles: () => Promise<SelectedCardFile[]>;
+  importCardFiles: (request: CardImportRequest) => Promise<CardImportUiResult>;
   setLanguage: (language: AppLanguage) => Promise<DesktopBootstrap>;
+  setAuditHistoryLimit: (
+    limit: AuditHistoryLimit
+  ) => Promise<AuditRunView[]>;
   reapplyRules: () => Promise<{ updated: number; exportPath: string }>;
   reauthorize: (connectionId: string) => Promise<void>;
   runDoctor: () => Promise<DoctorCheck[]>;
@@ -100,9 +127,11 @@ export interface KakeboDesktopApi {
 export interface AuditWindowApi {
   listHistory: () => Promise<{
     runs: AuditRunView[];
+    limit: AuditHistoryLimit;
     language: AppLanguage;
     translations: TranslationDictionary;
   }>;
+  setHistoryLimit: (limit: AuditHistoryLimit) => Promise<AuditRunView[]>;
   close: () => Promise<void>;
 }
 

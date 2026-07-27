@@ -78,6 +78,14 @@ export class RateLimitError extends KakeboError {
   }
 }
 
+export class TransactionsPeriodError extends KakeboError {
+  public constructor(
+    message = "El banco no ofrece exactamente el periodo de movimientos solicitado."
+  ) {
+    super(message, "WRONG_TRANSACTIONS_PERIOD", 7);
+  }
+}
+
 export class MalformedProviderResponseError extends KakeboError {
   public constructor(message = "Enable Banking devolvió una respuesta con formato inesperado.") {
     super(message, "MALFORMED_PROVIDER_RESPONSE", 7);

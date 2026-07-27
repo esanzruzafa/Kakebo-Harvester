@@ -51,13 +51,15 @@ interface ExportRow {
 interface ExportState {
   fingerprint: string;
   format: "csv" | "xlsx";
+  movementKeys?: string[] | undefined;
 }
 
 type ExportValue = string | number | boolean | null;
 
 const exportStateSchema = z.object({
   fingerprint: z.string().min(1),
-  format: z.enum(["csv", "xlsx"])
+  format: z.enum(["csv", "xlsx"]),
+  movementKeys: z.array(z.string().min(1)).optional()
 });
 
 function timestampForFilename(now = new Date()): string {
@@ -217,11 +219,11 @@ async function archiveOutput(
 async function rotateIncompatibleOutputs(
   config: AppConfig,
   settings: ExportSettings
-): Promise<void> {
+): Promise<ExportState | undefined> {
   const statePath = `${config.exportSettingsPath}.state.json`;
   const previous = await readExportState(statePath);
   const fingerprint = exportSettingsFingerprint(settings);
-  if (previous?.fingerprint === fingerprint) return;
+  if (previous?.fingerprint === fingerprint) return previous;
   const priorFingerprint = previous?.fingerprint ?? "legacy";
   await archiveOutput(
     config,
@@ -233,6 +235,7 @@ async function rotateIncompatibleOutputs(
     join(config.exportDirectory, "kakebo_movements.xlsx"),
     priorFingerprint
   );
+  return previous;
 }
 
 async function backupCurrentOutput(
@@ -334,7 +337,8 @@ export class CsvExporter {
   private async writeXlsx(
     temporary: string,
     rows: ExportRow[],
-    settings: ExportSettings
+    settings: ExportSettings,
+    newMovementKeys: ReadonlySet<string>
   ): Promise<void> {
     const columns = settings.columns.filter((column) => column.enabled);
     const header: Cell[] = columns.map((column) => ({
@@ -347,19 +351,31 @@ export class CsvExporter {
     }));
     const data: SheetData = [
       header,
-      ...rows.map((row) =>
-        columns.map((column): Cell => {
+      ...rows.map((row) => {
+        const isNew = newMovementKeys.has(row.movement_key);
+        return columns.map((column): Cell => {
           const value = rowValue(row, column.field, settings, true);
+          const background = isNew
+            ? { backgroundColor: "#e6efe9" as const }
+            : {};
           if (typeof value === "number") {
-            return { value, type: Number, format: "#,##0.00" };
+            return { value, type: Number, format: "#,##0.00", ...background };
           }
-          if (typeof value === "boolean") return { value, type: Boolean };
+          if (typeof value === "boolean") {
+            return { value, type: Boolean, ...background };
+          }
           if (typeof value === "string") {
-            return { value, type: String, format: "@", wrap: true };
+            return {
+              value,
+              type: String,
+              format: "@",
+              wrap: true,
+              ...background
+            };
           }
-          return null;
-        })
-      )
+          return isNew ? { value: "", type: String, ...background } : null;
+        });
+      })
     ];
     await writeXlsxFile(data, {
       sheet: "Movements",
@@ -381,17 +397,31 @@ export class CsvExporter {
     );
     try {
       await mkdir(this.config.exportDirectory, { recursive: true });
-      await rotateIncompatibleOutputs(this.config, settings);
+      const previous = await rotateIncompatibleOutputs(this.config, settings);
+      const previousKeys =
+        previous?.fingerprint === fingerprint &&
+        previous.format === settings.format &&
+        previous.movementKeys
+          ? new Set(previous.movementKeys)
+          : undefined;
+      const newMovementKeys = new Set(
+        previousKeys
+          ? rows
+              .filter((row) => !previousKeys.has(row.movement_key))
+              .map((row) => row.movement_key)
+          : []
+      );
       await backupCurrentOutput(this.config, destination, fingerprint);
       if (settings.format === "csv") {
         await this.writeCsv(temporary, rows, settings);
       } else {
-        await this.writeXlsx(temporary, rows, settings);
+        await this.writeXlsx(temporary, rows, settings, newMovementKeys);
       }
       await rename(temporary, destination);
       await writeExportState(`${this.config.exportSettingsPath}.state.json`, {
         fingerprint,
-        format: settings.format
+        format: settings.format,
+        movementKeys: rows.map((row) => row.movement_key)
       });
       return { path: destination, rows: rows.length };
     } catch (error) {

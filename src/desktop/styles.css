@@ -29,6 +29,68 @@ body.audit-window {
   min-height: 100vh;
 }
 
+body.loading-window {
+  display: grid;
+  min-height: 100vh;
+  overflow: hidden;
+  place-items: center;
+}
+
+.loading-card {
+  display: grid;
+  width: 100%;
+  height: 100vh;
+  padding: 38px 44px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+}
+
+.loading-brand-mark {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
+  color: var(--surface);
+  background: var(--green);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 36px;
+  place-items: center;
+}
+
+.loading-name,
+.loading-message {
+  margin: 0;
+}
+
+.loading-name {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 24px;
+}
+
+.loading-message {
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.loading-spinner {
+  width: 30px;
+  height: 30px;
+  border: 3px solid var(--green-soft);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: loading-spin 850ms linear infinite;
+}
+
+@keyframes loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .audit-window-content {
   max-width: 1100px;
   margin: 0 auto;
@@ -712,6 +774,17 @@ tr.is-drop-target td {
   gap: 18px;
 }
 
+.audit-limit-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.compact-select {
+  width: auto;
+  min-width: 72px;
+}
+
 .year-counter {
   display: grid;
   color: var(--muted);
@@ -728,7 +801,14 @@ tr.is-drop-target td {
 
 .audit-run-list {
   display: grid;
+  max-height: 560px;
+  padding-right: 4px;
+  overflow-y: auto;
   gap: 14px;
+}
+
+body.audit-window .audit-run-list {
+  max-height: calc(100vh - 190px);
 }
 
 .audit-run {
@@ -739,10 +819,30 @@ tr.is-drop-target td {
 .audit-run-header {
   display: grid;
   padding: 12px 14px;
-  border-bottom: 1px solid var(--line);
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  cursor: pointer;
+  list-style: none;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 16px;
+}
+
+.audit-run[open] .audit-run-header {
+  border-bottom: 1px solid var(--line);
+}
+
+.audit-run-header::-webkit-details-marker {
+  display: none;
+}
+
+.audit-run-toggle {
+  color: var(--green);
+  font-size: 20px;
+  line-height: 1;
+  transition: transform 150ms ease;
+}
+
+.audit-run[open] .audit-run-toggle {
+  transform: rotate(90deg);
 }
 
 .audit-run-title {
@@ -758,6 +858,19 @@ tr.is-drop-target td {
 .audit-run-range {
   color: var(--muted);
   font-size: 10px;
+}
+
+.audit-run-meta {
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+}
+
+.audit-run-total {
+  color: var(--green-dark);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .audit-account-list {
@@ -795,6 +908,70 @@ tr.is-drop-target td {
   font-family: Georgia, "Times New Roman", serif;
   font-size: 16px;
   font-variant-numeric: tabular-nums;
+}
+
+.tooltip-help {
+  position: relative;
+  display: inline-grid;
+  width: 17px;
+  height: 17px;
+  margin-left: 5px;
+  border: 1px solid var(--green);
+  border-radius: 50%;
+  color: var(--green);
+  font-size: 11px;
+  line-height: 1;
+  vertical-align: middle;
+  cursor: help;
+  place-items: center;
+}
+
+.tooltip-help::after {
+  position: absolute;
+  z-index: 100;
+  top: calc(100% + 8px);
+  left: 50%;
+  display: none;
+  width: 280px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  content: attr(data-tooltip);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
+  transform: translateX(-50%);
+  white-space: normal;
+}
+
+.tooltip-help:hover::after,
+.tooltip-help:focus::after {
+  display: block;
+}
+
+.card-files-table {
+  min-width: 760px;
+}
+
+.card-files-table td:nth-child(2) {
+  width: 55%;
+}
+
+.card-profiles-table {
+  min-width: 1900px;
+}
+
+.card-profiles-table input {
+  min-width: 90px;
+}
+
+.card-profiles-table td:nth-child(2) input,
+.card-profiles-table td:nth-child(3) input,
+.card-profiles-table td:nth-child(4) input {
+  min-width: 170px;
 }
 
 .export-options {

@@ -16,10 +16,11 @@
     "build:assets": "node scripts/copy-desktop-assets.mjs",
     "desktop": "npm run build && electron .",
     "desktop:rebuild-native": "electron-rebuild -f -w better-sqlite3",
-    "desktop:pack": "npm run build && electron-builder --dir --win",
-    "desktop:dist": "npm run build && electron-builder --win portable --config.directories.output=release/portable",
-    "desktop:release": "npm run check && npm run desktop:rebuild-native && npm run desktop:dist",
-    "desktop:installer": "npm run build && electron-builder --win nsis",
+    "desktop:verify-package": "set ELECTRON_RUN_AS_NODE=1&& \"release\\portable\\win-unpacked\\Kakebo Harvester.exe\" scripts\\verify-packaged-sqlite.cjs",
+    "desktop:pack": "npm run build && npm run desktop:rebuild-native && electron-builder --dir --win --config.npmRebuild=false",
+    "desktop:dist": "npm run build && npm run desktop:rebuild-native && electron-builder --win portable --config.npmRebuild=false --config.directories.output=release/portable && npm run desktop:verify-package",
+    "desktop:release": "npm run check && npm run desktop:dist",
+    "desktop:installer": "npm run build && npm run desktop:rebuild-native && electron-builder --win nsis --config.npmRebuild=false",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
@@ -33,6 +34,7 @@
     "fastify": "^5.4.0",
     "jose": "^6.0.12",
     "pino": "^9.7.0",
+    "read-excel-file": "^9.3.4",
     "write-excel-file": "^4.1.1",
     "zod": "^4.0.14"
   },
@@ -42,6 +44,7 @@
     "electron": "^43.2.0",
     "electron-builder": "^26.15.3",
     "eslint": "^9.32.0",
+    "fflate": "^0.8.3",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.38.0",
@@ -85,7 +88,10 @@
       "allowToChangeInstallationDirectory": true,
       "perMachine": false
     },
-    "npmRebuild": true
+    "portable": {
+      "splashImage": "build/portable-splash.bmp"
+    },
+    "npmRebuild": false
   },
   "allowScripts": {
     "better-sqlite3@12.11.1": true,

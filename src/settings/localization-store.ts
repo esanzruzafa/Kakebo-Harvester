@@ -7,8 +7,17 @@ export type AppLanguage = "en" | "es";
 export type TranslationDictionary = Record<string, string>;
 
 const uiSettingsSchema = z.object({
-  language: z.enum(["en", "es"])
+  language: z.enum(["en", "es"]),
+  auditHistoryLimit: z.union([
+    z.literal(5),
+    z.literal(10),
+    z.literal(20),
+    z.literal(50),
+    z.literal(100)
+  ]).default(10)
 });
+
+export type AuditHistoryLimit = 5 | 10 | 20 | 50 | 100;
 
 function parseDictionary(value: unknown): TranslationDictionary {
   return z.record(z.string(), z.string()).parse(value);
@@ -16,6 +25,7 @@ function parseDictionary(value: unknown): TranslationDictionary {
 
 export class LocalizationStore {
   private language: AppLanguage;
+  private auditHistoryLimit: AuditHistoryLimit = 10;
   private translations: TranslationDictionary = {};
 
   public constructor(
@@ -49,6 +59,7 @@ export class LocalizationStore {
         JSON.parse(await readFile(this.settingsPath, "utf8")) as unknown
       );
       this.language = settings.language;
+      this.auditHistoryLimit = settings.auditHistoryLimit;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw new ConfigurationError("The UI settings file is not valid.", {
@@ -71,7 +82,14 @@ export class LocalizationStore {
     }
     await writeFile(
       temporary,
-      `${JSON.stringify({ language: this.language }, null, 2)}\n`,
+      `${JSON.stringify(
+        {
+          language: this.language,
+          auditHistoryLimit: this.auditHistoryLimit
+        },
+        null,
+        2
+      )}\n`,
       { encoding: "utf8", mode: 0o600 }
     );
     await rename(temporary, this.settingsPath);
@@ -85,6 +103,15 @@ export class LocalizationStore {
 
   public getLanguage(): AppLanguage {
     return this.language;
+  }
+
+  public async setAuditHistoryLimit(limit: AuditHistoryLimit): Promise<void> {
+    this.auditHistoryLimit = limit;
+    await this.writeSettings();
+  }
+
+  public getAuditHistoryLimit(): AuditHistoryLimit {
+    return this.auditHistoryLimit;
   }
 
   public getTranslations(): TranslationDictionary {

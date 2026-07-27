@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EnableBankingClient } from "../../src/enable-banking/client.js";
-import { ReauthorizationRequiredError } from "../../src/errors.js";
+import {
+  ReauthorizationRequiredError,
+  TransactionsPeriodError
+} from "../../src/errors.js";
 import { testConfig } from "../helpers.js";
 
 let root: string | undefined;
@@ -113,5 +116,31 @@ describe("Enable Banking client", () => {
     await expect(client.getSession("expired")).rejects.toBeInstanceOf(
       ReauthorizationRequiredError
     );
+  });
+
+  it("classifies an unavailable transaction period for longest-strategy retry", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ error: "WRONG_TRANSACTIONS_PERIOD" }), {
+          status: 422
+        })
+      );
+    const client = new EnableBankingClient(config, fetchMock);
+
+    await expect(
+      client.getTransactions("account-id", {
+        dateFrom: "2026-01-01",
+        dateTo: "2026-07-27"
+      })
+    ).rejects.toBeInstanceOf(TransactionsPeriodError);
   });
 });

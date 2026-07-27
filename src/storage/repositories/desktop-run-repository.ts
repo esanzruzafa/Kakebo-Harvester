@@ -12,6 +12,11 @@ export interface AuditAccountView {
   referenceDate: string | null;
 }
 
+export interface AuditBalanceTotal {
+  amount: string;
+  currency: string | null;
+}
+
 export interface AuditRunView {
   id: string;
   startedAt: string;
@@ -22,6 +27,7 @@ export interface AuditRunView {
   steps: SyncStep[];
   error: string | null;
   accounts: AuditAccountView[];
+  totals: AuditBalanceTotal[];
 }
 
 interface AuditRunRow {
@@ -64,6 +70,23 @@ function parseSteps(value: string): SyncStep[] {
   } catch {
     return [];
   }
+}
+
+function balanceTotals(accounts: AuditAccountView[]): AuditBalanceTotal[] {
+  const totals = new Map<string, number>();
+  for (const account of accounts) {
+    if (account.amount === null) continue;
+    const amount = Number(account.amount);
+    if (!Number.isFinite(amount)) continue;
+    const currency = account.currency ?? "";
+    totals.set(currency, (totals.get(currency) ?? 0) + amount);
+  }
+  return [...totals]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([currency, amount]) => ({
+      amount: amount.toFixed(2),
+      currency: currency || null
+    }));
 }
 
 export class DesktopRunRepository {
@@ -174,17 +197,21 @@ export class DesktopRunRepository {
       });
       accountsByRun.set(account.run_id, list);
     }
-    return runs.map((run) => ({
-      id: run.id,
-      startedAt: run.started_at,
-      finishedAt: run.finished_at,
-      status: run.status,
-      dateFrom: run.date_from,
-      dateTo: run.date_to,
-      steps: parseSteps(run.steps_json),
-      error: run.error_message_safe,
-      accounts: accountsByRun.get(run.id) ?? []
-    }));
+    return runs.map((run) => {
+      const runAccounts = accountsByRun.get(run.id) ?? [];
+      return {
+        id: run.id,
+        startedAt: run.started_at,
+        finishedAt: run.finished_at,
+        status: run.status,
+        dateFrom: run.date_from,
+        dateTo: run.date_to,
+        steps: parseSteps(run.steps_json),
+        error: run.error_message_safe,
+        accounts: runAccounts,
+        totals: balanceTotals(runAccounts)
+      };
+    });
   }
 
   public countBetween(dateFrom: Date, dateTo: Date): number {

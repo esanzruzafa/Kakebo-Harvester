@@ -52,7 +52,8 @@ export default function SpanishApplicationPage() {
             <h3>Organizar</h3>
             <p>
               Añade alias y mantén reglas ordenadas con listas dependientes de
-              categorías y subcategorías.
+              categorías y subcategorías. Unifica extractos XLSX solapados de
+              tarjetas que Open Banking no exponga.
             </p>
           </article>
           <article>
@@ -60,15 +61,16 @@ export default function SpanishApplicationPage() {
             <h3>Exportar</h3>
             <p>
               Elige XLSX o CSV, campos, orden, nombres de columnas y separadores
-              regionales sin modificar código.
+              regionales sin modificar código. Las filas nuevas del XLSX
+              reciben un resaltado suave temporal.
             </p>
           </article>
           <article>
             <strong>04</strong>
             <h3>Auditar</h3>
             <p>
-              Consulta las ejecuciones persistidas y la instantánea de saldo de
-              cada cuenta capturada en ellas.
+              Expande ejecuciones agrupadas, compara sus saldos por cuenta y
+              consulta el saldo total de cada ejecución.
             </p>
           </article>
         </div>
@@ -139,11 +141,21 @@ export default function SpanishApplicationPage() {
             </p>
           </details>
           <details>
+            <summary>¿Puedo importar manualmente movimientos de tarjetas?</summary>
+            <p>
+              Sí. Selecciona uno o varios extractos XLSX solapados y asigna un
+              perfil reutilizable a cada tarjeta física. Kakebo Harvester
+              deduplica, categoriza e incluye las filas nuevas en la
+              exportación configurada.
+            </p>
+          </details>
+          <details>
             <summary>¿Cómo lo traslado a otro ordenador?</summary>
             <p>
-              Cierra la aplicación, copia la carpeta privada completa y regenera
-              HTTPS local para el nuevo usuario de Windows. No hace falta
-              modificar código.
+              Cierra la aplicación, copia la carpeta privada completa e iníciala
+              con el nuevo usuario de Windows. Kakebo Harvester detectará que la
+              CA local copiada no es de confianza y ofrecerá preparar HTTPS. No
+              hace falta modificar código.
             </p>
           </details>
           <details>

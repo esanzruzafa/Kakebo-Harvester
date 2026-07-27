@@ -35,6 +35,7 @@ const envSchema = z.object({
   ACCOUNTS_CONFIG_PATH: z.string().min(1).optional(),
   CATEGORIES_CONFIG_PATH: z.string().min(1).optional(),
   EXPORT_SETTINGS_PATH: z.string().min(1).optional(),
+  CARD_IMPORT_PROFILES_PATH: z.string().min(1).optional(),
   UI_SETTINGS_PATH: z.string().min(1).optional(),
   NODE_USE_SYSTEM_CA: z.enum(["0", "1"]).optional(),
   SESSION_ENCRYPTION_KEY: z
@@ -79,6 +80,7 @@ export interface AppConfig {
   accountsConfigPath: string;
   categoriesConfigPath: string;
   exportSettingsPath: string;
+  cardImportProfilesPath: string;
   uiSettingsPath: string;
   useSystemCa: boolean;
   sessionEncryptionKey: Buffer;
@@ -255,6 +257,10 @@ export function loadConfig(
     ),
     exportSettingsPath: absolutePath(
       env.EXPORT_SETTINGS_PATH ?? "config/export-settings.json",
+      baseDirectory
+    ),
+    cardImportProfilesPath: absolutePath(
+      env.CARD_IMPORT_PROFILES_PATH ?? "config/card-import-profiles.json",
       baseDirectory
     ),
     uiSettingsPath: absolutePath(

@@ -17,7 +17,19 @@
           <p class="eyebrow" id="audit-kicker">Local audit</p>
           <h1 id="audit-title">Execution history</h1>
         </div>
-        <button id="close-audit" class="button secondary" type="button">Close</button>
+        <div class="button-row">
+          <label class="field audit-limit-field">
+            <span id="audit-limit-label">Show latest</span>
+            <select id="audit-limit" class="select compact-select">
+              <option value="5">5</option>
+              <option value="10">10</option>
+              <option value="20">20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <button id="close-audit" class="button secondary" type="button">Close</button>
+        </div>
       </header>
       <p class="panel-description audit-window-description" id="audit-description">
         Complete list of persistent synchronization runs and account balance snapshots.

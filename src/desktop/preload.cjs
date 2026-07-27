@@ -9,7 +9,13 @@ contextBridge.exposeInMainWorld("kakebo", {
     ipcRenderer.invoke("categories:save", categories),
   saveExportSettings: (settings) =>
     ipcRenderer.invoke("export-settings:save", settings),
+  saveCardImportProfiles: (profiles) =>
+    ipcRenderer.invoke("cards:profiles:save", profiles),
+  selectCardFiles: () => ipcRenderer.invoke("cards:files:select"),
+  importCardFiles: (request) => ipcRenderer.invoke("cards:import", request),
   setLanguage: (language) => ipcRenderer.invoke("language:set", language),
+  setAuditHistoryLimit: (limit) =>
+    ipcRenderer.invoke("audit:limit:set", limit),
   reapplyRules: () => ipcRenderer.invoke("rules:reapply"),
   reauthorize: (connectionId) =>
     ipcRenderer.invoke("connection:reauthorize", connectionId),

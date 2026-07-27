@@ -28,6 +28,7 @@ config/accounts.json
 config/categories.json
 config/export-settings.json
 config/export-settings.json.state.json
+config/card-import-profiles.json
 config/ui-settings.json
 config/*.backup
 Ideas.md
