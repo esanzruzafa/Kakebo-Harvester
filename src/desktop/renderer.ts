@@ -27,7 +27,9 @@ let state: DesktopBootstrap;
 let currentTranslations: Record<string, string> = {};
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let progressEntries: ProgressEntry[] = [];
-let progressExpanded = false;
+let operationInProgress = false;
+let closePromptOpen = false;
+const savedTabSnapshots = new Map<string, string>();
 let selectedCardFiles: Array<
   SelectedCardFile & { included: boolean; profileId: string }
 > = [];
@@ -78,7 +80,7 @@ function applyTranslations(): void {
     if (!key) continue;
     const value = t(key, item.dataset["tooltip"] || key);
     item.dataset["tooltip"] = value;
-    item.title = value;
+    item.removeAttribute("title");
     item.setAttribute("aria-label", value);
   }
   for (const item of document.querySelectorAll<HTMLElement>(
@@ -92,6 +94,35 @@ function applyTranslations(): void {
 
 function errorMessage(error: unknown): string {
   let message = error instanceof Error ? error.message : String(error);
+  message = message.replace(
+    /^Error invoking remote method '[^']+':\s*(?:(?:[A-Za-z]+Error):\s*)*/u,
+    ""
+  );
+  const retryAtMatch =
+    /Próximo intento permitido: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)/u.exec(
+      message
+    );
+  const providerCodeMatch =
+    /\b(ASPSP_RATE_LIMIT_EXCEEDED|RATE_LIMIT_EXCEEDED)\b/u.exec(message);
+  if (providerCodeMatch) {
+    const base =
+      providerCodeMatch[1] === "ASPSP_RATE_LIMIT_EXCEEDED"
+        ? t(
+            "error.aspspRateLimit",
+            "The bank has reached its request limit."
+          )
+        : t(
+            "error.enableBankingRateLimit",
+            "Enable Banking has temporarily limited requests."
+          );
+    return retryAtMatch
+      ? `${base} ${tf(
+          "error.retryAt",
+          "Try again after {date}.",
+          { date: localDate(retryAtMatch[1] ?? "") }
+        )} (${providerCodeMatch[1]})`
+      : `${base} (${providerCodeMatch[1]})`;
+  }
   const knownMessages: Array<[string, string, string]> = [
     [
       "Enable Banking rechazó la autenticación de la aplicación.",
@@ -137,6 +168,11 @@ function errorMessage(error: unknown): string {
       "Una o más conexiones bancarias requieren autorización.",
       "error.connectionsRequireAuthorization",
       "One or more bank connections require authorization."
+    ],
+    [
+      "No se puede realizar una consulta online porque faltan cabeceras PSU obligatorias reales:",
+      "error.psuHeadersUnavailable",
+      "The online request cannot be made because truthful required PSU headers are unavailable:"
     ]
   ];
   for (const [source, key, english] of knownMessages) {
@@ -211,6 +247,63 @@ function onClick(
   });
 }
 
+type ModalChoice = "confirm" | "discard" | "cancel";
+
+interface AppModalOptions {
+  title: string;
+  detail: string;
+  confirmLabel: string;
+  discardLabel?: string;
+  danger?: boolean;
+}
+
+function showAppModal(options: AppModalOptions): Promise<ModalChoice> {
+  const modal = element<HTMLElement>("app-modal");
+  element("app-modal-kicker").textContent = t(
+    "dialog.kicker",
+    "Confirmation"
+  );
+  element("app-modal-title").textContent = options.title;
+  element("app-modal-detail").textContent = options.detail;
+  const accept = element<HTMLButtonElement>("app-modal-confirm");
+  const discard = element<HTMLButtonElement>("app-modal-discard");
+  const cancel = element<HTMLButtonElement>("app-modal-cancel");
+  accept.textContent = options.confirmLabel;
+  accept.className = options.danger ? "button danger" : "button primary";
+  discard.hidden = !options.discardLabel;
+  discard.textContent = options.discardLabel ?? "";
+  cancel.textContent = t("common.cancel", "Cancel");
+  modal.hidden = false;
+  accept.focus();
+  return new Promise((resolve) => {
+    const finish = (value: ModalChoice): void => {
+      modal.hidden = true;
+      accept.onclick = null;
+      discard.onclick = null;
+      cancel.onclick = null;
+      resolve(value);
+    };
+    accept.onclick = () => finish("confirm");
+    discard.onclick = () => finish("discard");
+    cancel.onclick = () => finish("cancel");
+  });
+}
+
+async function confirmInApp(
+  title: string,
+  detail: string,
+  confirmLabel: string
+): Promise<boolean> {
+  return (
+    (await showAppModal({
+      title,
+      detail,
+      confirmLabel,
+      danger: true
+    })) === "confirm"
+  );
+}
+
 function renderSummary(): void {
   const activeConnections = state.connections.filter(
     (connection) => connection.status !== "REVOKED"
@@ -280,11 +373,20 @@ function renderConnections(): void {
 
     const validity = document.createElement("span");
     validity.className = "connection-validity";
-    validity.textContent = connection.validUntil
-      ? tf("connections.validUntil", "Valid until {date}", {
-          date: localDate(connection.validUntil)
-        })
-      : t("connections.validityUnknown", "Validity not provided");
+    const rateLimited =
+      connection.retryAfterAt &&
+      new Date(connection.retryAfterAt).getTime() > Date.now();
+    validity.textContent = rateLimited
+      ? tf(
+          "connections.rateLimitedUntil",
+          "Bank limit active until {date}",
+          { date: localDate(connection.retryAfterAt) }
+        ) + (connection.errorCode ? ` (${connection.errorCode})` : "")
+      : connection.validUntil
+        ? tf("connections.validUntil", "Valid until {date}", {
+            date: localDate(connection.validUntil)
+          })
+        : t("connections.validityUnknown", "Validity not provided");
 
     const action = document.createElement("div");
     action.className = "button-row";
@@ -401,7 +503,20 @@ function createAuditRun(run: AuditRunView, expanded = false): HTMLElement {
     row.append(name, balance);
     accounts.append(row);
   }
-  article.append(header, accounts);
+  const error = document.createElement("div");
+  error.className = "audit-run-error";
+  error.hidden = !run.error;
+  if (run.errorCode) {
+    const code = document.createElement("strong");
+    code.textContent = run.errorCode;
+    error.append(code);
+  }
+  if (run.error) {
+    const message = document.createElement("span");
+    message.textContent = errorMessage(run.error);
+    error.append(message);
+  }
+  article.append(header, error, accounts);
   return article;
 }
 
@@ -976,6 +1091,7 @@ function exportFieldLabel(field: ExportField): string {
 
 function moveExportColumn(from: number, to: number): void {
   const settings = exportValues();
+  if (!settings.columns[from]?.enabled || !settings.columns[to]?.enabled) return;
   const [moved] = settings.columns.splice(from, 1);
   if (!moved) return;
   settings.columns.splice(to, 0, moved);
@@ -1001,17 +1117,17 @@ function renderExportSettings(): void {
     const row = body.insertRow();
     row.dataset["exportColumnIndex"] = String(index);
     const handleCell = row.insertCell();
-    const handle = dragHandle(
-      tf("export.dragAria", "Move export column {number}", {
-        number: index + 1
-      })
-    );
-    activateDrag(handle, row, index);
-    handleCell.append(handle);
-    enableRowDrop(row, index, moveExportColumn);
+    if (column.enabled) {
+      const handle = dragHandle(tf("export.dragAria", "Move export column {number}", { number: index + 1 }));
+      activateDrag(handle, row, index);
+      handleCell.append(handle);
+      enableRowDrop(row, index, moveExportColumn);
+    }
     const numberCell = row.insertCell();
     numberCell.className = "row-number";
-    numberCell.textContent = String(index + 1);
+    numberCell.textContent = column.enabled
+      ? String(settings.columns.slice(0, index + 1).filter((item) => item.enabled).length)
+      : "";
     const enabledCell = row.insertCell();
     const enabled = checkbox(
       column.enabled,
@@ -1020,6 +1136,10 @@ function renderExportSettings(): void {
       })
     );
     enabled.dataset["field"] = "enabled";
+    enabled.addEventListener("change", () => {
+      state.exportSettings = exportValues();
+      renderExportSettings();
+    });
     enabledCell.append(enabled);
     const fieldCell = row.insertCell();
     fieldCell.textContent = exportFieldLabel(column.field);
@@ -1070,6 +1190,7 @@ async function refresh(): Promise<void> {
   state = await window.kakebo.bootstrap();
   applyTranslations();
   renderAll();
+  rememberAllSavedTabs();
 }
 
 function selectedSteps(): SyncStep[] {
@@ -1132,16 +1253,6 @@ function progressKey(event: SyncProgressEvent): string {
   return event.step ? `step-${event.step}` : event.type;
 }
 
-function visibleProgressEntries(): ProgressEntry[] {
-  if (progressExpanded) return progressEntries;
-  const started = progressEntries.find((entry) => entry.key === "run-started");
-  const terminal = [...progressEntries]
-    .reverse()
-    .find((entry) => ["run-completed", "run-failed"].includes(entry.key));
-  const latest = progressEntries.at(-1);
-  return [...new Set([started, terminal ?? latest].filter(Boolean))] as ProgressEntry[];
-}
-
 function renderProgress(): void {
   const list = element<HTMLOListElement>("progress-list");
   list.replaceChildren();
@@ -1151,7 +1262,7 @@ function renderProgress(): void {
     empty.textContent = t("progress.empty", "Set the dates and select start.");
     list.append(empty);
   }
-  for (const entry of visibleProgressEntries()) {
+  for (const entry of progressEntries) {
     const item = document.createElement("li");
     const marker = document.createElement("span");
     marker.className = "progress-marker";
@@ -1174,11 +1285,6 @@ function renderProgress(): void {
     item.append(marker, text, time);
     list.append(item);
   }
-  const toggle = element<HTMLButtonElement>("toggle-progress");
-  toggle.textContent = progressExpanded
-    ? t("progress.showCurrent", "Show current only")
-    : t("progress.showAll", "Show all");
-  toggle.disabled = progressEntries.length < 2;
 }
 
 function handleProgress(event: SyncProgressEvent): void {
@@ -1289,7 +1395,7 @@ function categoryValues(): CategoryDefinition[] {
   });
 }
 
-function exportValues(): ExportSettings {
+function exportValues(normalizeOrder = false): ExportSettings {
   const columns = [
     ...document.querySelectorAll<HTMLTableRowElement>(
       "#export-columns-body tr[data-export-column-index]"
@@ -1305,6 +1411,12 @@ function exportValues(): ExportSettings {
     }
     return { field, enabled: enabled.checked, header: header.value };
   });
+  const orderedColumns = normalizeOrder
+    ? [
+        ...columns.filter((column) => column.enabled),
+        ...columns.filter((column) => !column.enabled)
+      ]
+    : columns;
   return {
     format: element<HTMLSelectElement>("export-format").value as "csv" | "xlsx",
     csv: {
@@ -1316,7 +1428,7 @@ function exportValues(): ExportSettings {
         .value as ExportSettings["csv"]["dateFormat"],
       includeBom: element<HTMLInputElement>("csv-bom").checked
     },
-    columns
+    columns: orderedColumns
   };
 }
 
@@ -1324,20 +1436,142 @@ function pageTitle(tab: string): string {
   return t(`nav.${tab}`, "Kakebo Harvester");
 }
 
+const editableTabs = ["accounts", "cards", "categories", "export"] as const;
+type EditableTab = (typeof editableTabs)[number];
+
+function isEditableTab(tab: string): tab is EditableTab {
+  return editableTabs.includes(tab as EditableTab);
+}
+
+function tabSnapshot(tab: EditableTab): string {
+  if (tab === "accounts") return JSON.stringify(accountValues());
+  if (tab === "cards") return JSON.stringify(cardProfileValues());
+  if (tab === "categories") {
+    return JSON.stringify({
+      rules: ruleValues(),
+      categories: categoryValues()
+    });
+  }
+  return JSON.stringify(exportValues());
+}
+
+function rememberSavedTab(tab: EditableTab): void {
+  savedTabSnapshots.set(tab, tabSnapshot(tab));
+}
+
+function rememberAllSavedTabs(): void {
+  for (const tab of editableTabs) rememberSavedTab(tab);
+}
+
+function tabHasUnsavedChanges(tab: string): tab is EditableTab {
+  return (
+    isEditableTab(tab) &&
+    savedTabSnapshots.get(tab) !== tabSnapshot(tab)
+  );
+}
+
+function unsavedTabs(): EditableTab[] {
+  return editableTabs.filter((tab) => tabHasUnsavedChanges(tab));
+}
+
+async function saveTab(tab: EditableTab, notify = true): Promise<void> {
+  if (tab === "accounts") {
+    state.accounts = await window.kakebo.saveAccounts(accountValues());
+    renderAccounts();
+    renderSummary();
+  } else if (tab === "cards") {
+    state.cardImportProfiles = await window.kakebo.saveCardImportProfiles(
+      cardProfileValues()
+    );
+    renderCardProfiles();
+    renderCardFiles();
+  } else if (tab === "categories") {
+    const categories = categoryValues();
+    const rules = ruleValues();
+    state.categories = await window.kakebo.saveCategories(categories);
+    state.rules = await window.kakebo.saveRules(rules);
+    renderCategories();
+    renderRules();
+  } else {
+    state.exportSettings = await window.kakebo.saveExportSettings(
+      exportValues(true)
+    );
+    renderExportSettings();
+  }
+  rememberSavedTab(tab);
+  if (notify) {
+    showToast(t("toast.changesSaved", "Changes saved."));
+  }
+}
+
 function setupNavigation(): void {
   for (const item of document.querySelectorAll<HTMLButtonElement>("[data-tab]")) {
     item.addEventListener("click", () => {
       const tab = item.dataset["tab"];
       if (!tab) return;
-      for (const candidate of document.querySelectorAll("[data-tab]")) {
-        candidate.classList.toggle("is-active", candidate === item);
+      const active = document.querySelector<HTMLButtonElement>(
+        "[data-tab].is-active"
+      )?.dataset["tab"];
+      if (
+        active &&
+        active !== tab &&
+        (tabHasUnsavedChanges(active) || operationInProgress)
+      ) {
+        void confirmNavigation(active, tab);
+        return;
       }
-      for (const view of document.querySelectorAll<HTMLElement>(".view")) {
-        view.classList.toggle("is-visible", view.id === `view-${tab}`);
-      }
-      element("page-title").textContent = pageTitle(tab);
+      activateTab(tab);
     });
   }
+}
+
+function activateTab(tab: string): void {
+  for (const item of document.querySelectorAll<HTMLButtonElement>("[data-tab]")) {
+    item.classList.toggle("is-active", item.dataset["tab"] === tab);
+  }
+  for (const view of document.querySelectorAll<HTMLElement>(".view")) {
+    view.classList.toggle("is-visible", view.id === `view-${tab}`);
+  }
+  element("page-title").textContent = pageTitle(tab);
+}
+
+async function confirmNavigation(from: string, to: string): Promise<void> {
+  if (operationInProgress) {
+    const proceed = await confirmInApp(
+      t("dialog.operationNavigation.title", "Operation in progress"),
+      t(
+        "dialog.operationNavigation.detail",
+        "The operation will continue in the background if you leave this page."
+      ),
+      t("dialog.operationNavigation.confirm", "Leave page")
+    );
+    if (!proceed) return;
+  }
+  if (!tabHasUnsavedChanges(from)) {
+    activateTab(to);
+    return;
+  }
+  const choice = await showAppModal({
+    title: t("dialog.unsavedNavigation.title", "Unsaved changes"),
+    detail: t(
+      "dialog.unsavedNavigation.detail",
+      "Save the changes on this page before leaving?"
+    ),
+    confirmLabel: t("dialog.unsaved.saveAndContinue", "Save and continue"),
+    discardLabel: t("dialog.unsaved.discardAndContinue", "Discard and continue")
+  });
+  if (choice === "cancel") return;
+  if (choice === "confirm") {
+    try {
+      await saveTab(from);
+    } catch (error) {
+      showToast(errorMessage(error), true);
+      return;
+    }
+  } else {
+    await refresh();
+  }
+  activateTab(to);
 }
 
 function refreshCurrentPageTitle(): void {
@@ -1389,10 +1623,6 @@ function setupActions(): void {
       element<HTMLSelectElement>("sync-preset").value = "custom";
     });
   }
-  element<HTMLButtonElement>("toggle-progress").addEventListener("click", () => {
-    progressExpanded = !progressExpanded;
-    renderProgress();
-  });
   element<HTMLSelectElement>("recent-runs-limit").addEventListener(
     "change",
     (event) => {
@@ -1421,14 +1651,67 @@ function setupActions(): void {
 
   onClick(element<HTMLButtonElement>("start-sync"), async () => {
     const start = element<HTMLButtonElement>("start-sync");
+    const steps = selectedSteps();
+    const accessesBank = steps.some((step) => step !== "export");
+    const limited = accessesBank
+      ? state.connections.filter(
+          (connection) =>
+            connection.retryAfterAt &&
+            new Date(connection.retryAfterAt).getTime() > Date.now()
+        )
+      : [];
+    let allowRateLimitOverride = false;
+    if (limited.length > 0) {
+      const retryAt = limited
+        .map((connection) => connection.retryAfterAt)
+        .filter((value): value is string => Boolean(value))
+        .sort()
+        .at(-1);
+      if (limited.some((connection) => connection.onlineRetryUsed)) {
+        await showAppModal({
+          title: t(
+            "dialog.onlineRetryUsed.title",
+            "Online attempt already used"
+          ),
+          detail: tf(
+            "dialog.onlineRetryUsed.detail",
+            "The bank still applies its limit. Try again after {date}.",
+            { date: localDate(retryAt ?? "") }
+          ),
+          confirmLabel: t("common.accept", "OK")
+        });
+        return;
+      }
+      const choice = await showAppModal({
+        title: t(
+          "dialog.onlineRetry.title",
+          "Bank request limit active"
+        ),
+        detail: tf(
+          "dialog.onlineRetry.detail",
+          "Background access is blocked until {date}. You can make one explicit attempt now as an online request using the real application User-Agent and language.",
+          { date: localDate(retryAt ?? "") }
+        ),
+        confirmLabel: t(
+          "dialog.onlineRetry.confirm",
+          "Try once as online"
+        )
+      });
+      if (choice !== "confirm") return;
+      allowRateLimitOverride = true;
+    }
+    operationInProgress = true;
     start.disabled = true;
     start.textContent = t("sync.running", "Synchronizing…");
     resetProgress();
     try {
       const result = await window.kakebo.startSync({
-        steps: selectedSteps(),
+        steps,
         dateFrom: element<HTMLInputElement>("date-from").value,
-        dateTo: element<HTMLInputElement>("date-to").value
+        dateTo: element<HTMLInputElement>("date-to").value,
+        ...(allowRateLimitOverride
+          ? { allowRateLimitOverride: true }
+          : {})
       });
       const status = element("run-status");
       status.className = "status-badge success";
@@ -1470,6 +1753,7 @@ function setupActions(): void {
       showToast(errorMessage(error), true);
       await refresh().catch(() => undefined);
     } finally {
+      operationInProgress = false;
       start.disabled = false;
       start.textContent = t("sync.start", "Start synchronization");
     }
@@ -1485,6 +1769,7 @@ function setupActions(): void {
 
   onClick(element<HTMLButtonElement>("clear-exports"), async () => {
     try {
+      if (!(await confirmInApp(t("dialog.clearExports.message", "Delete every generated synchronization result file?"), t("dialog.clearExports.detail", "This deletes current exports and archived Kakebo Harvester exports. Configuration, database, and raw data are preserved."), t("dialog.clearExports.confirm", "Delete result files")))) return;
       const deleted = await window.kakebo.clearExportFiles();
       showToast(
         deleted > 0
@@ -1508,6 +1793,7 @@ function setupActions(): void {
 
   onClick(element<HTMLButtonElement>("clear-audit"), async () => {
     try {
+      if (!(await confirmInApp(t("dialog.clearAudit.message", "Delete the complete local execution history?"), t("dialog.clearAudit.detail", "This removes the audit entries and stored balance snapshots. Exported result files are not deleted."), t("dialog.clearAudit.confirm", "Delete history")))) return;
       const deleted = await window.kakebo.clearAuditHistory();
       if (deleted > 0) {
         showToast(
@@ -1529,6 +1815,7 @@ function setupActions(): void {
       state.accounts = await window.kakebo.saveAccounts(accountValues());
       renderAccounts();
       renderSummary();
+      rememberSavedTab("accounts");
       showToast(t("toast.accountsSaved", "Aliases and preferences saved."));
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -1599,6 +1886,7 @@ function setupActions(): void {
       );
       renderCardProfiles();
       renderCardFiles();
+      rememberSavedTab("cards");
       showToast(t("toast.cardProfilesSaved", "Card import profiles saved."));
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -1609,6 +1897,7 @@ function setupActions(): void {
 
   onClick(element<HTMLButtonElement>("import-card-files"), async () => {
     const importButton = element<HTMLButtonElement>("import-card-files");
+    operationInProgress = true;
     importButton.disabled = true;
     importButton.textContent = t("cards.importing", "Importing…");
     try {
@@ -1646,6 +1935,7 @@ function setupActions(): void {
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
+      operationInProgress = false;
       importButton.disabled = false;
       importButton.textContent = t("cards.importSelected", "Import selected");
     }
@@ -1669,8 +1959,7 @@ function setupActions(): void {
     const save = element<HTMLButtonElement>("save-rules");
     save.disabled = true;
     try {
-      state.rules = await window.kakebo.saveRules(ruleValues());
-      renderRules();
+      await saveTab("categories", false);
       showToast(t("toast.rulesSaved", "Rules saved."));
     } catch (error) {
       showToast(errorMessage(error), true);
@@ -1689,11 +1978,7 @@ function setupActions(): void {
     const save = element<HTMLButtonElement>("save-categories");
     save.disabled = true;
     try {
-      const pendingRules = ruleValues();
-      state.categories = await window.kakebo.saveCategories(categoryValues());
-      state.rules = pendingRules;
-      renderCategories();
-      renderRules();
+      await saveTab("categories", false);
       showToast(
         t("toast.categoriesSaved", "Category dependencies saved.")
       );
@@ -1714,9 +1999,10 @@ function setupActions(): void {
     save.disabled = true;
     try {
       state.exportSettings = await window.kakebo.saveExportSettings(
-        exportValues()
+        exportValues(true)
       );
       renderExportSettings();
+      rememberSavedTab("export");
       showToast(
         t(
           "toast.exportSettingsSaved",
@@ -1848,11 +2134,59 @@ function setupActions(): void {
   });
 }
 
+async function handleCloseRequest(): Promise<void> {
+  if (operationInProgress) {
+    const proceed = await confirmInApp(
+      t("dialog.operationClose.title", "Operation in progress"),
+      t(
+        "dialog.operationClose.detail",
+        "The window will close. Kakebo Harvester will wait for active local work to finish safely; an authorization waiting in the browser may be cancelled."
+      ),
+      t("dialog.operationClose.confirm", "Close when finished")
+    );
+    if (!proceed) return;
+  }
+
+  const pending = unsavedTabs();
+  if (pending.length > 0) {
+    const choice = await showAppModal({
+      title: t("dialog.unsavedClose.title", "Unsaved changes"),
+      detail: tf(
+        "dialog.unsavedClose.detail",
+        "There are unsaved changes in {count} section(s). Save them before closing?",
+        { count: pending.length }
+      ),
+      confirmLabel: t("dialog.unsaved.saveAndClose", "Save and close"),
+      discardLabel: t(
+        "dialog.unsaved.discardAndClose",
+        "Discard and close"
+      )
+    });
+    if (choice === "cancel") return;
+    if (choice === "confirm") {
+      try {
+        for (const tab of pending) await saveTab(tab, false);
+      } catch (error) {
+        showToast(errorMessage(error), true);
+        return;
+      }
+    }
+  }
+  await window.kakebo.confirmClose();
+}
+
 async function initialize(): Promise<void> {
   setupNavigation();
   setupActions();
   window.kakebo.onSyncProgress(handleProgress);
   window.kakebo.onAuthorizationResult(handleAuthorization);
+  window.kakebo.onCloseRequested(() => {
+    if (closePromptOpen) return;
+    closePromptOpen = true;
+    void handleCloseRequest().finally(() => {
+      closePromptOpen = false;
+    });
+  });
   await refresh();
   element<HTMLInputElement>("date-from").value = state.defaultDateFrom;
   element<HTMLInputElement>("date-to").value = state.defaultDateTo;

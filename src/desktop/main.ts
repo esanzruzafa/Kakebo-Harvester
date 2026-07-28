@@ -74,12 +74,15 @@ import type {
   OpenPathTarget
 } from "./contracts.js";
 
+const UI_ZOOM_FACTOR = 0.945;
+
 const syncRequestSchema = z.object({
   steps: z
     .array(z.enum(["accounts", "balances", "transactions", "export"]))
     .min(1),
   dateFrom: z.iso.date(),
-  dateTo: z.iso.date()
+  dateTo: z.iso.date(),
+  allowRateLimitOverride: z.boolean().optional()
 });
 
 const editableAccountSchema = z.object({
@@ -227,6 +230,7 @@ let callbackServer: Awaited<ReturnType<typeof startCallbackServer>> | undefined;
 let mainWindow: BrowserWindow | undefined;
 let auditWindow: BrowserWindow | undefined;
 let loadingWindow: BrowserWindow | undefined;
+let closeConfirmed = false;
 let rootDirectory = "";
 let environmentFile = "";
 let coordinator: AuthorizationCoordinator | undefined;
@@ -484,7 +488,8 @@ function connections(application: KakeboApplication): ConnectionView[] {
   const rows = application.database
     .prepare(
       `SELECT id, bank_name, alias, status, valid_until, last_sync_at,
-              reauthorization_required
+              reauthorization_required, retry_after_at, error_code,
+              error_message_safe, online_retry_used
        FROM bank_connections
        WHERE environment = ?
          AND provider = 'enable-banking'
@@ -498,6 +503,10 @@ function connections(application: KakeboApplication): ConnectionView[] {
     valid_until: string | null;
     last_sync_at: string | null;
     reauthorization_required: number;
+    retry_after_at: string | null;
+    error_code: string | null;
+    error_message_safe: string | null;
+    online_retry_used: number;
   }>;
   return rows.map((row) => ({
     id: row.id,
@@ -506,7 +515,11 @@ function connections(application: KakeboApplication): ConnectionView[] {
     status: row.status,
     validUntil: row.valid_until,
     lastSyncAt: row.last_sync_at,
-    reauthorizationRequired: row.reauthorization_required === 1
+    reauthorizationRequired: row.reauthorization_required === 1,
+    retryAfterAt: row.retry_after_at,
+    errorCode: row.error_code,
+    errorMessage: row.error_message_safe,
+    onlineRetryUsed: row.online_retry_used === 1
   }));
 }
 
@@ -625,14 +638,37 @@ function registerIpc(application: KakeboApplication): void {
     assertTrustedSender(event);
     return await bootstrap(application);
   });
+  ipcMain.handle("app:confirm-close", (event) => {
+    assertTrustedSender(event);
+    closeConfirmed = true;
+    mainWindow?.close();
+  });
   ipcMain.handle("sync:start", async (event, input: unknown) => {
     assertTrustedSender(event);
-    const request: SyncRequest = syncRequestSchema.parse(input);
+    const parsedRequest = syncRequestSchema.parse(input);
+    const request: SyncRequest = {
+      steps: parsedRequest.steps,
+      dateFrom: parsedRequest.dateFrom,
+      dateTo: parsedRequest.dateTo,
+      ...(parsedRequest.allowRateLimitOverride === undefined
+        ? {}
+        : {
+            allowRateLimitOverride:
+              parsedRequest.allowRateLimitOverride
+          })
+    };
     if (activeSync) {
       throw new Error("A synchronization is already running.");
     }
     const run = trackOperation(
       runner.run(request, {
+        psuHeaders: {
+          userAgent:
+            mainWindow?.webContents.getUserAgent() ??
+            `Kakebo-Harvester/${app.getVersion()} Electron`,
+          acceptLanguage: localization?.getLanguage() ?? app.getLocale()
+        },
+        allowRateLimitOverride: request.allowRateLimitOverride === true,
         onProgress: (progress: SyncProgressEvent) =>
           sendToRenderer("sync:progress", progress),
         onReauthorization: async (connectionIds) => {
@@ -764,7 +800,7 @@ function registerIpc(application: KakeboApplication): void {
         const exported = await new CsvExporter(
           application.config,
           application.database
-        ).export();
+        ).export({ highlightSource: "cards" });
         await accountsStore.save(accountRepository.listEditable());
         return { ...imported, exportPath: exported.path };
       })
@@ -846,29 +882,6 @@ function registerIpc(application: KakeboApplication): void {
         )
       );
     }
-    const options = {
-      type: "warning" as const,
-      title: "Kakebo Harvester",
-      message: tr(
-        "dialog.clearAudit.message",
-        "Delete the complete local execution history?"
-      ),
-      detail: tr(
-        "dialog.clearAudit.detail",
-        "This removes the audit entries and stored balance snapshots. Exported result files are not deleted."
-      ),
-      buttons: [
-        tr("common.cancel", "Cancel"),
-        tr("dialog.clearAudit.confirm", "Delete history")
-      ],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true
-    };
-    const confirmation = mainWindow
-      ? await dialog.showMessageBox(mainWindow, options)
-      : await dialog.showMessageBox(options);
-    if (confirmation.response !== 1) return 0;
     return await trackOperation(
       withSynchronizationLock(application, () => audit.clear())
     );
@@ -885,29 +898,6 @@ function registerIpc(application: KakeboApplication): void {
     }
     const count = await countGeneratedExportFiles(application.config);
     if (count === 0) return 0;
-    const options = {
-      type: "warning" as const,
-      title: "Kakebo Harvester",
-      message: tr(
-        "dialog.clearExports.message",
-        "Delete every generated synchronization result file?"
-      ),
-      detail: tr(
-        "dialog.clearExports.detail",
-        "This deletes current exports and archived Kakebo Harvester exports. Configuration, database, and raw data are preserved."
-      ),
-      buttons: [
-        tr("common.cancel", "Cancel"),
-        tr("dialog.clearExports.confirm", "Delete result files")
-      ],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true
-    };
-    const confirmation = mainWindow
-      ? await dialog.showMessageBox(mainWindow, options)
-      : await dialog.showMessageBox(options);
-    if (confirmation.response !== 1) return 0;
     return await trackOperation(
       withSynchronizationLock(application, async () =>
         clearGeneratedExportFiles(application.config)
@@ -1030,10 +1020,10 @@ async function createAuditWindow(): Promise<void> {
     "audit.html"
   );
   auditWindow = new BrowserWindow({
-    width: 1080,
-    height: 780,
-    minWidth: 864,
-    minHeight: 600,
+    width: 1134,
+    height: 819,
+    minWidth: 907,
+    minHeight: 630,
     ...(mainWindow ? { parent: mainWindow } : {}),
     show: false,
     backgroundColor: "#f4f0e7",
@@ -1044,7 +1034,7 @@ async function createAuditWindow(): Promise<void> {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
-      zoomFactor: 0.9
+      zoomFactor: UI_ZOOM_FACTOR
     }
   });
   auditWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -1057,7 +1047,7 @@ async function createAuditWindow(): Promise<void> {
   if (!auditWindow.isDestroyed() && !auditWindow.isVisible()) {
     auditWindow.show();
   }
-  auditWindow.webContents.setZoomFactor(0.9);
+  auditWindow.webContents.setZoomFactor(UI_ZOOM_FACTOR);
   auditWindow.on("closed", () => {
     auditWindow = undefined;
   });
@@ -1109,10 +1099,10 @@ async function createWindow(): Promise<void> {
   const rendererPath = join(app.getAppPath(), "dist", "src", "desktop", "index.html");
   Menu.setApplicationMenu(null);
   mainWindow = new BrowserWindow({
-    width: 1152,
-    height: 756,
-    minWidth: 912,
-    minHeight: 624,
+    width: 1271,
+    height: 794,
+    minWidth: 958,
+    minHeight: 655,
     show: false,
     backgroundColor: "#f4f0e7",
     title: "Kakebo Harvester",
@@ -1122,7 +1112,7 @@ async function createWindow(): Promise<void> {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
-      zoomFactor: 0.9
+      zoomFactor: UI_ZOOM_FACTOR
     }
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -1137,9 +1127,14 @@ async function createWindow(): Promise<void> {
   }
   loadingWindow?.destroy();
   loadingWindow = undefined;
-  mainWindow.webContents.setZoomFactor(0.9);
+  mainWindow.webContents.setZoomFactor(UI_ZOOM_FACTOR);
   mainWindow.on("closed", () => {
     mainWindow = undefined;
+  });
+  mainWindow.on("close", (event) => {
+    if (closeConfirmed || quitting) return;
+    event.preventDefault();
+    mainWindow?.webContents.send("app:close-requested");
   });
 }
 

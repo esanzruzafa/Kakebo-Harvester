@@ -8,6 +8,7 @@ const assets = [
   ["src/desktop/index.html", "dist/src/desktop/index.html"],
   ["src/desktop/audit.html", "dist/src/desktop/audit.html"],
   ["src/desktop/loading.html", "dist/src/desktop/loading.html"],
+  ["build/icon.svg", "dist/src/desktop/icon.svg"],
   ["src/desktop/styles.css", "dist/src/desktop/styles.css"],
   ["src/desktop/preload.cjs", "dist/src/desktop/preload.cjs"],
   ["src/desktop/audit-preload.cjs", "dist/src/desktop/audit-preload.cjs"],
@@ -24,6 +25,14 @@ const assets = [
   [
     "src/storage/migrations/003_audit_and_exports.sql",
     "dist/src/storage/migrations/003_audit_and_exports.sql"
+  ],
+  [
+    "src/storage/migrations/004_provider_errors.sql",
+    "dist/src/storage/migrations/004_provider_errors.sql"
+  ],
+  [
+    "src/storage/migrations/005_psu_context.sql",
+    "dist/src/storage/migrations/005_psu_context.sql"
   ]
 ];
 

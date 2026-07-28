@@ -5,7 +5,11 @@ import type { SqliteDatabase } from "../storage/database.js";
 import { RawStore } from "../storage/raw-store.js";
 import { AccountRepository } from "../storage/repositories/account-repository.js";
 import { createAuthorizationState, createId, encryptSecret } from "../utils/crypto.js";
-import { AuthorizationDeniedError, KakeboError } from "../errors.js";
+import {
+  AuthorizationDeniedError,
+  KakeboError,
+  providerErrorCode
+} from "../errors.js";
 import { safeMessage } from "../utils/text.js";
 import { StateStore } from "./state-store.js";
 
@@ -92,13 +96,20 @@ export class AuthorizationService {
     this.database
       .prepare(
         `UPDATE bank_connections SET
-           status = ?, error_code = NULL, error_message_safe = NULL
+           status = ?, error_code = NULL, error_message_safe = NULL,
+           retry_after_at = NULL, online_retry_used = 0,
+           required_psu_headers_json = ?
          WHERE id = ?`
       )
       .run(
         purpose === "reauthorize"
           ? "PENDING_REAUTHORIZATION"
           : "PENDING_AUTHORIZATION",
+        JSON.stringify(
+          (bank.required_psu_headers ?? []).map((header) =>
+            header.toLowerCase()
+          )
+        ),
         connection.id
       );
     return {
@@ -231,7 +242,9 @@ export class AuthorizationService {
           .prepare(
             `UPDATE bank_connections SET
                status = 'AUTHORIZED', last_authorized_at = ?, valid_until = ?,
-               reauthorization_required = 0, error_code = NULL, error_message_safe = NULL
+               reauthorization_required = 0, error_code = NULL,
+               error_message_safe = NULL, retry_after_at = NULL,
+               online_retry_used = 0
              WHERE id = ?`
           )
           .run(now, validUntil, pending.bankConnectionId);
@@ -259,7 +272,8 @@ export class AuthorizationService {
             ? "REAUTHORIZATION_REQUIRED"
             : "AUTHORIZATION_FAILED",
           pending.purpose === "reauthorize" ? 1 : 0,
-          error instanceof KakeboError ? error.code : "CALLBACK_ERROR",
+          providerErrorCode(error) ??
+            (error instanceof KakeboError ? error.code : "CALLBACK_ERROR"),
           message,
           pending.bankConnectionId
         );

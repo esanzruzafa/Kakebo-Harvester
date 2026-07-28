@@ -3,6 +3,7 @@ import type { AppConfig, PsuType } from "../config.js";
 import {
   BankUnavailableError,
   EnableBankingAuthenticationError,
+  EnableBankingProviderError,
   MalformedProviderResponseError,
   RateLimitError,
   ReauthorizationRequiredError,
@@ -24,24 +25,119 @@ interface RequestOptions {
   method?: "GET" | "POST" | "DELETE";
   query?: Record<string, string | undefined>;
   body?: unknown;
+  psuHeaders?: PsuHeaders;
 }
 
-function providerErrorCode(body: string): string | undefined {
-  try {
-    const parsed = JSON.parse(body) as unknown;
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "error" in parsed &&
-      typeof parsed.error === "string" &&
-      /^[A-Z0-9_]{1,80}$/.test(parsed.error)
-    ) {
-      return parsed.error;
-    }
-  } catch {
+export interface PsuHeaders {
+  ipAddress?: string;
+  userAgent?: string;
+  acceptLanguage?: string;
+}
+
+function safeHeaderValue(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (
+    trimmed.length === 0 ||
+    trimmed.length > 512 ||
+    /[\r\n]/u.test(trimmed)
+  ) {
     return undefined;
   }
-  return undefined;
+  return trimmed;
+}
+
+function requestPsuHeaders(values: PsuHeaders | undefined): Record<string, string> {
+  if (!values) return {};
+  const ipAddress = safeHeaderValue(values.ipAddress);
+  const userAgent = safeHeaderValue(values.userAgent);
+  const acceptLanguage = safeHeaderValue(values.acceptLanguage);
+  return {
+    ...(ipAddress ? { "Psu-Ip-Address": ipAddress } : {}),
+    ...(userAgent ? { "Psu-User-Agent": userAgent } : {}),
+    ...(acceptLanguage
+      ? { "Psu-Accept-Language": acceptLanguage }
+      : {})
+  };
+}
+
+interface ProviderErrorPayload {
+  providerCode?: string;
+  message?: string;
+}
+
+function safeProviderText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.replace(/\s+/gu, " ").trim().slice(0, 240);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function providerError(body: string): ProviderErrorPayload {
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (typeof parsed === "object" && parsed !== null) {
+      const error =
+        "error" in parsed &&
+        typeof parsed.error === "string" &&
+        /^[A-Z0-9_]{1,80}$/u.test(parsed.error)
+          ? parsed.error
+          : undefined;
+      const message =
+        "message" in parsed ? safeProviderText(parsed.message) : undefined;
+      return {
+        ...(error ? { providerCode: error } : {}),
+        ...(message ? { message } : {})
+      };
+    }
+  } catch {
+    return {};
+  }
+  return {};
+}
+
+function retryAtFrom(response: Response, providerCode: string | undefined): string {
+  const now = Date.now();
+  const retryAfter = response.headers.get("retry-after")?.trim();
+  let retryAtMs: number | undefined;
+  if (retryAfter && /^\d+$/u.test(retryAfter)) {
+    retryAtMs = now + Number(retryAfter) * 1_000;
+  } else if (retryAfter) {
+    const parsed = Date.parse(retryAfter);
+    if (Number.isFinite(parsed) && parsed > now) retryAtMs = parsed;
+  }
+  const recommendedMs =
+    providerCode === "ASPSP_RATE_LIMIT_EXCEEDED"
+      ? now + 6 * 60 * 60 * 1_000
+      : now + 15 * 60 * 1_000;
+  return new Date(Math.max(retryAtMs ?? 0, recommendedMs)).toISOString();
+}
+
+const sessionErrorCodes = new Set([
+  "CLOSED_SESSION",
+  "EXPIRED_SESSION",
+  "REVOKED_SESSION",
+  "SESSION_DOES_NOT_EXIST",
+  "WRONG_SESSION_STATUS"
+]);
+
+const authenticationErrorCodes = new Set([
+  "AUTHORIZATION_NOT_PROVIDED",
+  "UNAUTHORIZED_ACCESS",
+  "UNAUTHORIZED_IP"
+]);
+
+const unavailableErrorCodes = new Set(["ASPSP_ERROR", "ASPSP_TIMEOUT"]);
+
+function providerFailureMessage(
+  status: number,
+  payload: ProviderErrorPayload
+): string {
+  const identity = `HTTP ${status}${
+    payload.providerCode ? `, ${payload.providerCode}` : ""
+  }`;
+  return `Enable Banking rechazó la solicitud (${identity})${
+    payload.message ? `: ${payload.message}` : "."
+  }`;
 }
 
 export interface StartAuthorizationInput {
@@ -64,7 +160,7 @@ export class EnableBankingClient {
       if (value !== undefined) url.searchParams.set(key, value);
     }
 
-    const retryStatuses = new Set([408, 429, 502, 503, 504]);
+    const retryStatuses = new Set([408, 502, 503, 504]);
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const jwt = await createApplicationJwt({
         applicationId: this.config.applicationId,
@@ -78,6 +174,7 @@ export class EnableBankingClient {
           headers: {
             accept: "application/json",
             authorization: `Bearer ${jwt}`,
+            ...requestPsuHeaders(options.psuHeaders),
             ...(options.body === undefined ? {} : { "content-type": "application/json" })
           },
           ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
@@ -88,39 +185,95 @@ export class EnableBankingClient {
           return (await response.json()) as unknown;
         }
         const body = (await response.text()).slice(0, 500);
-        const providerCode = providerErrorCode(body);
-        if (
-          providerCode === "EXPIRED_SESSION" ||
-          providerCode === "REVOKED_SESSION"
-        ) {
-          throw new ReauthorizationRequiredError();
+        const failure = providerError(body);
+        const providerCode = failure.providerCode;
+        const metadata = {
+          ...(providerCode ? { providerCode } : {}),
+          httpStatus: response.status,
+          ...(failure.message ? { providerMessage: failure.message } : {})
+        };
+        if (providerCode && sessionErrorCodes.has(providerCode)) {
+          throw new ReauthorizationRequiredError(
+            "La sesión bancaria ha caducado, ha sido cerrada o ya no está disponible.",
+            [],
+            metadata
+          );
         }
         if (providerCode === "WRONG_TRANSACTIONS_PERIOD") {
-          throw new TransactionsPeriodError();
+          throw new TransactionsPeriodError(undefined, metadata);
         }
-        if (response.status === 401 || response.status === 403) {
-          throw new EnableBankingAuthenticationError();
+        if (response.status === 429) {
+          const retryAt = retryAtFrom(response, providerCode);
+          const message =
+            providerCode === "ASPSP_RATE_LIMIT_EXCEEDED"
+              ? `El banco ha alcanzado su límite de consultas. Próximo intento permitido: ${retryAt}. (${providerCode})`
+              : `Enable Banking ha limitado temporalmente las solicitudes. Próximo intento permitido: ${retryAt}. (${providerCode ?? "RATE_LIMIT_EXCEEDED"})`;
+          throw new RateLimitError(
+            message,
+            retryAt,
+            [],
+            providerCode ?? "RATE_LIMIT_EXCEEDED"
+          );
+        }
+        if (
+          response.status === 401 ||
+          response.status === 403 ||
+          (providerCode && authenticationErrorCodes.has(providerCode))
+        ) {
+          throw new EnableBankingAuthenticationError(
+            providerFailureMessage(response.status, failure),
+            metadata
+          );
+        }
+        if (providerCode && unavailableErrorCodes.has(providerCode)) {
+          throw new BankUnavailableError(
+            providerFailureMessage(response.status, failure),
+            undefined,
+            metadata
+          );
         }
         if ([400, 404, 422].includes(response.status)) {
           if (/expired|revoked|session/i.test(body)) {
-            throw new ReauthorizationRequiredError();
+            throw new ReauthorizationRequiredError(undefined, [], metadata);
+          }
+          if (providerCode) {
+            throw new EnableBankingProviderError(
+              providerFailureMessage(response.status, failure),
+              providerCode,
+              response.status,
+              failure.message
+            );
           }
           throw new MalformedProviderResponseError(
-            `Enable Banking rechazó la solicitud (HTTP ${response.status}${
-              providerCode ? `, ${providerCode}` : ""
-            }).`
+            providerFailureMessage(response.status, failure)
           );
         }
         if (!retryStatuses.has(response.status)) {
-          throw new BankUnavailableError(`Enable Banking respondió con HTTP ${response.status}.`);
+          if (providerCode) {
+            throw new EnableBankingProviderError(
+              providerFailureMessage(response.status, failure),
+              providerCode,
+              response.status,
+              failure.message
+            );
+          }
+          throw new BankUnavailableError(
+            `Enable Banking respondió con HTTP ${response.status}.`,
+            undefined,
+            metadata
+          );
         }
         if (attempt === 3) {
-          if (response.status === 429) throw new RateLimitError();
-          throw new BankUnavailableError();
+          throw new BankUnavailableError(
+            providerFailureMessage(response.status, failure),
+            undefined,
+            metadata
+          );
         }
       } catch (error) {
         if (
           error instanceof EnableBankingAuthenticationError ||
+          error instanceof EnableBankingProviderError ||
           error instanceof ReauthorizationRequiredError ||
           error instanceof TransactionsPeriodError ||
           error instanceof MalformedProviderResponseError ||
@@ -205,16 +358,20 @@ export class EnableBankingClient {
     await this.request(`/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
   }
 
-  public async getAccount(accountId: string) {
+  public async getAccount(accountId: string, psuHeaders?: PsuHeaders) {
     const value = await this.request(
-      `/accounts/${encodeURIComponent(accountId)}/details`
+      `/accounts/${encodeURIComponent(accountId)}/details`,
+      { ...(psuHeaders ? { psuHeaders } : {}) }
     );
     const { accountSchema } = await import("./schemas.js");
     return this.parse(accountSchema, value, "la cuenta");
   }
 
-  public async getBalances(accountId: string) {
-    const value = await this.request(`/accounts/${encodeURIComponent(accountId)}/balances`);
+  public async getBalances(accountId: string, psuHeaders?: PsuHeaders) {
+    const value = await this.request(
+      `/accounts/${encodeURIComponent(accountId)}/balances`,
+      { ...(psuHeaders ? { psuHeaders } : {}) }
+    );
     return this.parse(balancesResponseSchema, value, "los saldos");
   }
 
@@ -225,7 +382,8 @@ export class EnableBankingClient {
       dateTo?: string;
       continuationKey?: string;
       strategy?: "longest";
-    }
+    },
+    psuHeaders?: PsuHeaders
   ) {
     const value = await this.request(`/accounts/${encodeURIComponent(accountId)}/transactions`, {
       query: {
@@ -233,7 +391,8 @@ export class EnableBankingClient {
         date_to: query.dateTo,
         continuation_key: query.continuationKey,
         strategy: query.strategy
-      }
+      },
+      ...(psuHeaders ? { psuHeaders } : {})
     });
     return this.parse(transactionsResponseSchema, value, "los movimientos");
   }

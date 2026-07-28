@@ -176,9 +176,6 @@
                   <h2 data-i18n="progress.title">Progress</h2>
                 </div>
                 <div class="button-row">
-                  <button id="toggle-progress" class="text-button" type="button" data-i18n="progress.showAll">
-                    Show all
-                  </button>
                   <span class="status-badge neutral" id="run-status" data-i18n="progress.ready">
                     Ready
                   </span>
@@ -654,6 +651,18 @@
     </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    <div class="app-modal" id="app-modal" hidden>
+      <div class="app-modal-card" role="alertdialog" aria-modal="true" aria-labelledby="app-modal-title" aria-describedby="app-modal-detail">
+        <p class="section-kicker" id="app-modal-kicker">Confirmation</p>
+        <h2 id="app-modal-title"></h2>
+        <p id="app-modal-detail"></p>
+        <div class="button-row">
+          <button id="app-modal-cancel" class="button secondary" type="button">Cancel</button>
+          <button id="app-modal-discard" class="button secondary" type="button" hidden>Discard</button>
+          <button id="app-modal-confirm" class="button primary" type="button">Confirm</button>
+        </div>
+      </div>
+    </div>
     <script type="module" src="./renderer.js"></script>
   </body>
 </html>

@@ -2,7 +2,11 @@ import type { AppConfig, PsuType } from "./config.js";
 import type { SqliteDatabase } from "./storage/database.js";
 import type { EnableBankingClient } from "./enable-banking/client.js";
 import type { AuthorizationService } from "./auth/authorization-service.js";
-import type { SyncService, SyncSummary } from "./sync/sync-service.js";
+import type {
+  SyncExecutionContext,
+  SyncService,
+  SyncSummary
+} from "./sync/sync-service.js";
 import { SyncRunner } from "./sync/sync-runner.js";
 import { getSyncWindow } from "./sync/sync-window.js";
 import { CsvExporter } from "./export/csv-exporter.js";
@@ -50,6 +54,22 @@ function required(options: Map<string, string | true>, name: string): string {
   return result;
 }
 
+function cliSyncContext(
+  options: Map<string, string | true>,
+  config: AppConfig
+): SyncExecutionContext {
+  if (!options.has("online")) return {};
+  return {
+    psuHeaders: {
+      userAgent: `Kakebo-Harvester-CLI/0.1.0 (${process.platform}; Node/${process.versions.node})`,
+      acceptLanguage: config.defaultLanguage
+    },
+    ...(options.has("retry-rate-limit")
+      ? { allowRateLimitOverride: true }
+      : {})
+  };
+}
+
 function printSummary(summary: SyncSummary): void {
   console.table([
     {
@@ -73,11 +93,11 @@ Comandos:
   server
   connections
   accounts
-  sync-accounts
-  sync-balances
-  sync-transactions [--from YYYY-MM-DD] [--to YYYY-MM-DD]
-  initial-sync --from YYYY-MM-DD [--to YYYY-MM-DD]
-  sync-all
+  sync-accounts [--online] [--retry-rate-limit]
+  sync-balances [--online] [--retry-rate-limit]
+  sync-transactions [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--online] [--retry-rate-limit]
+  initial-sync --from YYYY-MM-DD [--to YYYY-MM-DD] [--online] [--retry-rate-limit]
+  sync-all [--online] [--retry-rate-limit]
   export
   disconnect --connection "alias"`);
 }
@@ -151,7 +171,8 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
         .prepare(
           `SELECT alias, bank_name AS bank, bank_country AS country, psu_type,
                   status, valid_until, last_sync_at, reauthorization_required,
-                  error_code, error_message_safe
+                  retry_after_at, online_retry_used,
+                  required_psu_headers_json, error_code, error_message_safe
            FROM bank_connections ORDER BY created_at`
         )
         .all();
@@ -171,13 +192,16 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
       return;
     }
     case "sync-accounts": {
-      const count = await sync.syncAccounts();
+      const count = await sync.syncAccounts(cliSyncContext(options, config));
       logger.info({ count }, "Account synchronization completed");
       console.log(`Cuentas sincronizadas: ${count}`);
       return;
     }
     case "sync-balances": {
-      const count = await sync.syncBalances();
+      const count = await sync.syncBalances(
+        undefined,
+        cliSyncContext(options, config)
+      );
       logger.info({ count }, "Balance synchronization completed");
       console.log(`Saldos guardados: ${count}`);
       return;
@@ -188,7 +212,11 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
         value(options, "from"),
         value(options, "to")
       );
-      const summary = await sync.syncTransactions(window.dateFrom, window.dateTo);
+      const summary = await sync.syncTransactions(
+        window.dateFrom,
+        window.dateTo,
+        cliSyncContext(options, config)
+      );
       logger.info({ ...summary, ...window }, "Transaction synchronization completed");
       printSummary(summary);
       return;
@@ -199,11 +227,15 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
         required(options, "from"),
         value(options, "to")
       );
-      const result = await syncRunner.run({
-        steps: ["accounts", "balances", "transactions", "export"],
-        dateFrom: window.dateFrom,
-        dateTo: window.dateTo
-      });
+      const context = cliSyncContext(options, config);
+      const result = await syncRunner.run(
+        {
+          steps: ["accounts", "balances", "transactions", "export"],
+          dateFrom: window.dateFrom,
+          dateTo: window.dateTo
+        },
+        context
+      );
       console.log(
         `Accounts: ${result.accounts ?? 0}; balances: ${result.balances ?? 0}; export: ${result.export?.path ?? "not generated"}`
       );
@@ -212,11 +244,15 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
     }
     case "sync-all": {
       const window = getSyncWindow(config.syncLookbackDays);
-      const result = await syncRunner.run({
-        steps: ["accounts", "balances", "transactions", "export"],
-        dateFrom: window.dateFrom,
-        dateTo: window.dateTo
-      });
+      const context = cliSyncContext(options, config);
+      const result = await syncRunner.run(
+        {
+          steps: ["accounts", "balances", "transactions", "export"],
+          dateFrom: window.dateFrom,
+          dateTo: window.dateTo
+        },
+        context
+      );
       const summary = result.transactions ?? emptySyncSummary();
       logger.info(
         {

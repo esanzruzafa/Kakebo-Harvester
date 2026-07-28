@@ -25,6 +25,7 @@ export interface AuditRunView {
   dateFrom: string;
   dateTo: string;
   steps: SyncStep[];
+  errorCode: string | null;
   error: string | null;
   accounts: AuditAccountView[];
   totals: AuditBalanceTotal[];
@@ -38,6 +39,7 @@ interface AuditRunRow {
   date_from: string;
   date_to: string;
   steps_json: string;
+  error_code: string | null;
   error_message_safe: string | null;
 }
 
@@ -114,15 +116,26 @@ export class DesktopRunRepository {
     return id;
   }
 
-  public finish(id: string, status: "SUCCESS" | "FAILED", error?: string): void {
+  public finish(
+    id: string,
+    status: "SUCCESS" | "FAILED",
+    error?: string,
+    errorCode?: string
+  ): void {
     this.captureAccountBalances(id);
     this.database
       .prepare(
         `UPDATE desktop_runs SET
-           finished_at = ?, status = ?, error_message_safe = ?
+           finished_at = ?, status = ?, error_message_safe = ?, error_code = ?
          WHERE id = ?`
       )
-      .run(new Date().toISOString(), status, error ?? null, id);
+      .run(
+        new Date().toISOString(),
+        status,
+        error ?? null,
+        errorCode ?? null,
+        id
+      );
   }
 
   private captureAccountBalances(runId: string): void {
@@ -166,7 +179,7 @@ export class DesktopRunRepository {
     const runs = this.database
       .prepare(
         `SELECT id, started_at, finished_at, status, date_from, date_to,
-                steps_json, error_message_safe
+                steps_json, error_code, error_message_safe
          FROM desktop_runs
          ORDER BY started_at DESC
          ${limit === undefined ? "" : "LIMIT ?"}`
@@ -207,6 +220,7 @@ export class DesktopRunRepository {
         dateFrom: run.date_from,
         dateTo: run.date_to,
         steps: parseSteps(run.steps_json),
+        errorCode: run.error_code,
         error: run.error_message_safe,
         accounts: runAccounts,
         totals: balanceTotals(runAccounts)

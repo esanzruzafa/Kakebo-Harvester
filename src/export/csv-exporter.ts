@@ -52,6 +52,14 @@ interface ExportState {
   fingerprint: string;
   format: "csv" | "xlsx";
   movementKeys?: string[] | undefined;
+  sourceMovementKeys?: Record<HighlightSource, string[]> | undefined;
+  highlightedMovementKeys?: Record<HighlightSource, string[]> | undefined;
+}
+
+export type HighlightSource = "banking" | "cards";
+
+export interface ExportOptions {
+  highlightSource?: HighlightSource | undefined;
 }
 
 type ExportValue = string | number | boolean | null;
@@ -59,8 +67,30 @@ type ExportValue = string | number | boolean | null;
 const exportStateSchema = z.object({
   fingerprint: z.string().min(1),
   format: z.enum(["csv", "xlsx"]),
-  movementKeys: z.array(z.string().min(1)).optional()
+  movementKeys: z.array(z.string().min(1)).optional(),
+  sourceMovementKeys: z
+    .object({ banking: z.array(z.string()), cards: z.array(z.string()) })
+    .optional(),
+  highlightedMovementKeys: z
+    .object({ banking: z.array(z.string()), cards: z.array(z.string()) })
+    .optional()
 });
+
+const HIGHLIGHT_COLORS: Record<HighlightSource, string> = {
+  banking: "#e6efe9",
+  cards: "#faf1e2"
+};
+
+function sourceForRow(row: ExportRow): HighlightSource {
+  return row.provider === "manual-card" ? "cards" : "banking";
+}
+
+function sourceKeys(rows: ExportRow[]): Record<HighlightSource, string[]> {
+  return {
+    banking: rows.filter((row) => sourceForRow(row) === "banking").map((row) => row.movement_key),
+    cards: rows.filter((row) => sourceForRow(row) === "cards").map((row) => row.movement_key)
+  };
+}
 
 function timestampForFilename(now = new Date()): string {
   return now.toISOString().replace(/\D/g, "").slice(0, 14);
@@ -107,6 +137,39 @@ function formatDate(value: string | null, format: ExportSettings["csv"]["dateFor
   return value;
 }
 
+function currencySymbol(currency: string): string {
+  return (
+    new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      currencyDisplay: "narrowSymbol"
+    })
+      .formatToParts(0)
+      .find((part) => part.type === "currency")?.value ?? currency
+  );
+}
+
+function formatMoney(
+  value: string,
+  currency: string,
+  decimalSeparator: "." | ","
+): string {
+  const negative = value.startsWith("-");
+  const absolute = negative ? value.slice(1) : value;
+  return `${negative ? "-" : ""}${currencySymbol(currency)}${absolute.replace(
+    ".",
+    decimalSeparator
+  )}`;
+}
+
+function spreadsheetDate(value: string): Date {
+  const [year = 0, month = 1, day = 1] = value
+    .slice(0, 10)
+    .split("-")
+    .map(Number);
+  return new Date(year, month - 1, day);
+}
+
 function rowValue(
   row: ExportRow,
   field: ExportField,
@@ -130,8 +193,7 @@ function rowValue(
     counterparty: row.counterparty_name,
     amount: forSpreadsheet
       ? Number(row.amount)
-      : row.amount.replace(".", settings.csv.decimalSeparator),
-    currency: row.currency,
+      : formatMoney(row.amount, row.currency, settings.csv.decimalSeparator),
     direction: row.direction,
     status: row.status,
     categoryAuto: row.category_auto,
@@ -338,7 +400,7 @@ export class CsvExporter {
     temporary: string,
     rows: ExportRow[],
     settings: ExportSettings,
-    newMovementKeys: ReadonlySet<string>
+    highlightedKeys: Record<HighlightSource, ReadonlySet<string>>
   ): Promise<void> {
     const columns = settings.columns.filter((column) => column.enabled);
     const header: Cell[] = columns.map((column) => ({
@@ -352,12 +414,27 @@ export class CsvExporter {
     const data: SheetData = [
       header,
       ...rows.map((row) => {
-        const isNew = newMovementKeys.has(row.movement_key);
+        const source = sourceForRow(row);
+        const isNew = highlightedKeys[source].has(row.movement_key);
         return columns.map((column): Cell => {
-          const value = rowValue(row, column.field, settings, true);
           const background = isNew
-            ? { backgroundColor: "#e6efe9" as const }
+            ? { backgroundColor: HIGHLIGHT_COLORS[source] }
             : {};
+          if (column.field === "amount") {
+            return {
+              value: Number(row.amount),
+              type: Number,
+              format: `"${currencySymbol(row.currency)}" #,##0.00`,
+              ...background
+            };
+          }
+          if (column.field === "date" || column.field === "valueDate") {
+            const rawDate = column.field === "date" ? row.movement_date : row.value_date;
+            return rawDate
+              ? { value: spreadsheetDate(rawDate), type: Date, format: "yyyy-mm-dd", ...background }
+              : null;
+          }
+          const value = rowValue(row, column.field, settings, true);
           if (typeof value === "number") {
             return { value, type: Number, format: "#,##0.00", ...background };
           }
@@ -386,7 +463,7 @@ export class CsvExporter {
     }).toFile(temporary);
   }
 
-  public async export(): Promise<{ path: string; rows: number }> {
+  public async export(options: ExportOptions = {}): Promise<{ path: string; rows: number }> {
     const rows = this.rows();
     const settings = await this.settingsStore.ensure();
     const fingerprint = exportSettingsFingerprint(settings);
@@ -398,30 +475,43 @@ export class CsvExporter {
     try {
       await mkdir(this.config.exportDirectory, { recursive: true });
       const previous = await rotateIncompatibleOutputs(this.config, settings);
-      const previousKeys =
-        previous?.fingerprint === fingerprint &&
-        previous.format === settings.format &&
-        previous.movementKeys
-          ? new Set(previous.movementKeys)
-          : undefined;
-      const newMovementKeys = new Set(
-        previousKeys
-          ? rows
-              .filter((row) => !previousKeys.has(row.movement_key))
-              .map((row) => row.movement_key)
-          : []
-      );
+      const compatible = previous?.fingerprint === fingerprint && previous.format === settings.format;
+      const currentKeys = sourceKeys(rows);
+      const knownKeys = compatible && previous.sourceMovementKeys
+        ? previous.sourceMovementKeys
+        : currentKeys;
+      const highlighted = compatible && previous.highlightedMovementKeys
+        ? {
+            banking: new Set(previous.highlightedMovementKeys.banking),
+            cards: new Set(previous.highlightedMovementKeys.cards)
+          }
+        : { banking: new Set<string>(), cards: new Set<string>() };
+      if (options.highlightSource && compatible && previous.sourceMovementKeys) {
+        const source = options.highlightSource;
+        const prior = new Set(knownKeys[source]);
+        highlighted[source] = new Set(currentKeys[source].filter((key) => !prior.has(key)));
+        knownKeys[source] = currentKeys[source];
+      }
+      for (const source of ["banking", "cards"] as const) {
+        const current = new Set(currentKeys[source]);
+        highlighted[source] = new Set([...highlighted[source]].filter((key) => current.has(key)));
+      }
       await backupCurrentOutput(this.config, destination, fingerprint);
       if (settings.format === "csv") {
         await this.writeCsv(temporary, rows, settings);
       } else {
-        await this.writeXlsx(temporary, rows, settings, newMovementKeys);
+        await this.writeXlsx(temporary, rows, settings, highlighted);
       }
       await rename(temporary, destination);
       await writeExportState(`${this.config.exportSettingsPath}.state.json`, {
         fingerprint,
         format: settings.format,
-        movementKeys: rows.map((row) => row.movement_key)
+        movementKeys: rows.map((row) => row.movement_key),
+        sourceMovementKeys: knownKeys,
+        highlightedMovementKeys: {
+          banking: [...highlighted.banking],
+          cards: [...highlighted.cards]
+        }
       });
       return { path: destination, rows: rows.length };
     } catch (error) {

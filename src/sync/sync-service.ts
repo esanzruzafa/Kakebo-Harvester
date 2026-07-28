@@ -1,9 +1,15 @@
 import type { AppConfig } from "../config.js";
-import type { EnableBankingClient } from "../enable-banking/client.js";
+import type {
+  EnableBankingClient,
+  PsuHeaders
+} from "../enable-banking/client.js";
 import {
   KakeboError,
+  PsuHeadersUnavailableError,
+  RateLimitError,
   ReauthorizationRequiredError,
-  TransactionsPeriodError
+  TransactionsPeriodError,
+  providerErrorCode
 } from "../errors.js";
 import type { SqliteDatabase } from "../storage/database.js";
 import { RawStore } from "../storage/raw-store.js";
@@ -20,6 +26,19 @@ import { safeMessage } from "../utils/text.js";
 interface ActiveSession {
   connection_id: string;
   session_ciphertext: string;
+}
+
+export interface SyncExecutionContext {
+  psuHeaders?: PsuHeaders;
+  allowRateLimitOverride?: boolean;
+}
+
+interface ConnectionPsuRow {
+  id: string;
+  bank_name: string;
+  bank_country: string;
+  psu_type: "personal" | "business";
+  required_psu_headers_json: string | null;
 }
 
 export interface SyncSummary {
@@ -82,7 +101,146 @@ export class SyncService {
     return rows.map((row) => row.id);
   }
 
-  private assertConnectionsReady(): void {
+  private async refreshMissingPsuMetadata(): Promise<void> {
+    const rows = this.database
+      .prepare(
+        `SELECT id, bank_name, bank_country, psu_type,
+                required_psu_headers_json
+         FROM bank_connections
+         WHERE provider = 'enable-banking'
+           AND environment = ?
+           AND status = 'AUTHORIZED'
+           AND required_psu_headers_json IS NULL`
+      )
+      .all(this.config.appEnv) as ConnectionPsuRow[];
+    const catalogs = new Map<string, Awaited<ReturnType<EnableBankingClient["listBanks"]>>>();
+    for (const row of rows) {
+      const key = `${row.bank_country}:${row.psu_type}`;
+      let banks = catalogs.get(key);
+      if (!banks) {
+        banks = await this.client.listBanks(row.bank_country, row.psu_type);
+        catalogs.set(key, banks);
+      }
+      const bank = banks.find((candidate) => candidate.name === row.bank_name);
+      if (!bank) continue;
+      this.database
+        .prepare(
+          `UPDATE bank_connections
+           SET required_psu_headers_json = ?
+           WHERE id = ?`
+        )
+        .run(
+          JSON.stringify(
+            (bank.required_psu_headers ?? []).map((header) =>
+              header.toLowerCase()
+            )
+          ),
+          row.id
+        );
+    }
+  }
+
+  private connectionPsuHeaders(
+    connectionId: string,
+    context: SyncExecutionContext
+  ): PsuHeaders | undefined {
+    if (!context.psuHeaders) return undefined;
+    const row = this.database
+      .prepare(
+        `SELECT id, bank_name, bank_country, psu_type,
+                required_psu_headers_json
+         FROM bank_connections WHERE id = ?`
+      )
+      .get(connectionId) as ConnectionPsuRow | undefined;
+    if (!row || row.required_psu_headers_json === null) {
+      throw new PsuHeadersUnavailableError([
+        "required_psu_headers metadata"
+      ]);
+    }
+    let required: unknown;
+    try {
+      required = JSON.parse(row.required_psu_headers_json) as unknown;
+    } catch {
+      throw new PsuHeadersUnavailableError([
+        "required_psu_headers metadata"
+      ]);
+    }
+    const requiredHeaders = Array.isArray(required)
+      ? required.filter((value): value is string => typeof value === "string")
+      : [];
+    const available = new Set<string>();
+    if (context.psuHeaders.ipAddress) available.add("psu-ip-address");
+    if (context.psuHeaders.userAgent) available.add("psu-user-agent");
+    if (context.psuHeaders.acceptLanguage) {
+      available.add("psu-accept-language");
+    }
+    const missing = requiredHeaders.filter(
+      (header) => !available.has(header.toLowerCase())
+    );
+    if (missing.length > 0) {
+      throw new PsuHeadersUnavailableError(missing);
+    }
+    return context.psuHeaders;
+  }
+
+  private async assertConnectionsReady(
+    context: SyncExecutionContext = {}
+  ): Promise<void> {
+    if (context.psuHeaders) {
+      await this.refreshMissingPsuMetadata();
+      const rows = this.database
+        .prepare(
+          `SELECT id FROM bank_connections
+           WHERE provider = 'enable-banking'
+             AND environment = ?
+             AND status = 'AUTHORIZED'`
+        )
+        .all(this.config.appEnv) as Array<{ id: string }>;
+      for (const row of rows) this.connectionPsuHeaders(row.id, context);
+    }
+    const now = new Date().toISOString();
+    this.database
+      .prepare(
+        `UPDATE bank_connections
+         SET retry_after_at = NULL
+         WHERE retry_after_at IS NOT NULL AND retry_after_at <= ?`
+      )
+      .run(now);
+    const limited = this.database
+      .prepare(
+        `SELECT id, retry_after_at, error_code, online_retry_used
+         FROM bank_connections
+         WHERE provider = 'enable-banking'
+           AND environment = ?
+           AND status = 'AUTHORIZED'
+           AND retry_after_at > ?
+         ORDER BY retry_after_at DESC`
+      )
+      .all(this.config.appEnv, now) as Array<{
+        id: string;
+        retry_after_at: string;
+        error_code: string | null;
+        online_retry_used: number;
+      }>;
+    if (limited.length > 0) {
+      const canTryOnline =
+        context.allowRateLimitOverride === true &&
+        context.psuHeaders !== undefined &&
+        limited.every((row) => row.online_retry_used === 0);
+      if (canTryOnline) {
+        for (const row of limited) {
+          this.connectionPsuHeaders(row.id, context);
+        }
+      } else {
+      const retryAt = limited[0]?.retry_after_at;
+      throw new RateLimitError(
+        `El banco ha alcanzado su límite de consultas. Próximo intento permitido: ${retryAt}. (${limited[0]?.error_code ?? "ASPSP_RATE_LIMIT_EXCEEDED"})`,
+        retryAt,
+        limited.map((row) => row.id),
+        limited[0]?.error_code ?? "ASPSP_RATE_LIMIT_EXCEEDED"
+      );
+      }
+    }
     const connectionIds = this.listConnectionsRequiringAuthorization();
     if (connectionIds.length > 0) {
       throw new ReauthorizationRequiredError(
@@ -120,8 +278,72 @@ export class SyncService {
       .run(safeMessage(error), connectionId);
   }
 
-  public async syncAccounts(): Promise<number> {
-    this.assertConnectionsReady();
+  private markConnectionError(
+    connectionId: string,
+    error: unknown,
+    context: SyncExecutionContext
+  ): unknown {
+    if (error instanceof ReauthorizationRequiredError) {
+      this.markReauthorization(connectionId, error);
+      return new ReauthorizationRequiredError(
+        error.message,
+        [connectionId],
+        {
+          ...(error.providerCode ? { providerCode: error.providerCode } : {}),
+          ...(error.httpStatus ? { httpStatus: error.httpStatus } : {})
+        }
+      );
+    }
+    const code =
+      providerErrorCode(error) ??
+      (error instanceof KakeboError ? error.code : "SYNC_ERROR");
+    if (error instanceof RateLimitError) {
+      this.database
+        .prepare(
+          `UPDATE bank_connections SET
+             retry_after_at = ?, error_code = ?, error_message_safe = ?,
+             online_retry_used = ?
+           WHERE id = ?`
+        )
+        .run(
+          error.retryAt ?? null,
+          code,
+          safeMessage(error),
+          context.psuHeaders ? 1 : 0,
+          connectionId
+        );
+      return new RateLimitError(
+        error.message,
+        error.retryAt,
+        [connectionId],
+        error.providerCode
+      );
+    }
+    this.database
+      .prepare(
+        `UPDATE bank_connections SET
+           error_code = ?, error_message_safe = ?
+         WHERE id = ?`
+      )
+      .run(code, safeMessage(error), connectionId);
+    return error;
+  }
+
+  private clearConnectionError(connectionId: string): void {
+    this.database
+      .prepare(
+        `UPDATE bank_connections SET
+           error_code = NULL, error_message_safe = NULL, retry_after_at = NULL,
+           online_retry_used = 0
+         WHERE id = ?`
+      )
+      .run(connectionId);
+  }
+
+  public async syncAccounts(
+    context: SyncExecutionContext = {}
+  ): Promise<number> {
+    await this.assertConnectionsReady(context);
     let count = 0;
     for (const stored of this.listSessions()) {
       try {
@@ -134,24 +356,27 @@ export class SyncService {
           throw new ReauthorizationRequiredError(`La sesión está en estado ${session.status}.`);
         }
         for (const accountId of session.accounts) {
-          const account = await this.client.getAccount(accountId);
+          const account = await this.client.getAccount(
+            accountId,
+            this.connectionPsuHeaders(stored.connection_id, context)
+          );
           const raw = await this.rawStore.write("account", accountId, account);
           this.accounts.upsert(stored.connection_id, account, raw.path);
           count += 1;
         }
+        this.clearConnectionError(stored.connection_id);
       } catch (error) {
-        if (error instanceof ReauthorizationRequiredError) {
-          this.markReauthorization(stored.connection_id, error);
-          throw new ReauthorizationRequiredError(error.message, [stored.connection_id]);
-        }
-        throw error;
+        throw this.markConnectionError(stored.connection_id, error, context);
       }
     }
     return count;
   }
 
-  public async syncBalances(desktopRunId?: string): Promise<number> {
-    this.assertConnectionsReady();
+  public async syncBalances(
+    desktopRunId?: string,
+    context: SyncExecutionContext = {}
+  ): Promise<number> {
+    await this.assertConnectionsReady(context);
     const snapshots: Array<{
       account: StoredAccount;
       response: Awaited<ReturnType<EnableBankingClient["getBalances"]>>;
@@ -160,7 +385,10 @@ export class SyncService {
     }> = [];
     for (const account of this.accounts.listActive()) {
       try {
-        const response = await this.client.getBalances(account.provider_account_id);
+        const response = await this.client.getBalances(
+          account.provider_account_id,
+          this.connectionPsuHeaders(account.bank_connection_id, context)
+        );
         const raw = await this.rawStore.write("balances", account.id, response);
         snapshots.push({
           account,
@@ -169,14 +397,11 @@ export class SyncService {
           extractedAt: new Date().toISOString()
         });
       } catch (error) {
-        let reportedError = error;
-        if (error instanceof ReauthorizationRequiredError) {
-          this.markReauthorization(account.bank_connection_id, error);
-          reportedError = new ReauthorizationRequiredError(error.message, [
-            account.bank_connection_id
-          ]);
-        }
-        throw reportedError;
+        throw this.markConnectionError(
+          account.bank_connection_id,
+          error,
+          context
+        );
       }
     }
     const insert = this.database.prepare(
@@ -206,13 +431,19 @@ export class SyncService {
       }
     });
     transaction();
+    for (const connectionId of new Set(
+      snapshots.map((snapshot) => snapshot.account.bank_connection_id)
+    )) {
+      this.clearConnectionError(connectionId);
+    }
     return count;
   }
 
   private async syncAccountTransactions(
     account: StoredAccount,
     dateFrom: string,
-    dateTo: string
+    dateTo: string,
+    context: SyncExecutionContext
   ): Promise<SyncSummary> {
     const summary = emptySummary();
     const seenKeys = new Set<string>();
@@ -228,7 +459,8 @@ export class SyncService {
             dateFrom,
             ...(strategy ? { strategy } : { dateTo }),
             ...(continuationKey ? { continuationKey } : {})
-          }
+          },
+          this.connectionPsuHeaders(account.bank_connection_id, context)
         );
       } catch (error) {
         if (
@@ -298,9 +530,10 @@ export class SyncService {
 
   public async syncTransactions(
     dateFrom: string,
-    dateTo: string
+    dateTo: string,
+    context: SyncExecutionContext = {}
   ): Promise<SyncSummary> {
-    this.assertConnectionsReady();
+    await this.assertConnectionsReady(context);
     this.categorizer.reload();
     const total = emptySummary();
     for (const account of this.accounts.listActive()) {
@@ -314,7 +547,12 @@ export class SyncService {
         )
         .run(runId, startedAt, account.bank_connection_id, account.id, dateFrom, dateTo);
       try {
-        const summary = await this.syncAccountTransactions(account, dateFrom, dateTo);
+        const summary = await this.syncAccountTransactions(
+          account,
+          dateFrom,
+          dateTo,
+          context
+        );
         for (const key of Object.keys(total) as Array<keyof SyncSummary>) {
           total[key] += summary[key];
         }
@@ -336,13 +574,11 @@ export class SyncService {
             runId
           );
       } catch (error) {
-        let reportedError = error;
-        if (error instanceof ReauthorizationRequiredError) {
-          this.markReauthorization(account.bank_connection_id, error);
-          reportedError = new ReauthorizationRequiredError(error.message, [
-            account.bank_connection_id
-          ]);
-        }
+        const reportedError = this.markConnectionError(
+          account.bank_connection_id,
+          error,
+          context
+        );
         this.database
           .prepare(
             `UPDATE sync_runs SET
@@ -351,12 +587,16 @@ export class SyncService {
           )
           .run(
             new Date().toISOString(),
-            reportedError instanceof KakeboError ? reportedError.code : "SYNC_ERROR",
+            providerErrorCode(reportedError) ??
+              (reportedError instanceof KakeboError
+                ? reportedError.code
+                : "SYNC_ERROR"),
             safeMessage(reportedError),
             runId
           );
         throw reportedError;
       }
+      this.clearConnectionError(account.bank_connection_id);
     }
     this.database
       .prepare(

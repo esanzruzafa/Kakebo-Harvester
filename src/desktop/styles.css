@@ -49,16 +49,10 @@ body.loading-window {
   gap: 20px;
 }
 
-.loading-brand-mark {
-  display: grid;
+.loading-brand-icon {
   width: 64px;
   height: 64px;
-  border-radius: 18px;
-  color: var(--surface);
-  background: var(--green);
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 36px;
-  place-items: center;
+  object-fit: contain;
 }
 
 .loading-name,
@@ -549,10 +543,6 @@ h2 {
   gap: 10px;
 }
 
-.progress-list.is-collapsed li[data-progress-hidden="true"] {
-  display: none;
-}
-
 .progress-list li:not(.empty-state) {
   display: grid;
   padding: 10px 0;
@@ -877,6 +867,21 @@ body.audit-window .audit-run-list {
   display: grid;
 }
 
+.audit-run-error {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0 1rem 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid rgba(153, 62, 45, 0.24);
+  background: rgba(153, 62, 45, 0.07);
+  color: var(--danger);
+  font-size: 0.78rem;
+}
+
+.audit-run-error[hidden] {
+  display: none;
+}
+
 .audit-account {
   display: grid;
   padding: 10px 14px;
@@ -943,13 +948,21 @@ body.audit-window .audit-run-list {
   font-weight: 400;
   line-height: 1.45;
   text-align: left;
+  text-transform: none;
   transform: translateX(-50%);
   white-space: normal;
+  pointer-events: none;
 }
 
 .tooltip-help:hover::after,
 .tooltip-help:focus::after {
   display: block;
+}
+
+th:last-child .tooltip-help::after {
+  right: 0;
+  left: auto;
+  transform: none;
 }
 
 .card-files-table {
@@ -1128,6 +1141,42 @@ body[data-export-format="xlsx"] .csv-option {
   display: grid;
   justify-items: start;
   gap: 16px;
+}
+
+.app-modal {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  background: rgba(23, 37, 31, 0.35);
+  place-items: center;
+}
+
+.app-modal[hidden] {
+  display: none;
+}
+
+.app-modal-card {
+  width: min(520px, 100%);
+  padding: 28px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.app-modal-card h2 {
+  margin: 5px 0 10px;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.app-modal-card p {
+  color: var(--muted);
+}
+
+.app-modal-card .button-row {
+  justify-content: flex-end;
+  margin-top: 24px;
 }
 
 .toast {

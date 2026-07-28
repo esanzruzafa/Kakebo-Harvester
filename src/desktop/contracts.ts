@@ -28,6 +28,10 @@ export interface ConnectionView {
   validUntil: string | null;
   lastSyncAt: string | null;
   reauthorizationRequired: boolean;
+  retryAfterAt: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  onlineRetryUsed: boolean;
 }
 
 export interface DesktopBootstrap {
@@ -118,6 +122,8 @@ export interface KakeboDesktopApi {
   openPath: (target: OpenPathTarget) => Promise<void>;
   copyText: (value: string) => Promise<void>;
   setupLocalHttps: () => Promise<boolean>;
+  confirmClose: () => Promise<void>;
+  onCloseRequested: (listener: () => void) => () => void;
   onSyncProgress: (listener: (event: SyncProgressEvent) => void) => () => void;
   onAuthorizationResult: (
     listener: (event: AuthorizationUiResult) => void

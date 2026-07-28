@@ -29,14 +29,15 @@ The production desktop application provides:
 - full, movement-and-export, export-only, and custom synchronization steps;
 - automatic fallback to the longest transaction history available when a bank rejects the exact requested period;
 - an automatic local HTTPS callback server and interactive bank reauthorization;
-- a 90% interface scale and 1152 × 756 initial window;
+- a 94.5% interface scale and 1271 × 794 initial window;
 - an extraction splash plus an animated in-app loading window;
-- live progress with a current-only view and an expandable complete view;
+- live progress showing every execution step, with one mutable line per step;
 - account aliases and separate synchronize/export switches;
 - configurable, deduplicated XLSX imports for card statements;
 - ordered categorization rules with drag-and-drop;
 - configurable dependent category and subcategory picklists;
 - configurable export fields, order, column names, XLSX/CSV format, and CSV regional options;
+- custom save/discard prompts for unsaved tab changes and safe close prompts for active operations;
 - English and Spanish interfaces loaded from external translation files, with immediate switching;
 - collapsible execution audit records with account snapshots and totals by currency;
 - a persistent selector for the latest 5, 10, 20, 50, or 100 audit runs;
@@ -47,6 +48,39 @@ The production desktop application provides:
 The desktop interface is production-only. The CLI continues to support sandbox and production.
 
 When an ASPSP returns `WRONG_TRANSACTIONS_PERIOD`, Kakebo Harvester retries that account with Enable Banking's `longest` strategy. Pagination continues with the same request parameters, and only movements inside the date interval selected in the application are added to SQLite and exports.
+
+Enable Banking error responses are parsed using their HTTP status, textual
+`error` code, and safe `message`. Known session, authentication, unavailable
+bank, transaction-period, and rate-limit failures retain dedicated application
+errors; every other provider code is preserved instead of being collapsed into
+a generic validation error. Provider `detail` values are deliberately excluded
+from user-facing messages and local logs.
+
+`ASPSP_RATE_LIMIT_EXCEEDED` is not retried immediately. The affected connection
+is blocked locally for at least six hours, or longer when `Retry-After` requires
+it. The connection view displays the provider code and next permitted attempt,
+and a repeated synchronization is rejected locally without contacting the bank.
+Other HTTP 429 responses use `Retry-After` when supplied and otherwise apply a
+15-minute safety interval. Reauthorization does not bypass an ASPSP rate limit.
+
+Manual desktop synchronizations are identified as online requests by forwarding
+only the real Electron User-Agent and selected application language as PSU
+headers. Scheduled executions remain background requests and send no PSU
+headers. The CLI behaves as background by default; add `--online` only when the
+user is actively waiting for that command. If a background cooldown already
+exists, `--retry-rate-limit` permits one explicit online attempt when combined
+with `--online`.
+
+Required PSU headers published by `/aspsps` are stored per connection. An online
+request is rejected locally when the ASPSP requires a value Kakebo Harvester
+cannot determine truthfully, such as a public IP address. The application never
+invents IP, Referer, geolocation, or browser request values. PSU header values
+remain in memory and are not written to raw responses, logs, or SQLite.
+
+When a background cooldown is active, the desktop asks before making one online
+attempt. A successful request clears the cooldown. A repeated
+`ASPSP_RATE_LIMIT_EXCEEDED` marks that attempt as used and prevents further
+online retries until the new cooldown expires.
 
 ## Export profiles
 
@@ -63,12 +97,25 @@ The Export tab can change:
 - exported column names;
 - CSV field separator, decimal separator, date format, and UTF-8 BOM.
 
+Disabled export fields lose their column number and drag handle immediately but
+remain in place until the profile is saved. Saving recalculates active column
+numbers, keeps their relative order, and moves all disabled fields to the bottom.
+Re-enabled fields rejoin the active list in their current relative order.
+
 The same profile is used by manual runs, the CLI, and Task Scheduler. It is stored in `config/export-settings.json`.
 
+Amount and currency are represented by one output column. CSV writes the currency
+symbol together with the amount. XLSX keeps amounts numeric and applies a
+per-row currency format, so mixed currencies remain usable in calculations.
+Movement date and value date are real spreadsheet dates rather than text. Existing
+profiles containing the former standalone `currency` field are migrated when read.
+
 For XLSX, the first successful export after this feature is installed establishes
-the movement baseline. Every later export rebuilds the workbook without old row
-fills and applies a soft green fill only to movements whose stable key was not in
-the preceding successful export. CSV output has no row-highlighting concept.
+separate movement baselines for bank accounts and manual cards. Later bank
+synchronizations apply a soft green fill (`#E6EFE9`) only to new bank movements;
+card imports apply a soft amber fill (`#FAF1E2`) only to new card movements.
+Each origin clears only its own previous highlights, preserving the other origin's
+pending highlights. CSV output has no row-highlighting concept.
 
 Changing the format, enabled fields, order, headers, or CSV options never overwrites a structurally incompatible result. On the next export, Kakebo Harvester moves the previous active result to `data/production/exports/archive/` and then writes the new result atomically. Normal dated backups can additionally be enabled with `EXPORT_KEEP_BACKUP=true`.
 
@@ -79,7 +126,12 @@ data/production/exports/kakebo_movements.xlsx
 data/production/exports/kakebo_movements.csv
 ```
 
-The **Delete result files** action removes only Kakebo Harvester's current and archived XLSX/CSV results after confirmation. It does not remove configuration, SQLite data, raw responses, or audit history.
+The **Delete result files** action removes only Kakebo Harvester's current and archived XLSX/CSV results after an in-app confirmation. It does not remove configuration, SQLite data, raw responses, or audit history.
+
+Tabs with edited configuration show an in-app choice to save, discard, or cancel
+before navigation. Closing applies the same choice across every edited section.
+When synchronization or card import is active, navigation explains that work
+continues in the background; closing explains the safe-shutdown implications.
 
 ## Categorization
 
@@ -123,14 +175,15 @@ Every manual or scheduled synchronization creates one persistent audit run. Each
 - selected steps and date interval;
 - completed, running, or failed status;
 - a snapshot of the selected balance for each active account;
-- a safe error message when applicable.
+- the provider/application error code and a safe error message when applicable.
 
 Runs are grouped in collapsible sections. Each header shows the sum of available
 account balances, separately for each currency. Both the main view and the
 dedicated history window use a scrollable latest-X list; the selected limit is
-stored in `config/ui-settings.json`. **Clear history** asks for confirmation and
-removes only audit runs and their stored snapshots; exports and operational
-balance data remain unchanged.
+stored in `config/ui-settings.json`. Failed executions show their recorded error
+code and safe message. **Clear history** asks for confirmation and removes only
+audit runs and their stored snapshots; exports and operational balance data
+remain unchanged.
 
 The current-year counter uses the Windows clock and timezone.
 

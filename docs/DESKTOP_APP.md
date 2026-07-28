@@ -6,7 +6,7 @@ This document describes the technical boundaries, persistence model, synchroniza
 
 Electron runs two trust levels:
 
-- the main process owns environment loading, secrets, SQLite, HTTPS, Enable Banking calls, the system browser, filesystem operations, and native dialogs;
+- the main process owns environment loading, secrets, SQLite, HTTPS, Enable Banking calls, the system browser, filesystem operations, and startup-native dialogs;
 - sandboxed renderers own presentation and transient form state.
 
 Renderers have context isolation enabled, Node.js disabled, navigation blocked, permission requests denied, and a restrictive content security policy. Preload scripts expose named operations only. Every IPC handler verifies that the sender is the expected live window and validates payloads with Zod.
@@ -39,14 +39,14 @@ JSON writes use a temporary file and atomic rename. Existing configuration recei
 
 The main process loads the selected translation JSON during startup and passes its dictionary to the renderer. New installations select Spanish when the Windows locale starts with `es`; all other locales select English. The choice is persisted in `ui-settings.json`.
 
-Changing the selector writes the setting, loads the selected dictionary, retranslates static DOM nodes, and rerenders dynamic content. Restarting Electron is unnecessary. Native dialogs query the same active localization store.
+Changing the selector writes the setting, loads the selected dictionary, retranslates static DOM nodes, and rerenders dynamic content. Restarting Electron is unnecessary. Native startup dialogs and renderer-owned confirmation modals query the same active localization store.
 
 Translation resources are bundled application assets. The selected language is user configuration and remains outside the executable.
 
 ## UI scale and startup feedback
 
-The main browser window uses 90% Chromium zoom and a 1152 × 756 initial frame.
-The audit window uses the same zoom factor and a 1080 × 780 initial frame.
+The main browser window uses 94.5% Chromium zoom and a 1271 × 794 initial frame.
+The audit window uses the same zoom factor and a 1134 × 819 initial frame.
 
 The portable NSIS wrapper displays `build/portable-splash.bmp` while extracting
 the Electron runtime. As soon as Electron is available, a sandboxed loading
@@ -69,7 +69,52 @@ replaces it only after its renderer has loaded.
 
 Transaction retrieval starts with the exact selected `date_from` and `date_to`. If an ASPSP rejects that interval with `WRONG_TRANSACTIONS_PERIOD`, the same account is retried with `strategy=longest`, preserving that strategy across continuation pages. Because this strategy may return a wider interval, normalized movements outside the user-selected dates are discarded before SQLite persistence and export.
 
-The progress event stream stores a single mutable entry per step. A `step-completed` event replaces its `step-started` entry, so the interface never displays duplicate running and completed lines for the same step. The collapsed view keeps the run start plus the current or terminal event. The expanded view shows every step's latest state and the run boundaries.
+Enable Banking failures are parsed as the documented `ErrorResponse` shape.
+The HTTP status, textual provider code, and bounded safe message are retained;
+`detail` is never displayed or persisted because it may contain provider
+diagnostics not intended for end users. Session codes trigger reauthorization,
+authentication codes retain the authentication exit path, `ASPSP_ERROR` and
+`ASPSP_TIMEOUT` are temporary bank failures, and
+`WRONG_TRANSACTIONS_PERIOD` retains its fallback behavior. All other valid
+provider codes are surfaced verbatim through a typed provider error.
+
+HTTP 429 is excluded from the short transient retry loop. For
+`ASPSP_RATE_LIMIT_EXCEEDED`, the service chooses the later of the provider's
+`Retry-After` value and Enable Banking's recommended six-hour background-fetch
+interval. Other 429 responses choose the later of `Retry-After` and a 15-minute
+safety interval. The final timestamp and provider code are stored on the
+affected `bank_connections` row. Every synchronization step checks active
+cooldowns before making a network request, so repeated manual or scheduled
+attempts do not consume additional bank requests. A successful request or
+reauthorization clears stale error state.
+
+### Online and background PSU context
+
+The renderer never supplies arbitrary network identity values. The trusted main
+process builds the desktop PSU context from `webContents.getUserAgent()` and the
+selected application language. `SyncRunner` passes that in-memory context to
+account details, balances, and transaction requests only. Session, application,
+ASPSP catalog, authorization, scheduled, and export-only requests do not receive
+PSU headers.
+
+`bank_connections.required_psu_headers_json` caches the normalized list
+published by `/aspsps`. Existing connections refresh the catalog once before
+their first online synchronization. The service verifies that every required
+header is available before contacting account endpoints. If not, it raises
+`PSU_HEADERS_UNAVAILABLE` instead of silently sending a partial set or
+fabricating a value.
+
+`bank_connections.online_retry_used` implements the explicit cooldown override.
+The desktop can override a prior background cooldown once. If the online
+request succeeds, normal connection cleanup clears both cooldown fields. If the
+ASPSP returns another rate limit, the service stores a new timestamp and marks
+the online attempt as used. Repeated UI actions are then rejected locally.
+
+CLI synchronization is background by default. `--online` creates a truthful CLI
+User-Agent and language context; `--retry-rate-limit` is effective only with
+that online context. Task Scheduler commands intentionally omit both flags.
+
+The progress event stream stores a single mutable entry per step. A `step-completed` event replaces its `step-started` entry, so the interface never displays duplicate running and completed lines for the same step. The interface always shows the run boundaries and every step's latest state in execution order.
 
 Scheduled mode never opens a browser. Reauthorization and synchronization contention retain their dedicated exit codes.
 
@@ -81,6 +126,18 @@ Migration `003_audit_and_exports.sql` adds:
 - `desktop_run_accounts` for account identity and balance snapshots;
 - `balances.desktop_run_id` to associate new balance responses with their originating execution.
 
+Migration `004_provider_errors.sql` adds:
+
+- `bank_connections.retry_after_at` and its lookup index for persistent
+  provider cooldowns;
+- `desktop_runs.error_code` so failed manual and scheduled runs retain both the
+  exact code and the safe message.
+
+Migration `005_psu_context.sql` adds:
+
+- `bank_connections.required_psu_headers_json` for ASPSP requirements;
+- `bank_connections.online_retry_used` for the one-attempt online override.
+
 When a run includes the balances step, the snapshot prefers balances inserted by that run. Otherwise it stores the most recently available balance. Selection uses deterministic balance-type preferences and one record per account.
 
 Audit DTOs group snapshots under their execution and calculate one sum per
@@ -91,6 +148,7 @@ choice in `ui-settings.json`.
 
 The current-year count is calculated with local start-of-year and next-start-of-year boundaries converted to UTC for the SQLite query.
 
+Failed runs expose their error code and safe message in both audit views.
 Clearing audit history deletes `desktop_run_accounts` and `desktop_runs` in one transaction. It deliberately preserves operational balances, transactions, configuration, raw data, and exports.
 
 ## Account settings
@@ -121,6 +179,11 @@ The export profile contains:
 - CSV field separator, decimal separator, date format, and BOM option;
 - an ordered list of field identifiers, editable headers, and enabled flags.
 
+Inactive fields render without a number or drag handle. UI toggling preserves
+the current row position; saving performs a stable partition with active fields
+first and inactive fields last, then recalculates active column numbers. Loading
+a legacy profile removes its former standalone `currency` field before validation.
+
 A new installation defaults to XLSX. When no profile exists but a legacy active
 CSV does, bootstrap preserves CSV for backward compatibility.
 
@@ -132,20 +195,38 @@ For CSV:
 - configured dates and decimal separators are applied;
 - separators, quotes, and line breaks are escaped;
 - optional UTF-8 BOM improves Excel compatibility.
+- amount text includes the row currency symbol in the configured decimal convention.
 
 For XLSX:
 
-- values receive explicit string, number, or boolean types;
+- values receive explicit string, number, boolean, or date types;
 - the first row is styled and frozen;
-- amount cells use a two-decimal numeric format;
+- amount cells stay numeric and use a per-row currency-symbol format;
+- movement and value dates use a spreadsheet date format;
 - column widths are bounded.
 
-The private export state also stores the movement keys from the last successful
-export. The first state-aware export establishes a baseline without highlighting
-historical rows. Later XLSX exports compare current keys with that baseline,
-write old rows without a fill, and apply `#e6efe9` only to newly observed rows.
-Because every workbook is regenerated, a row highlighted in one run
-automatically loses its fill in the next run unless it is newly introduced then.
+## In-app confirmation and dirty-state lifecycle
+
+The renderer stores a serialized saved snapshot for accounts, card profiles,
+categorization plus dependencies, and export settings. Before leaving an edited
+tab, the custom modal offers save and continue, discard and continue, or cancel.
+Save calls the same validated IPC operations as the visible save buttons; discard
+reloads persisted state.
+
+The main window intercepts close and asks the renderer to resolve active work and
+dirty sections. Multiple edited sections can be saved before close. Synchronization
+and card import set a transient active-operation flag: navigation warns that work
+continues in the background, while close explains that local work is awaited and
+a pending browser authorization may be cancelled. Destructive export and audit
+actions use the same renderer-owned modal instead of Windows message boxes.
+
+The private export state stores independent movement-key baselines and pending
+highlights for bank and manual-card origins. The first state-aware export
+establishes both baselines without highlighting historical rows. Later bank XLSX
+exports apply `#e6efe9` to newly observed Enable Banking rows, while card imports
+apply `#faf1e2` to newly observed manual-card rows. Each operation clears only
+the prior highlights belonging to its own origin; the other origin's pending
+highlights remain in the regenerated workbook.
 
 Spreadsheet text beginning with a formula control character is prefixed as text before either format is written.
 

@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld("kakebo", {
   openPath: (target) => ipcRenderer.invoke("path:open", target),
   copyText: (value) => ipcRenderer.invoke("clipboard:write", value),
   setupLocalHttps: () => ipcRenderer.invoke("https:setup"),
+  confirmClose: () => ipcRenderer.invoke("app:confirm-close"),
+  onCloseRequested: (listener) => {
+    const handler = () => listener();
+    ipcRenderer.on("app:close-requested", handler);
+    return () => ipcRenderer.removeListener("app:close-requested", handler);
+  },
   onSyncProgress: (listener) => {
     const handler = (_event, value) => listener(value);
     ipcRenderer.on("sync:progress", handler);

@@ -1,8 +1,11 @@
 import type { AppConfig } from "../config.js";
+import type { PsuHeaders } from "../enable-banking/client.js";
 import { CsvExporter } from "../export/csv-exporter.js";
 import {
+  KakeboError,
   ReauthorizationRequiredError,
-  SyncAlreadyRunningError
+  SyncAlreadyRunningError,
+  providerErrorCode
 } from "../errors.js";
 import type { SqliteDatabase } from "../storage/database.js";
 import { DesktopRunRepository } from "../storage/repositories/desktop-run-repository.js";
@@ -10,6 +13,7 @@ import { createId } from "../utils/crypto.js";
 import { assertIsoDate } from "../utils/dates.js";
 import { safeMessage } from "../utils/text.js";
 import type { SyncService, SyncSummary } from "./sync-service.js";
+import type { SyncExecutionContext } from "./sync-service.js";
 
 export type SyncStep = "accounts" | "balances" | "transactions" | "export";
 
@@ -17,6 +21,7 @@ export interface SyncRequest {
   steps: SyncStep[];
   dateFrom: string;
   dateTo: string;
+  allowRateLimitOverride?: boolean;
 }
 
 export interface SyncRunResult {
@@ -43,6 +48,8 @@ export interface SyncProgressEvent {
 export interface SyncRunOptions {
   onProgress?: (event: SyncProgressEvent) => void;
   onReauthorization?: (connectionIds: readonly string[]) => Promise<void>;
+  psuHeaders?: PsuHeaders;
+  allowRateLimitOverride?: boolean;
 }
 
 const orderedSteps: SyncStep[] = [
@@ -117,19 +124,23 @@ export class SyncRunner {
     step: SyncStep,
     request: SyncRequest,
     result: SyncRunResult,
-    desktopRunId: string
+    desktopRunId: string,
+    context: SyncExecutionContext
   ): Promise<void> {
-    if (step === "accounts") result.accounts = await this.sync.syncAccounts();
+    if (step === "accounts") {
+      result.accounts = await this.sync.syncAccounts(context);
+    }
     if (step === "balances") {
-      result.balances = await this.sync.syncBalances(desktopRunId);
+      result.balances = await this.sync.syncBalances(desktopRunId, context);
     }
     if (step === "transactions") {
       result.transactions = await this.sync.syncTransactions(
         request.dateFrom,
-        request.dateTo
+        request.dateTo,
+        context
       );
     }
-    if (step === "export") result.export = await this.exporter.export();
+    if (step === "export") result.export = await this.exporter.export({ highlightSource: "banking" });
   }
 
   public async run(
@@ -148,6 +159,12 @@ export class SyncRunner {
     const lock = new SynchronizationLock(this.database);
     const audit = new DesktopRunRepository(this.database);
     const result: SyncRunResult = {};
+    const context: SyncExecutionContext = {
+      ...(options.psuHeaders ? { psuHeaders: options.psuHeaders } : {}),
+      ...(options.allowRateLimitOverride
+        ? { allowRateLimitOverride: true }
+        : {})
+    };
     let completedSteps = 0;
     const progress = (
       type: SyncProgressEvent["type"],
@@ -176,7 +193,13 @@ export class SyncRunner {
         let reauthorizationAttempts = 0;
         for (;;) {
           try {
-            await this.executeStep(step, request, result, desktopRunId);
+            await this.executeStep(
+              step,
+              request,
+              result,
+              desktopRunId,
+              context
+            );
             break;
           } catch (error) {
             if (
@@ -208,7 +231,13 @@ export class SyncRunner {
       progress("run-completed", "Synchronization completed.");
       return result;
     } catch (error) {
-      audit.finish(desktopRunId, "FAILED", safeMessage(error));
+      audit.finish(
+        desktopRunId,
+        "FAILED",
+        safeMessage(error),
+        providerErrorCode(error) ??
+          (error instanceof KakeboError ? error.code : "SYNC_ERROR")
+      );
       progress("run-failed", error instanceof Error ? error.message : String(error));
       throw error;
     } finally {

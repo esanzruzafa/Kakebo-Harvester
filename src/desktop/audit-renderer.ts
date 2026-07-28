@@ -131,7 +131,20 @@ function renderRun(run: AuditRunView, expanded = false): HTMLElement {
     row.append(name, value);
     accounts.append(row);
   }
-  article.append(header, accounts);
+  const error = document.createElement("div");
+  error.className = "audit-run-error";
+  error.hidden = !run.error;
+  if (run.errorCode) {
+    const code = document.createElement("strong");
+    code.textContent = run.errorCode;
+    error.append(code);
+  }
+  if (run.error) {
+    const message = document.createElement("span");
+    message.textContent = run.error;
+    error.append(message);
+  }
+  article.append(header, error, accounts);
   return article;
 }
 

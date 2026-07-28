@@ -16,7 +16,6 @@ export const exportFields = [
   "merchant",
   "counterparty",
   "amount",
-  "currency",
   "direction",
   "status",
   "categoryAuto",
@@ -59,7 +58,6 @@ const defaultHeaders: Record<ExportField, string> = {
   merchant: "Merchant",
   counterparty: "Counterparty",
   amount: "Amount",
-  currency: "Currency",
   direction: "Direction",
   status: "Status",
   categoryAuto: "CategoryAuto",
@@ -82,6 +80,18 @@ function parseSettings(value: unknown): ExportSettings {
     throw new Error("At least one export column must be enabled.");
   }
   return settings;
+}
+
+function migrateSettings(value: unknown): unknown {
+  if (!value || typeof value !== "object" || !Array.isArray((value as { columns?: unknown }).columns)) {
+    return value;
+  }
+  return {
+    ...value,
+    columns: (value as { columns: Array<{ field?: unknown }> }).columns.filter(
+      (column) => column.field !== "currency"
+    )
+  };
 }
 
 export function createDefaultExportSettings(
@@ -129,7 +139,7 @@ export class ExportSettingsStore {
   public async load(): Promise<ExportSettings> {
     try {
       return parseSettings(
-        JSON.parse(await readFile(this.path, "utf8")) as unknown
+        migrateSettings(JSON.parse(await readFile(this.path, "utf8")) as unknown)
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -152,7 +162,7 @@ export class ExportSettingsStore {
 
   private async loadExisting(): Promise<ExportSettings> {
     return parseSettings(
-      JSON.parse(await readFile(this.path, "utf8")) as unknown
+      migrateSettings(JSON.parse(await readFile(this.path, "utf8")) as unknown)
     );
   }
 

@@ -18,7 +18,6 @@
     { "field": "merchant", "header": "Merchant", "enabled": true },
     { "field": "counterparty", "header": "Counterparty", "enabled": true },
     { "field": "amount", "header": "Amount", "enabled": true },
-    { "field": "currency", "header": "Currency", "enabled": true },
     { "field": "direction", "header": "Direction", "enabled": true },
     { "field": "status", "header": "Status", "enabled": true },
     { "field": "categoryAuto", "header": "CategoryAuto", "enabled": true },
