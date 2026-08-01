@@ -24,6 +24,7 @@ import {
   type KakeboApplication
 } from "../application/create-application.js";
 import type { AuthorizationCompletionResult } from "../auth/authorization-service.js";
+import { disconnectBankConnection } from "../auth/disconnect-service.js";
 import { runDoctor } from "../doctor.js";
 import { KakeboError } from "../errors.js";
 import {
@@ -44,6 +45,7 @@ import {
 } from "../settings/categories-store.js";
 import {
   CategorizationRulesStore,
+  categorizationExclusionSchema,
   categorizationRuleSchema
 } from "../settings/categorization-rules-store.js";
 import {
@@ -69,6 +71,8 @@ import { safeMessage } from "../utils/text.js";
 import { configureTlsTrust } from "../tls.js";
 import type {
   AuthorizationUiResult,
+  BankOption,
+  ConnectBankRequest,
   ConnectionView,
   DesktopBootstrap,
   OpenPathTarget
@@ -98,6 +102,22 @@ const editableAccountSchema = z.object({
   providerActive: z.boolean(),
   syncEnabled: z.boolean(),
   exportEnabled: z.boolean()
+});
+
+const countryCodeSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z]{2}$/)
+  .transform((value) => value.toUpperCase());
+
+const listBanksSchema = z.object({
+  country: countryCodeSchema
+});
+
+const connectBankSchema = z.object({
+  bankName: z.string().trim().min(1).max(200),
+  country: countryCodeSchema,
+  psuType: z.enum(["personal", "business"])
 });
 
 const auditHistoryLimitSchema = z.union([
@@ -154,7 +174,13 @@ class AuthorizationCoordinator {
       waiter.resolve();
     } else {
       waiter.reject(
-        new Error(result.message ?? "The bank authorization was not completed.")
+        new Error(
+          result.message ??
+            tr(
+              "error.authorizationNotCompleted",
+              "The bank authorization was not completed."
+            )
+        )
       );
     }
   }
@@ -162,12 +188,26 @@ class AuthorizationCoordinator {
   private wait(connectionId: string): Promise<void> {
     return new Promise<void>((resolvePromise, rejectPromise) => {
       if (this.waiters.has(connectionId)) {
-        rejectPromise(new Error("Authorization is already in progress."));
+        rejectPromise(
+          new Error(
+            tr(
+              "error.authorizationInProgress",
+              "A bank authorization is already in progress."
+            )
+          )
+        );
         return;
       }
       const timeout = setTimeout(() => {
         this.waiters.delete(connectionId);
-        rejectPromise(new Error("Bank authorization timed out."));
+        rejectPromise(
+          new Error(
+            tr(
+              "error.authorizationTimedOut",
+              "Bank authorization timed out. Start the connection again."
+            )
+          )
+        );
       }, 15 * 60_000);
       this.waiters.set(connectionId, {
         resolve: resolvePromise,
@@ -177,11 +217,69 @@ class AuthorizationCoordinator {
     });
   }
 
+  private async openAndWait(authorization: {
+    connectionId: string;
+    url: string;
+  }): Promise<void> {
+    const url = new URL(authorization.url);
+    if (url.protocol !== "https:") {
+      throw new Error(
+        tr(
+          "error.unsafeAuthorizationUrl",
+          "The provider returned an unsafe authorization URL."
+        )
+      );
+    }
+    const completion = this.wait(authorization.connectionId);
+    try {
+      await shell.openExternal(url.toString());
+    } catch (error) {
+      const waiter = this.waiters.get(authorization.connectionId);
+      if (waiter) {
+        clearTimeout(waiter.timeout);
+        this.waiters.delete(authorization.connectionId);
+        waiter.reject(error instanceof Error ? error : new Error(safeMessage(error)));
+      }
+      await completion.catch(() => undefined);
+      throw error;
+    }
+    await completion;
+  }
+
+  public async connect(input: ConnectBankRequest): Promise<void> {
+    if (this.cancelledReason) throw new Error(this.cancelledReason);
+    const authorization = await this.application.authorization.connect({
+      bankSearch: input.bankName,
+      country: input.country,
+      psuType: input.psuType
+    });
+    if (this.inProgress.has(authorization.connectionId)) {
+      throw new Error(
+        tr(
+          "error.authorizationInProgress",
+          "A bank authorization is already in progress."
+        )
+      );
+    }
+    this.inProgress.add(authorization.connectionId);
+    try {
+      if (this.cancelledReason) throw new Error(this.cancelledReason);
+      await this.openAndWait(authorization);
+    } finally {
+      this.inProgress.delete(authorization.connectionId);
+    }
+  }
+
   public async reauthorize(connectionIds: readonly string[]): Promise<void> {
     for (const connectionId of [...new Set(connectionIds)]) {
       if (this.cancelledReason) throw new Error(this.cancelledReason);
       if (this.inProgress.has(connectionId)) {
-        throw new Error("Authorization is already in progress.");
+        throw new Error(
+          tr(
+            "error.authorizationInProgress",
+            "A bank authorization is already in progress."
+          )
+        );
       }
       this.inProgress.add(connectionId);
       try {
@@ -189,26 +287,7 @@ class AuthorizationCoordinator {
           connectionId
         );
         if (this.cancelledReason) throw new Error(this.cancelledReason);
-        const url = new URL(authorization.url);
-        if (url.protocol !== "https:") {
-          throw new Error("The provider returned an unsafe authorization URL.");
-        }
-        const completion = this.wait(connectionId);
-        try {
-          await shell.openExternal(url.toString());
-        } catch (error) {
-          const waiter = this.waiters.get(connectionId);
-          if (waiter) {
-            clearTimeout(waiter.timeout);
-            this.waiters.delete(connectionId);
-            waiter.reject(
-              error instanceof Error ? error : new Error(safeMessage(error))
-            );
-          }
-          await completion.catch(() => undefined);
-          throw error;
-        }
-        await completion;
+        await this.openAndWait(authorization);
       } finally {
         this.inProgress.delete(connectionId);
       }
@@ -548,7 +627,8 @@ async function bootstrap(application: KakeboApplication): Promise<DesktopBootstr
   const rulesStore = new CategorizationRulesStore(
     application.config.categorizationRulesPath
   );
-  const rules = await rulesStore.load();
+  const categorization = await rulesStore.loadConfiguration();
+  const { exclusions, rules } = categorization;
   const categoriesStore = new CategoriesStore(
     application.config.categoriesConfigPath
   );
@@ -581,10 +661,13 @@ async function bootstrap(application: KakeboApplication): Promise<DesktopBootstr
     environment: "production",
     callbackUrl: application.config.redirectUrl,
     callbackReady: callbackServer !== undefined,
+    defaultCountry: application.config.defaultCountry,
+    defaultPsuType: application.config.defaultPsuType,
     defaultDateFrom: monthsAgoIso(3),
     defaultDateTo: todayIso(),
     connections: connections(application),
     accounts,
+    exclusions,
     rules,
     categories,
     exportSettings,
@@ -708,7 +791,13 @@ function registerIpc(application: KakeboApplication): void {
   });
   ipcMain.handle("rules:save", async (event, input: unknown) => {
     assertTrustedSender(event);
-    const rules = z.array(categorizationRuleSchema).parse(input);
+    const configuration = z
+      .object({
+        exclusions: z.array(categorizationExclusionSchema),
+        rules: z.array(categorizationRuleSchema)
+      })
+      .parse(input);
+    const { rules } = configuration;
     const categories = await categoriesStore.load();
     for (const [index, rule] of rules.entries()) {
       const category = categories.find((item) => item.name === rule.category);
@@ -734,7 +823,7 @@ function registerIpc(application: KakeboApplication): void {
         );
       }
     }
-    return await rulesStore.save(rules);
+    return await rulesStore.saveConfiguration(configuration);
   });
   ipcMain.handle("categories:save", async (event, input: unknown) => {
     assertTrustedSender(event);
@@ -833,6 +922,78 @@ function registerIpc(application: KakeboApplication): void {
       })
     );
   });
+  ipcMain.handle("banks:list", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    if (activeSync) {
+      throw new Error(
+        tr(
+          "error.connectDuringSync",
+          "Wait for the synchronization to finish before listing bank connections."
+        )
+      );
+    }
+    const { country } = listBanksSchema.parse(input);
+    const banks = await application.client.listBanks(country);
+    return banks
+      .map<BankOption>((bank) => ({
+        name: bank.name,
+        country: bank.country,
+        psuTypes: bank.psu_types,
+        authentication: bank.auth_methods
+          .map((method) => ({
+            psuType: method.psu_type,
+            name:
+              method.title?.trim() ||
+              method.name?.trim() ||
+              method.approach
+          }))
+          .filter((method) => method.name.length > 0)
+          .filter(
+            (method, index, methods) =>
+              methods.findIndex(
+                (candidate) =>
+                  candidate.psuType === method.psuType &&
+                  candidate.name === method.name
+              ) === index
+          )
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  });
+  ipcMain.handle("connection:connect", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    if (activeSync) {
+      throw new Error(
+        tr(
+          "error.connectDuringSync",
+          "Wait for the synchronization to finish before connecting a bank."
+        )
+      );
+    }
+    if (!callbackServer) {
+      throw new Error(
+        tr(
+          "error.callbackRequired",
+          "Prepare local HTTPS before connecting a bank."
+        )
+      );
+    }
+    const authorizationCoordinator = coordinator;
+    if (!authorizationCoordinator) {
+      throw new Error(
+        tr(
+          "error.authorizationUnavailable",
+          "Bank authorization is unavailable. Restart the application and try again."
+        )
+      );
+    }
+    const request = connectBankSchema.parse(input);
+    await trackOperation(
+      withSynchronizationLock(application, async () => {
+        await authorizationCoordinator.connect(request);
+        await accountsStore.save(accountRepository.listEditable());
+      })
+    );
+  });
   ipcMain.handle("connection:reauthorize", async (event, input: unknown) => {
     assertTrustedSender(event);
     const connectionId = z.string().min(1).parse(input);
@@ -846,6 +1007,30 @@ function registerIpc(application: KakeboApplication): void {
     await trackOperation(
       withSynchronizationLock(application, async () => {
         await authorizationCoordinator.reauthorize([connectionId]);
+      })
+    );
+  });
+  ipcMain.handle("connection:disconnect", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    if (activeSync) {
+      throw new Error(
+        tr(
+          "error.disconnectDuringSync",
+          "Wait for the synchronization to finish before revoking a bank connection."
+        )
+      );
+    }
+    const connectionId = z.string().min(1).parse(input);
+    return await trackOperation(
+      withSynchronizationLock(application, async () => {
+        const result = await disconnectBankConnection({
+          config: application.config,
+          database: application.database,
+          client: application.client,
+          connectionId
+        });
+        await accountsStore.save(accountRepository.listEditable());
+        return result;
       })
     );
   });
@@ -912,7 +1097,7 @@ function registerIpc(application: KakeboApplication): void {
       await accountsStore.save(accountRepository.listEditable());
     }
     if (target === "categorization-rules" && !existsSync(data.paths.categorizationRules)) {
-      await rulesStore.save([]);
+      await rulesStore.saveConfiguration({ exclusions: [], rules: [] });
     }
     if (target === "categories-config" && !existsSync(data.paths.categoriesConfig)) {
       await categoriesStore.save([]);

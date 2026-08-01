@@ -1,11 +1,15 @@
 import type {
   AuthorizationUiResult,
+  BankOption,
   DesktopBootstrap,
   SelectedCardFile
 } from "./contracts.js";
 import type { CardImportProfile } from "../settings/card-import-profiles-store.js";
 import type { CategoryDefinition } from "../settings/categories-store.js";
-import type { CategorizationRule } from "../settings/categorization-rules-store.js";
+import type {
+  CategorizationExclusion,
+  CategorizationRule
+} from "../settings/categorization-rules-store.js";
 import type {
   ExportField,
   ExportSettings
@@ -33,6 +37,16 @@ const savedTabSnapshots = new Map<string, string>();
 let selectedCardFiles: Array<
   SelectedCardFile & { included: boolean; profileId: string }
 > = [];
+let connectionWizardBanks: BankOption[] = [];
+let selectedConnectionBank: BankOption | undefined;
+let connectionWizardBusy = false;
+let bankLoadRequest = 0;
+
+const connectionCountryCodes = [
+  "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE",
+  "GR", "HU", "IS", "IE", "IT", "LV", "LI", "LT", "LU", "MT", "NL",
+  "NO", "PL", "PT", "RO", "SK", "SI", "ES", "SE", "GB"
+] as const;
 
 function element<T extends HTMLElement>(
   id: string,
@@ -304,6 +318,317 @@ async function confirmInApp(
   );
 }
 
+function connectionCountryLabel(country: string): string {
+  try {
+    return new Intl.DisplayNames([state.language], { type: "region" }).of(
+      country
+    ) ?? country;
+  } catch {
+    return country;
+  }
+}
+
+function setConnectionWizardStatus(message: string, isError = false): void {
+  const status = element<HTMLElement>("connection-wizard-status");
+  status.textContent = message;
+  status.classList.toggle("is-error", isError);
+}
+
+function renderConnectionCountries(): void {
+  const select = element<HTMLSelectElement>("connection-country");
+  const selected = select.value || state.defaultCountry;
+  const countries = [...connectionCountryCodes];
+  if (!countries.includes(state.defaultCountry as (typeof countries)[number])) {
+    countries.push(state.defaultCountry as (typeof countries)[number]);
+  }
+  countries.sort((left, right) =>
+    connectionCountryLabel(left).localeCompare(connectionCountryLabel(right))
+  );
+  select.replaceChildren();
+  for (const country of countries) {
+    const option = document.createElement("option");
+    option.value = country;
+    option.textContent = `${connectionCountryLabel(country)} (${country})`;
+    select.append(option);
+  }
+  select.value = countries.includes(selected as (typeof countries)[number])
+    ? selected
+    : state.defaultCountry;
+}
+
+function connectionPsuLabel(psuType: "personal" | "business"): string {
+  return t(
+    `connectionWizard.${psuType}`,
+    psuType === "personal" ? "Personal" : "Business"
+  );
+}
+
+function renderConnectionBankList(): void {
+  const container = element<HTMLDivElement>("connection-bank-list");
+  const search = element<HTMLInputElement>("connection-bank-search").value
+    .trim()
+    .toLocaleLowerCase();
+  const banks = connectionWizardBanks.filter((bank) =>
+    bank.name.toLocaleLowerCase().includes(search)
+  );
+  container.replaceChildren();
+  if (banks.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = search
+      ? t("connectionWizard.noMatches", "No banks match the search.")
+      : t(
+          "connectionWizard.noBanks",
+          "No banks are currently available for this country."
+        );
+    container.append(empty);
+    return;
+  }
+  for (const bank of banks) {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "connection-bank-option";
+    option.setAttribute("role", "option");
+    const selected =
+      selectedConnectionBank?.name === bank.name &&
+      selectedConnectionBank.country === bank.country;
+    option.classList.toggle("is-selected", selected);
+    option.setAttribute("aria-selected", String(selected));
+    const details = document.createElement("span");
+    const name = document.createElement("strong");
+    name.textContent = bank.name;
+    const types = document.createElement("small");
+    const authentication = bank.authentication
+      .map((method) => method.name)
+      .filter((value, index, values) => values.indexOf(value) === index)
+      .join(", ");
+    types.textContent = tf(
+      "connectionWizard.bankDetails",
+      "{types} · {authentication}",
+      {
+        types: bank.psuTypes.map(connectionPsuLabel).join(", "),
+        authentication:
+          authentication ||
+          t(
+            "connectionWizard.authenticationUnknown",
+            "Not provided by Enable Banking"
+          )
+      }
+    );
+    details.append(name, types);
+    const country = document.createElement("span");
+    country.className = "status-badge neutral";
+    country.textContent = bank.country;
+    option.append(details, country);
+    option.addEventListener("click", () => {
+      selectedConnectionBank = bank;
+      renderConnectionBankList();
+      renderConnectionBankSelection();
+    });
+    container.append(option);
+  }
+}
+
+function renderConnectionBankSelection(): void {
+  const psuType = element<HTMLSelectElement>("connection-psu-type");
+  const authentication = element<HTMLElement>("connection-authentication");
+  const start = element<HTMLButtonElement>("connection-wizard-start");
+  const bank = selectedConnectionBank;
+  const previouslySelected = psuType.value as "personal" | "business";
+  psuType.replaceChildren();
+  if (!bank) {
+    psuType.disabled = true;
+    authentication.textContent = "—";
+    start.disabled = true;
+    return;
+  }
+  const selectedPsuType = bank.psuTypes.includes(previouslySelected)
+    ? previouslySelected
+    : bank.psuTypes.includes(state.defaultPsuType)
+      ? state.defaultPsuType
+      : bank.psuTypes[0];
+  for (const type of bank.psuTypes) {
+    const option = document.createElement("option");
+    option.value = type;
+    option.textContent = connectionPsuLabel(type);
+    option.selected = type === selectedPsuType;
+    psuType.append(option);
+  }
+  psuType.disabled = connectionWizardBusy;
+  const methods = bank.authentication
+    .filter((method) => method.psuType === selectedPsuType)
+    .map((method) => method.name);
+  authentication.textContent =
+    methods.join(", ") ||
+    t(
+      "connectionWizard.authenticationUnknown",
+      "Not provided by Enable Banking"
+    );
+  start.disabled = connectionWizardBusy || !state.callbackReady;
+}
+
+async function saveAccountsBeforeConnecting(): Promise<boolean> {
+  if (!tabHasUnsavedChanges("accounts")) return true;
+  const choice = await showAppModal({
+    title: t("dialog.unsavedNavigation.title", "Unsaved changes"),
+    detail: t(
+      "dialog.unsavedNavigation.detail",
+      "Save the changes on this page before leaving?"
+    ),
+    confirmLabel: t("dialog.unsaved.saveAndContinue", "Save and continue"),
+    discardLabel: t("dialog.unsaved.discardAndContinue", "Discard and continue")
+  });
+  if (choice === "cancel") return false;
+  if (choice === "confirm") {
+    await saveTab("accounts", false);
+  } else {
+    await refresh();
+  }
+  return true;
+}
+
+async function loadConnectionBanks(): Promise<void> {
+  if (connectionWizardBusy || !state.callbackReady) return;
+  const request = ++bankLoadRequest;
+  const country = element<HTMLSelectElement>("connection-country").value;
+  const reload = element<HTMLButtonElement>("reload-banks");
+  const countrySelect = element<HTMLSelectElement>("connection-country");
+  reload.disabled = true;
+  countrySelect.disabled = true;
+  selectedConnectionBank = undefined;
+  renderConnectionBankSelection();
+  setConnectionWizardStatus(
+    t("connectionWizard.loadingBanks", "Loading available banks…")
+  );
+  element<HTMLDivElement>("connection-bank-list").replaceChildren();
+  try {
+    const banks = await window.kakebo.listBanks(country);
+    if (request !== bankLoadRequest) return;
+    connectionWizardBanks = banks;
+    renderConnectionBankList();
+    setConnectionWizardStatus(
+      banks.length === 0
+        ? t(
+            "connectionWizard.noBanks",
+            "No banks are currently available for this country."
+          )
+        : t("connectionWizard.selectBank", "Select a bank to continue.")
+    );
+  } catch (error) {
+    if (request !== bankLoadRequest) return;
+    connectionWizardBanks = [];
+    renderConnectionBankList();
+    setConnectionWizardStatus(errorMessage(error), true);
+  } finally {
+    if (request === bankLoadRequest) {
+      reload.disabled = false;
+      countrySelect.disabled = false;
+    }
+  }
+}
+
+async function openConnectionWizard(): Promise<void> {
+  if (operationInProgress) {
+    showToast(
+      t(
+        "error.connectDuringSync",
+        "Wait for the synchronization to finish before connecting a bank."
+      ),
+      true
+    );
+    return;
+  }
+  if (!(await saveAccountsBeforeConnecting())) return;
+  connectionWizardBanks = [];
+  selectedConnectionBank = undefined;
+  connectionWizardBusy = false;
+  element<HTMLInputElement>("connection-bank-search").value = "";
+  renderConnectionCountries();
+  renderConnectionBankSelection();
+  renderConnectionBankList();
+  element<HTMLElement>("connection-wizard").hidden = false;
+  if (!state.callbackReady) {
+    setConnectionWizardStatus(
+      t(
+        "connectionWizard.callbackUnavailable",
+        "Local HTTPS is not ready. Prepare HTTPS from Settings before connecting a bank."
+      ),
+      true
+    );
+    return;
+  }
+  await loadConnectionBanks();
+}
+
+function closeConnectionWizard(): void {
+  if (connectionWizardBusy) return;
+  bankLoadRequest += 1;
+  element<HTMLElement>("connection-wizard").hidden = true;
+}
+
+async function startBankConnection(): Promise<void> {
+  const bank = selectedConnectionBank;
+  if (!bank || connectionWizardBusy) return;
+  if (!state.callbackReady) {
+    setConnectionWizardStatus(
+      t(
+        "connectionWizard.callbackUnavailable",
+        "Local HTTPS is not ready. Prepare HTTPS from Settings before connecting a bank."
+      ),
+      true
+    );
+    return;
+  }
+  const psuType = element<HTMLSelectElement>("connection-psu-type").value as
+    | "personal"
+    | "business";
+  connectionWizardBusy = true;
+  operationInProgress = true;
+  const start = element<HTMLButtonElement>("connection-wizard-start");
+  const cancel = element<HTMLButtonElement>("connection-wizard-cancel");
+  const reload = element<HTMLButtonElement>("reload-banks");
+  start.disabled = true;
+  cancel.disabled = true;
+  reload.disabled = true;
+  element<HTMLSelectElement>("connection-country").disabled = true;
+  element<HTMLInputElement>("connection-bank-search").disabled = true;
+  setConnectionWizardStatus(
+    t(
+      "connectionWizard.opening",
+      "Opening the secure bank authorization in your browser…"
+    )
+  );
+  try {
+    const connection = window.kakebo.connectBank({
+      bankName: bank.name,
+      country: bank.country,
+      psuType
+    });
+    setConnectionWizardStatus(
+      t(
+        "connectionWizard.waiting",
+        "Waiting for the bank authorization. Complete it in your browser, then return here."
+      )
+    );
+    await connection;
+    element<HTMLElement>("connection-wizard").hidden = true;
+    await refresh();
+  } catch (error) {
+    const message = errorMessage(error);
+    setConnectionWizardStatus(message, true);
+    showToast(message, true);
+    await refresh().catch(() => undefined);
+  } finally {
+    connectionWizardBusy = false;
+    operationInProgress = false;
+    cancel.disabled = false;
+    reload.disabled = false;
+    element<HTMLSelectElement>("connection-country").disabled = false;
+    element<HTMLInputElement>("connection-bank-search").disabled = false;
+    renderConnectionBankSelection();
+  }
+}
+
 function renderSummary(): void {
   const activeConnections = state.connections.filter(
     (connection) => connection.status !== "REVOKED"
@@ -391,25 +716,68 @@ function renderConnections(): void {
     const action = document.createElement("div");
     action.className = "button-row";
     action.append(badge(connection.status));
-    const idleLabel = connection.reauthorizationRequired
-      ? t("connections.reconnect", "Reconnect now")
-      : t("connections.renew", "Renew access");
-    const reconnect = button(idleLabel);
-    onClick(reconnect, async () => {
-      reconnect.disabled = true;
-      reconnect.textContent = t("connections.waiting", "Waiting for the bank…");
-      try {
-        await window.kakebo.reauthorize(connection.id);
-        showToast(t("toast.connectionRenewed", "The bank connection was renewed."));
-        await refresh();
-      } catch (error) {
-        showToast(errorMessage(error), true);
-      } finally {
-        reconnect.disabled = false;
-        reconnect.textContent = idleLabel;
-      }
-    });
-    action.append(reconnect);
+    if (connection.status !== "REVOKED") {
+      const idleLabel = connection.reauthorizationRequired
+        ? t("connections.reconnect", "Reconnect now")
+        : t("connections.renew", "Renew access");
+      const reconnect = button(idleLabel);
+      onClick(reconnect, async () => {
+        reconnect.disabled = true;
+        reconnect.textContent = t("connections.waiting", "Waiting for the bank…");
+        try {
+          await window.kakebo.reauthorize(connection.id);
+          showToast(t("toast.connectionRenewed", "The bank connection was renewed."));
+          await refresh();
+        } catch (error) {
+          showToast(errorMessage(error), true);
+        } finally {
+          reconnect.disabled = false;
+          reconnect.textContent = idleLabel;
+        }
+      });
+      const revokeLabel = t("connections.revoke", "Revoke consent");
+      const revoke = button(revokeLabel, "button danger");
+      onClick(revoke, async () => {
+        const confirmed = await confirmInApp(
+          tf("dialog.revoke.title", "Revoke {bank} consent?", {
+            bank: connection.alias
+          }),
+          t(
+            "dialog.revoke.detail",
+            "The local session will be deleted and this connection will stop synchronizing. Historical movements and exports are preserved. If remote revocation cannot be confirmed, revoke the consent from the bank or Enable Banking too."
+          ),
+          t("dialog.revoke.confirm", "Revoke consent")
+        );
+        if (!confirmed) return;
+        operationInProgress = true;
+        reconnect.disabled = true;
+        revoke.disabled = true;
+        revoke.textContent = t("connections.revoking", "Revoking…");
+        try {
+          const result = await window.kakebo.disconnectBank(connection.id);
+          showToast(
+            result.remoteRevocationAttempted && result.remoteRevoked
+              ? t(
+                  "toast.connectionRevoked",
+                  "Bank consent revoked. Historical movements were preserved."
+                )
+              : t(
+                  "toast.connectionRevokedLocalOnly",
+                  "Local connection revoked. Historical movements were preserved; also revoke the consent from the bank or Enable Banking."
+                )
+          );
+          await refresh();
+        } catch (error) {
+          showToast(errorMessage(error), true);
+        } finally {
+          operationInProgress = false;
+          reconnect.disabled = false;
+          revoke.disabled = false;
+          revoke.textContent = revokeLabel;
+        }
+      });
+      action.append(reconnect, revoke);
+    }
     row.append(name, validity, action);
     container.append(row);
   }
@@ -950,6 +1318,85 @@ function moveRule(from: number, to: number): void {
   renderRules();
 }
 
+function moveExclusion(from: number, to: number): void {
+  const exclusions = exclusionValues();
+  const [moved] = exclusions.splice(from, 1);
+  if (!moved) return;
+  exclusions.splice(to, 0, moved);
+  state.exclusions = exclusions.map((exclusion, index) => ({
+    ...exclusion,
+    priority: (index + 1) * 10
+  }));
+  renderExclusions();
+}
+
+function renderExclusions(): void {
+  const body = element<HTMLTableSectionElement>("exclusions-body");
+  body.replaceChildren();
+  if (state.exclusions.length === 0) {
+    const row = body.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 6;
+    cell.className = "empty-state";
+    cell.textContent = t(
+      "exclusions.empty",
+      "Add an exclusion to leave matching movements uncategorized."
+    );
+    return;
+  }
+  state.exclusions.forEach((exclusion, index) => {
+    const row = body.insertRow();
+    row.dataset["exclusionIndex"] = String(index);
+    const handleCell = row.insertCell();
+    const handle = dragHandle(
+      tf("exclusions.dragAria", "Move exclusion {number}", {
+        number: index + 1
+      })
+    );
+    activateDrag(handle, row, index);
+    handleCell.append(handle);
+    enableRowDrop(row, index, moveExclusion);
+
+    const numberCell = row.insertCell();
+    numberCell.className = "row-number";
+    numberCell.textContent = String(index + 1);
+
+    const enabledCell = row.insertCell();
+    const enabled = checkbox(
+      exclusion.enabled,
+      tf("exclusions.enableAria", "Enable exclusion {number}", {
+        number: index + 1
+      })
+    );
+    enabled.dataset["field"] = "enabled";
+    enabledCell.append(enabled);
+
+    row.insertCell().append(ruleOperator(exclusion.operator));
+
+    const valueCell = row.insertCell();
+    const value = textInput(exclusion.value, "input rule-value");
+    value.dataset["field"] = "value";
+    value.required = true;
+    valueCell.append(value);
+
+    const deleteCell = row.insertCell();
+    const remove = button("Ã—", "icon-button");
+    remove.setAttribute(
+      "aria-label",
+      tf("exclusions.deleteAria", "Delete exclusion {number}", {
+        number: index + 1
+      })
+    );
+    remove.addEventListener("click", () => {
+      const pending = exclusionValues();
+      pending.splice(index, 1);
+      state.exclusions = pending;
+      renderExclusions();
+    });
+    deleteCell.append(remove);
+  });
+}
+
 function renderRules(): void {
   const body = element<HTMLTableSectionElement>("rules-body");
   body.replaceChildren();
@@ -1180,6 +1627,7 @@ function renderAll(): void {
   renderCardFiles();
   renderCardProfiles();
   renderRules();
+  renderExclusions();
   renderCategories();
   renderExportSettings();
   renderPaths();
@@ -1374,6 +1822,29 @@ function ruleValues(): CategorizationRule[] {
   });
 }
 
+function exclusionValues(): CategorizationExclusion[] {
+  const rows = [
+    ...document.querySelectorAll<HTMLTableRowElement>(
+      "#exclusions-body tr[data-exclusion-index]"
+    )
+  ];
+  return rows.map((row, index) => {
+    const enabled = row.querySelector<HTMLInputElement>('[data-field="enabled"]');
+    const operator = row.querySelector<HTMLSelectElement>('[data-field="operator"]');
+    const value = row.querySelector<HTMLInputElement>('[data-field="value"]');
+    if (!enabled || !operator || !value) {
+      throw new Error("Missing exclusion input.");
+    }
+    return {
+      enabled: enabled.checked,
+      priority: (index + 1) * 10,
+      field: "descriptionNormalized",
+      operator: operator.value as CategorizationExclusion["operator"],
+      value: value.value
+    };
+  });
+}
+
 function categoryValues(): CategoryDefinition[] {
   return [
     ...document.querySelectorAll<HTMLTableRowElement>(
@@ -1448,6 +1919,7 @@ function tabSnapshot(tab: EditableTab): string {
   if (tab === "cards") return JSON.stringify(cardProfileValues());
   if (tab === "categories") {
     return JSON.stringify({
+      exclusions: exclusionValues(),
       rules: ruleValues(),
       categories: categoryValues()
     });
@@ -1488,10 +1960,14 @@ async function saveTab(tab: EditableTab, notify = true): Promise<void> {
   } else if (tab === "categories") {
     const categories = categoryValues();
     const rules = ruleValues();
+    const exclusions = exclusionValues();
     state.categories = await window.kakebo.saveCategories(categories);
-    state.rules = await window.kakebo.saveRules(rules);
+    const saved = await window.kakebo.saveRules({ exclusions, rules });
+    state.exclusions = saved.exclusions;
+    state.rules = saved.rules;
     renderCategories();
     renderRules();
+    renderExclusions();
   } else {
     state.exportSettings = await window.kakebo.saveExportSettings(
       exportValues(true)
@@ -1648,6 +2124,40 @@ function setupActions(): void {
       })();
     }
   );
+
+  onClick(element<HTMLButtonElement>("connect-bank"), async () => {
+    try {
+      await openConnectionWizard();
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    }
+  });
+
+  onClick(element<HTMLButtonElement>("reload-banks"), async () => {
+    await loadConnectionBanks();
+  });
+
+  element<HTMLSelectElement>("connection-country").addEventListener(
+    "change",
+    () => {
+      void loadConnectionBanks();
+    }
+  );
+  element<HTMLInputElement>("connection-bank-search").addEventListener(
+    "input",
+    () => renderConnectionBankList()
+  );
+  element<HTMLSelectElement>("connection-psu-type").addEventListener(
+    "change",
+    () => renderConnectionBankSelection()
+  );
+  element<HTMLButtonElement>("connection-wizard-cancel").addEventListener(
+    "click",
+    closeConnectionWizard
+  );
+  onClick(element<HTMLButtonElement>("connection-wizard-start"), async () => {
+    await startBankConnection();
+  });
 
   onClick(element<HTMLButtonElement>("start-sync"), async () => {
     const start = element<HTMLButtonElement>("start-sync");
@@ -1955,12 +2465,37 @@ function setupActions(): void {
     renderRules();
   });
 
+  element<HTMLButtonElement>("add-exclusion").addEventListener("click", () => {
+    state.exclusions = exclusionValues();
+    state.exclusions.push({
+      enabled: true,
+      priority: (state.exclusions.length + 1) * 10,
+      field: "descriptionNormalized",
+      operator: "contains",
+      value: ""
+    });
+    renderExclusions();
+  });
+
   onClick(element<HTMLButtonElement>("save-rules"), async () => {
     const save = element<HTMLButtonElement>("save-rules");
     save.disabled = true;
     try {
       await saveTab("categories", false);
       showToast(t("toast.rulesSaved", "Rules saved."));
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      save.disabled = false;
+    }
+  });
+
+  onClick(element<HTMLButtonElement>("save-exclusions"), async () => {
+    const save = element<HTMLButtonElement>("save-exclusions");
+    save.disabled = true;
+    try {
+      await saveTab("categories", false);
+      showToast(t("toast.exclusionsSaved", "Exclusions saved."));
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {

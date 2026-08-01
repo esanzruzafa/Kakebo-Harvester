@@ -249,6 +249,9 @@
                 </p>
               </div>
               <div class="button-row">
+                <button id="connect-bank" class="button primary" type="button" data-i18n="accounts.connectBank">
+                  Connect a new bank
+                </button>
                 <button class="button secondary" type="button" data-open-path="accounts-config" data-i18n="common.openJson">
                   Open JSON
                 </button>
@@ -426,6 +429,41 @@
               <button id="reapply-rules" class="button secondary" type="button" data-i18n="rules.reapply">
                 Apply to history
               </button>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="exclusions.kicker">Precedence rules</p>
+                <h2 data-i18n="exclusions.title">Categorization exclusions</h2>
+                <p class="panel-description" data-i18n="exclusions.description">
+                  Exclusions are evaluated before categorization rules. Matching movements remain uncategorized.
+                </p>
+              </div>
+              <div class="button-row">
+                <button id="add-exclusion" class="button secondary" type="button" data-i18n="exclusions.add">
+                  Add exclusion
+                </button>
+                <button id="save-exclusions" class="button primary" type="button" data-i18n="exclusions.save">
+                  Save exclusions
+                </button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="editable-table rules-table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th data-i18n="common.number">No.</th>
+                    <th data-i18n="rules.column.enabled">Enabled</th>
+                    <th data-i18n="rules.column.operator">Operator</th>
+                    <th data-i18n="rules.column.value">Text or expression</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="exclusions-body"></tbody>
+              </table>
             </div>
           </article>
 
@@ -660,6 +698,52 @@
           <button id="app-modal-cancel" class="button secondary" type="button">Cancel</button>
           <button id="app-modal-discard" class="button secondary" type="button" hidden>Discard</button>
           <button id="app-modal-confirm" class="button primary" type="button">Confirm</button>
+        </div>
+      </div>
+    </div>
+    <div class="app-modal connection-wizard" id="connection-wizard" hidden>
+      <div class="app-modal-card connection-wizard-card" role="dialog" aria-modal="true" aria-labelledby="connection-wizard-title" aria-describedby="connection-wizard-description">
+        <p class="section-kicker" data-i18n="connectionWizard.kicker">Bank connection</p>
+        <h2 id="connection-wizard-title" data-i18n="connectionWizard.title">Connect a new bank</h2>
+        <p id="connection-wizard-description" data-i18n="connectionWizard.description">
+          Choose a country and bank. You will complete the authorization only in the official bank flow opened in your browser.
+        </p>
+        <div class="connection-wizard-grid">
+          <label class="field">
+            <span data-i18n="connectionWizard.country">Country</span>
+            <select id="connection-country" class="select"></select>
+          </label>
+          <div class="field connection-wizard-reload">
+            <span aria-hidden="true">&nbsp;</span>
+            <button id="reload-banks" class="button secondary" type="button" data-i18n="connectionWizard.loadBanks">
+              Load banks
+            </button>
+          </div>
+        </div>
+        <label class="field">
+          <span data-i18n="connectionWizard.search">Find a bank</span>
+          <input id="connection-bank-search" class="input" type="search" autocomplete="off" data-i18n-aria-label="connectionWizard.search" />
+        </label>
+        <div id="connection-bank-list" class="connection-bank-list" role="listbox" aria-label="Available banks" data-i18n-aria-label="connectionWizard.availableBanks"></div>
+        <div class="connection-wizard-grid">
+          <label class="field">
+            <span data-i18n="connectionWizard.customerType">Customer type</span>
+            <select id="connection-psu-type" class="select" disabled>
+              <option value="personal" data-i18n="connectionWizard.personal">Personal</option>
+              <option value="business" data-i18n="connectionWizard.business">Business</option>
+            </select>
+          </label>
+          <div class="field">
+            <span data-i18n="connectionWizard.authentication">Authentication</span>
+            <strong id="connection-authentication" class="connection-authentication">&mdash;</strong>
+          </div>
+        </div>
+        <p id="connection-wizard-status" class="connection-wizard-status" role="status" aria-live="polite"></p>
+        <div class="button-row">
+          <button id="connection-wizard-cancel" class="button secondary" type="button" data-i18n="common.cancel">Cancel</button>
+          <button id="connection-wizard-start" class="button primary" type="button" disabled data-i18n="connectionWizard.continue">
+            Continue to the bank
+          </button>
         </div>
       </div>
     </div>

@@ -1,11 +1,17 @@
 import type { DoctorCheck } from "../doctor.js";
+import type { PsuType } from "../config.js";
+import type { DisconnectResult } from "../auth/disconnect-service.js";
 import type {
   CardImportRequest,
   CardImportResult
 } from "../cards/card-import-service.js";
 import type { CardImportProfile } from "../settings/card-import-profiles-store.js";
 import type { CategoryDefinition } from "../settings/categories-store.js";
-import type { CategorizationRule } from "../settings/categorization-rules-store.js";
+import type {
+  CategorizationConfiguration,
+  CategorizationExclusion,
+  CategorizationRule
+} from "../settings/categorization-rules-store.js";
 import type { ExportSettings } from "../settings/export-settings-store.js";
 import type {
   AppLanguage,
@@ -34,16 +40,35 @@ export interface ConnectionView {
   onlineRetryUsed: boolean;
 }
 
+export interface BankOption {
+  name: string;
+  country: string;
+  psuTypes: PsuType[];
+  authentication: Array<{
+    psuType: PsuType;
+    name: string;
+  }>;
+}
+
+export interface ConnectBankRequest {
+  bankName: string;
+  country: string;
+  psuType: PsuType;
+}
+
 export interface DesktopBootstrap {
   appName: string;
   version: string;
   environment: "production";
   callbackUrl: string;
   callbackReady: boolean;
+  defaultCountry: string;
+  defaultPsuType: PsuType;
   defaultDateFrom: string;
   defaultDateTo: string;
   connections: ConnectionView[];
   accounts: EditableAccount[];
+  exclusions: CategorizationExclusion[];
   rules: CategorizationRule[];
   categories: CategoryDefinition[];
   exportSettings: ExportSettings;
@@ -99,7 +124,9 @@ export interface KakeboDesktopApi {
   bootstrap: () => Promise<DesktopBootstrap>;
   startSync: (request: SyncRequest) => Promise<SyncRunResult>;
   saveAccounts: (accounts: EditableAccount[]) => Promise<EditableAccount[]>;
-  saveRules: (rules: CategorizationRule[]) => Promise<CategorizationRule[]>;
+  saveRules: (
+    configuration: CategorizationConfiguration
+  ) => Promise<CategorizationConfiguration>;
   saveCategories: (
     categories: CategoryDefinition[]
   ) => Promise<CategoryDefinition[]>;
@@ -114,7 +141,10 @@ export interface KakeboDesktopApi {
     limit: AuditHistoryLimit
   ) => Promise<AuditRunView[]>;
   reapplyRules: () => Promise<{ updated: number; exportPath: string }>;
+  listBanks: (country: string) => Promise<BankOption[]>;
+  connectBank: (request: ConnectBankRequest) => Promise<void>;
   reauthorize: (connectionId: string) => Promise<void>;
+  disconnectBank: (connectionId: string) => Promise<DisconnectResult>;
   runDoctor: () => Promise<DoctorCheck[]>;
   openAuditHistory: () => Promise<void>;
   clearAuditHistory: () => Promise<number>;

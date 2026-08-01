@@ -4,7 +4,7 @@ contextBridge.exposeInMainWorld("kakebo", {
   bootstrap: () => ipcRenderer.invoke("app:bootstrap"),
   startSync: (request) => ipcRenderer.invoke("sync:start", request),
   saveAccounts: (accounts) => ipcRenderer.invoke("accounts:save", accounts),
-  saveRules: (rules) => ipcRenderer.invoke("rules:save", rules),
+  saveRules: (configuration) => ipcRenderer.invoke("rules:save", configuration),
   saveCategories: (categories) =>
     ipcRenderer.invoke("categories:save", categories),
   saveExportSettings: (settings) =>
@@ -17,8 +17,12 @@ contextBridge.exposeInMainWorld("kakebo", {
   setAuditHistoryLimit: (limit) =>
     ipcRenderer.invoke("audit:limit:set", limit),
   reapplyRules: () => ipcRenderer.invoke("rules:reapply"),
+  listBanks: (country) => ipcRenderer.invoke("banks:list", { country }),
+  connectBank: (request) => ipcRenderer.invoke("connection:connect", request),
   reauthorize: (connectionId) =>
     ipcRenderer.invoke("connection:reauthorize", connectionId),
+  disconnectBank: (connectionId) =>
+    ipcRenderer.invoke("connection:disconnect", connectionId),
   runDoctor: () => ipcRenderer.invoke("doctor:run"),
   openAuditHistory: () => ipcRenderer.invoke("audit:open"),
   clearAuditHistory: () => ipcRenderer.invoke("audit:clear"),

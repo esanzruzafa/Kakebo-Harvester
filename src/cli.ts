@@ -13,7 +13,7 @@ import { CsvExporter } from "./export/csv-exporter.js";
 import { AccountRepository } from "./storage/repositories/account-repository.js";
 import { startServer } from "./server.js";
 import { runDoctor } from "./doctor.js";
-import { decryptSecret } from "./utils/crypto.js";
+import { disconnectBankConnection } from "./auth/disconnect-service.js";
 import type { Logger } from "pino";
 
 interface ParsedArguments {
@@ -278,42 +278,21 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
       const alias = required(options, "connection");
       const connection = database
         .prepare(
-          `SELECT c.id, s.provider_session_id_ciphertext
-           FROM bank_connections c
-           LEFT JOIN provider_sessions s ON s.bank_connection_id = c.id
-             AND s.status = 'AUTHORIZED'
-           WHERE c.alias = ?
-           ORDER BY s.created_at DESC LIMIT 1`
+          `SELECT id FROM bank_connections
+           WHERE alias = ? AND environment = ? AND provider = 'enable-banking'
+           ORDER BY created_at DESC LIMIT 1`
         )
-        .get(alias) as
-        | { id: string; provider_session_id_ciphertext: string | null }
-        | undefined;
+        .get(alias, config.appEnv) as { id: string } | undefined;
       if (!connection) throw new Error(`No existe la conexión "${alias}".`);
-      if (connection.provider_session_id_ciphertext) {
-        try {
-          await client.deleteSession(
-            decryptSecret(
-              connection.provider_session_id_ciphertext,
-              config.sessionEncryptionKey
-            )
-          );
-        } catch {
-          logger.warn("Remote session could not be revoked; continuing with local disconnect");
-        }
-      }
-      const transaction = database.transaction(() => {
-        database.prepare("DELETE FROM provider_sessions WHERE bank_connection_id = ?").run(
-          connection.id
-        );
-        database
-          .prepare(
-            `UPDATE bank_connections SET
-               status = 'REVOKED', reauthorization_required = 1
-             WHERE id = ?`
-          )
-          .run(connection.id);
+      const result = await disconnectBankConnection({
+        config,
+        database,
+        client,
+        connectionId: connection.id
       });
-      transaction();
+      if (result.remoteRevocationAttempted && !result.remoteRevoked) {
+        logger.warn("Remote session could not be revoked; continuing with local disconnect");
+      }
       console.log(
         "Conexión revocada localmente. Los movimientos históricos se han conservado. Comprueba también la revocación del consentimiento en el banco o en Enable Banking."
       );

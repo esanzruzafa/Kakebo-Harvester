@@ -114,4 +114,73 @@ describe("bank reauthorization", () => {
     ).toEqual({ status: "SUPERSEDED" });
     database.close();
   });
+
+  it("creates and completes a new connection for the selected bank", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-new-connection-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    let authorizationState = "";
+    const listBanks = vi.fn().mockResolvedValue([
+      {
+        name: "Second Demo Bank",
+        country: "ES",
+        psu_types: ["personal"],
+        auth_methods: [],
+        maximum_consent_validity: 7_776_000
+      }
+    ]);
+    const client = {
+      listBanks,
+      startAuthorization: vi.fn().mockImplementation((input: { state: string }) => {
+        authorizationState = input.state;
+        return Promise.resolve({ url: "https://bank.example/authorize" });
+      }),
+      authorizeSession: vi.fn().mockResolvedValue({
+        session_id: "new-session",
+        accounts: [
+          {
+            uid: "account-id",
+            identification_hash: "account-hash",
+            name: "Main account",
+            currency: "EUR"
+          }
+        ]
+      })
+    } as unknown as EnableBankingClient;
+    const service = new AuthorizationService(config, database, client);
+
+    const started = await service.connect({
+      bankSearch: "Second Demo Bank",
+      country: "ES",
+      psuType: "personal"
+    });
+
+    expect(listBanks).toHaveBeenCalledWith("ES", "personal");
+    expect(started.connectionAlias).toBe("Second Demo Bank personal");
+    expect(
+      database
+        .prepare(
+          "SELECT bank_name, bank_country, psu_type, status FROM bank_connections"
+        )
+        .get()
+    ).toEqual({
+      bank_name: "Second Demo Bank",
+      bank_country: "ES",
+      psu_type: "personal",
+      status: "PENDING_AUTHORIZATION"
+    });
+
+    const completed = await service.complete({
+      state: authorizationState,
+      code: "authorization-code"
+    });
+
+    expect(completed.status).toBe("authorized");
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS count FROM accounts WHERE active = 1")
+        .get()
+    ).toEqual({ count: 1 });
+    database.close();
+  });
 });

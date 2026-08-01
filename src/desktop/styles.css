@@ -1153,6 +1153,10 @@ body[data-export-format="xlsx"] .csv-option {
   place-items: center;
 }
 
+#app-modal {
+  z-index: 1100;
+}
+
 .app-modal[hidden] {
   display: none;
 }
@@ -1177,6 +1181,99 @@ body[data-export-format="xlsx"] .csv-option {
 .app-modal-card .button-row {
   justify-content: flex-end;
   margin-top: 24px;
+}
+
+.connection-wizard-card {
+  width: min(760px, 100%);
+}
+
+.connection-wizard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: end;
+  margin-top: 20px;
+}
+
+.connection-wizard-grid + .field,
+.connection-wizard-grid + .connection-wizard-grid {
+  margin-top: 16px;
+}
+
+.connection-wizard-reload .button {
+  white-space: nowrap;
+}
+
+.connection-bank-list {
+  display: grid;
+  max-height: 270px;
+  margin-top: 8px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.connection-bank-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  width: 100%;
+  padding: 13px 15px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.connection-bank-option:last-child {
+  border-bottom: 0;
+}
+
+.connection-bank-option:hover,
+.connection-bank-option:focus-visible,
+.connection-bank-option.is-selected {
+  outline: none;
+  background: var(--green-soft);
+}
+
+.connection-bank-option strong,
+.connection-bank-option small {
+  display: block;
+}
+
+.connection-bank-option small,
+.connection-authentication,
+.connection-wizard-status {
+  color: var(--muted);
+}
+
+.connection-bank-option small {
+  margin-top: 4px;
+}
+
+.connection-bank-option .status-badge {
+  align-self: center;
+}
+
+.connection-authentication {
+  display: block;
+  min-height: 41px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  font-weight: 500;
+}
+
+.connection-wizard-status {
+  min-height: 22px;
+  margin: 18px 0 0;
+  line-height: 1.45;
+}
+
+.connection-wizard-status.is-error {
+  color: var(--danger);
 }
 
 .toast {
@@ -1211,6 +1308,14 @@ body[data-export-format="xlsx"] .csv-option {
 
   .export-options {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .connection-wizard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .connection-wizard-reload .button {
+    width: 100%;
   }
 
   .audit-heading-actions {

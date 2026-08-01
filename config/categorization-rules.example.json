@@ -1,18 +1,22 @@
-[
-  {
-    "priority": 10,
-    "field": "descriptionNormalized",
-    "operator": "contains",
-    "value": "MERCADONA",
-    "category": "Alimentación",
-    "subcategory": "Supermercado"
-  },
-  {
-    "priority": 20,
-    "field": "descriptionNormalized",
-    "operator": "contains",
-    "value": "IBERDROLA",
-    "category": "Vivienda",
-    "subcategory": "Electricidad"
-  }
-]
+{
+  "exclusions": [
+    {
+      "enabled": true,
+      "priority": 10,
+      "field": "descriptionNormalized",
+      "operator": "contains",
+      "value": "AMAZON"
+    }
+  ],
+  "rules": [
+    {
+      "enabled": true,
+      "priority": 10,
+      "field": "descriptionNormalized",
+      "operator": "contains",
+      "value": "MERCADONA",
+      "category": "Food",
+      "subcategory": "Groceries"
+    }
+  ]
+}

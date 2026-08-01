@@ -29,6 +29,7 @@ The production desktop application provides:
 - full, movement-and-export, export-only, and custom synchronization steps;
 - automatic fallback to the longest transaction history available when a bank rejects the exact requested period;
 - an automatic local HTTPS callback server and interactive bank reauthorization;
+- an in-app assistant to discover and connect an additional bank without using the CLI;
 - a 94.5% interface scale and 1271 × 794 initial window;
 - an extraction splash plus an animated in-app loading window;
 - live progress showing every execution step, with one mutable line per step;
@@ -46,6 +47,41 @@ The production desktop application provides:
 - diagnostics, local file shortcuts, and a Windows Task Scheduler command.
 
 The desktop interface is production-only. The CLI continues to support sandbox and production.
+
+## Connect a new bank from the desktop application
+
+Open **Accounts and aliases** and select **Connect a new bank**. The assistant
+starts with the configured country, lets you choose another supported country,
+loads the current Enable Banking bank catalog, filters it locally, and offers
+only the customer types published for the selected bank.
+
+After selecting the bank and customer type, **Continue to the bank** opens the
+provider's HTTPS authorization URL in the default browser. Enter credentials,
+PINs, OTPs, or any other authentication information only in that official flow.
+The desktop waits for the validated local HTTPS callback. On success it writes
+the provider session and discovered accounts, updates `config/accounts.json`,
+and refreshes the accounts and connection views without restarting the app.
+
+The assistant is unavailable while a synchronization is running and requires
+the local HTTPS callback to be ready. If aliases or account switches have
+unsaved edits, it asks whether to save or discard them before starting so a
+completed connection cannot overwrite local form changes. Listing banks and
+connecting through the UI use the same API flow as `banks` and `connect` in the
+CLI.
+
+## Revoke a bank consent
+
+Each non-revoked connection in the synchronization view has a **Revoke consent**
+action next to the access renewal action. After an in-app confirmation, Kakebo
+Harvester attempts to delete the remote Enable Banking session, removes every
+local provider session, deactivates the related accounts, and marks the
+connection as revoked. It does not delete historical movements, exports, raw
+responses, or audit records.
+
+Network or provider failures can prevent confirmation of the remote revocation.
+In that case the local disconnect still completes and the application clearly
+asks you to revoke the consent from the bank or Enable Banking control panel as
+well.
 
 When an ASPSP returns `WRONG_TRANSACTIONS_PERIOD`, Kakebo Harvester retries that account with Enable Banking's `longest` strategy. Pagination continues with the same request parameters, and only movements inside the date interval selected in the application are added to SQLite and exports.
 
@@ -137,7 +173,7 @@ continues in the background; closing explains the safe-shutdown implications.
 
 `config/categories.json` defines categories and their allowed subcategories. Both fields are dependent picklists in the rule editor.
 
-`config/categorization-rules.json` supports `contains`, `equals`, `startsWith`, and `regex`. Rules are evaluated from top to bottom; their internal priority is normalized when the ordered list is saved. Existing reviewed movements are not overwritten. **Apply to history** reprocesses unreviewed movements and rebuilds the current export.
+`config/categorization-rules.json` contains two ordered lists: `exclusions` and `rules`. Both support `contains`, `equals`, `startsWith`, and `regex`; exclusions are always evaluated first, so matching movements remain uncategorized. The Categorization tab provides separate drag-and-drop editors for both lists. Rules are evaluated from top to bottom; their internal priority is normalized when the ordered list is saved. Existing reviewed movements are not overwritten. **Apply to history** reprocesses unreviewed movements and rebuilds the current export.
 
 Example files are under `config/`.
 

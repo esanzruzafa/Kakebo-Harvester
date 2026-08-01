@@ -11,6 +11,44 @@ Electron runs two trust levels:
 
 Renderers have context isolation enabled, Node.js disabled, navigation blocked, permission requests denied, and a restrictive content security policy. Preload scripts expose named operations only. Every IPC handler verifies that the sender is the expected live window and validates payloads with Zod.
 
+## New bank connection flow
+
+The **Accounts and aliases** view contains an application-styled connection
+assistant. It receives a current ASPSP catalog only after the trusted main
+process validates the selected ISO country and calls Enable Banking's
+`GET /aspsps` endpoint for AIS. The renderer can filter displayed bank names,
+choose a published personal or business PSU type, and show the authentication
+approaches supplied by the catalog. It never receives a JWT, authorization
+code, session identifier, private key, or bank credentials.
+
+Starting the selected connection is a separate validated IPC operation. It is
+blocked during an active synchronization, requires the local HTTPS callback,
+acquires the cross-process synchronization lock, and calls the existing
+`AuthorizationService.connect` workflow. The `AuthorizationCoordinator` opens
+only an HTTPS provider URL in the system browser and waits for the existing
+state-validated callback for up to fifteen minutes. Successful completion
+persists the session and accounts, writes the refreshed accounts configuration,
+and lets the renderer bootstrap again without restarting Electron. Rejected,
+cancelled, expired, and failed callbacks retain their safe connection status
+and message in SQLite and are shown through the normal authorization result
+channel.
+
+## Consent revocation
+
+Every non-revoked Enable Banking connection exposes a renderer-owned,
+application-styled confirmation action beside access renewal. The trusted main
+process blocks revocation during synchronization, validates the connection id,
+and runs it under the same cross-process synchronization lock.
+
+`disconnectBankConnection` attempts `DELETE /sessions/{session_id}` when an
+authorized encrypted provider session exists. It always then deletes local
+provider sessions, deactivates the affected accounts, clears stale retry/error
+state, and marks the connection `REVOKED`; transactions, raw responses,
+exports, and audit history remain intact. A remote network/provider failure is
+not hidden: the result tells the renderer that only local revocation was
+confirmed, so it directs the user to revoke the consent from the bank or Enable
+Banking control panel too. The CLI `disconnect` command calls the same service.
+
 The audit window has a separate preload bridge. It can list audit runs and close itself; it cannot synchronize, change configuration, open files, or delete data.
 
 ## Runtime root and configuration
@@ -25,7 +63,7 @@ Runtime configuration is divided by responsibility:
 | --- | --- |
 | `.env.production` | Environment, API identity, secret paths, database paths, retention, and operational limits |
 | `config/accounts.json` | Human-readable account-settings snapshot |
-| `config/categorization-rules.json` | Ordered automatic categorization rules |
+| `config/categorization-rules.json` | Ordered categorization exclusions and automatic categorization rules |
 | `config/categories.json` | Allowed category and dependent subcategory values |
 | `config/card-import-profiles.json` | Stable physical-card identities and reusable XLSX mappings |
 | `config/export-settings.json` | Output format, regional CSV settings, and ordered export columns |
@@ -165,7 +203,7 @@ The JSON account file is regenerated as a readable snapshot. Provider account ty
 
 Categories contain a unique name and unique subcategory names. The rule editor uses the category list as its first picklist and rebuilds the subcategory picklist when the parent changes.
 
-Rules remain compatible with the existing persisted `priority` field. The UI displays a one-based row number rather than the priority value. Drag-and-drop changes array order, and saving normalizes priorities to increments of ten. This preserves deterministic evaluation while hiding an implementation detail.
+The rules file stores independent `exclusions` and `rules` lists. Exclusions use the same operators as positive rules and are always evaluated first; a matching movement remains uncategorized. Both lists remain compatible with the persisted `priority` field. The UI displays a one-based row number rather than the priority value. Drag-and-drop changes array order, and saving normalizes priorities to increments of ten. This preserves deterministic evaluation while hiding an implementation detail.
 
 The main process rejects a saved rule whose category is unknown or whose subcategory is not a child of its selected category.
 
