@@ -29,8 +29,6 @@ import { runDoctor } from "../doctor.js";
 import { KakeboError } from "../errors.js";
 import {
   CsvExporter,
-  clearGeneratedExportFiles,
-  countGeneratedExportFiles,
   defaultExportSettings,
   exportOutputPath
 } from "../export/csv-exporter.js";
@@ -58,6 +56,7 @@ import {
 } from "../settings/localization-store.js";
 import { startCallbackServer } from "../server.js";
 import { AccountRepository } from "../storage/repositories/account-repository.js";
+import { resetLocalData } from "../storage/local-data-reset.js";
 import { DesktopRunRepository } from "../storage/repositories/desktop-run-repository.js";
 import { getSyncWindow } from "../sync/sync-window.js";
 import {
@@ -1081,11 +1080,9 @@ function registerIpc(application: KakeboApplication): void {
         )
       );
     }
-    const count = await countGeneratedExportFiles(application.config);
-    if (count === 0) return 0;
     return await trackOperation(
       withSynchronizationLock(application, async () =>
-        clearGeneratedExportFiles(application.config)
+        resetLocalData(application.config, application.database)
       )
     );
   });

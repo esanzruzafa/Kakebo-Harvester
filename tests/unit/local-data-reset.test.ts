@@ -1,0 +1,84 @@
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { createDatabase } from "../../src/storage/database.js";
+import { resetLocalData } from "../../src/storage/local-data-reset.js";
+import { testConfig } from "../helpers.js";
+
+let root: string | undefined;
+
+afterEach(async () => {
+  if (root) await rm(root, { recursive: true, force: true });
+  root = undefined;
+});
+
+describe("resetLocalData", () => {
+  it("removes local financial history while preserving access and configuration", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-reset-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(`INSERT INTO bank_connections (
+        id, provider, environment, bank_name, bank_country, psu_type, alias,
+        status, created_at, last_sync_at
+      ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo Bank', 'ES',
+        'personal', 'Demo', 'AUTHORIZED', ?, ?)`)
+      .run(now, now);
+    database
+      .prepare(`INSERT INTO provider_sessions (
+        id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+      ) VALUES ('session', 'connection', 'encrypted', ?, 'AUTHORIZED')`)
+      .run(now);
+    database
+      .prepare(`INSERT INTO accounts (
+        id, bank_connection_id, provider_account_id, name, active, first_seen_at, last_seen_at
+      ) VALUES ('account', 'connection', 'provider', 'Account', 1, ?, ?)`)
+      .run(now, now);
+    database
+      .prepare(`INSERT INTO transactions (
+        id, movement_key, reconciliation_key, provider, environment, bank_connection_id,
+        account_id, status, amount, currency, direction, description_normalized,
+        first_seen_at, last_seen_at, imported_at, raw_fingerprint
+      ) VALUES ('transaction', 'movement', 'reconciliation', 'enable-banking', 'sandbox',
+        'connection', 'account', 'booked', '1.00', 'EUR', 'income', 'TEST', ?, ?, ?, 'fingerprint')`)
+      .run(now, now, now);
+    database
+      .prepare(`INSERT INTO balances (id, account_id, amount, currency, extracted_at)
+        VALUES ('balance', 'account', '1.00', 'EUR', ?)`)
+      .run(now);
+    database
+      .prepare(`INSERT INTO transactions_raw (id, account_id, fetched_at, page_number, raw_fingerprint)
+        VALUES ('raw', 'account', ?, 1, 'fingerprint')`)
+      .run(now);
+    database
+      .prepare("INSERT INTO sync_runs (id, started_at, status) VALUES ('sync-run', ?, 'SUCCESS')")
+      .run(now);
+    database
+      .prepare(`INSERT INTO desktop_runs (
+        id, started_at, status, date_from, date_to, steps_json
+      ) VALUES ('desktop-run', ?, 'SUCCESS', '2026-01-01', '2026-01-01', '[]')`)
+      .run(now);
+    await mkdir(join(config.rawDataDirectory, "transactions"), { recursive: true });
+    await writeFile(join(config.rawDataDirectory, "transactions", "sample.json"), "{}");
+    await mkdir(config.exportDirectory, { recursive: true });
+    await writeFile(join(config.exportDirectory, "kakebo_movements.csv"), "MovementKey\nmovement\n");
+
+    await expect(resetLocalData(config, database)).resolves.toEqual({
+      exportFiles: 1,
+      transactions: 1,
+      balances: 1,
+      synchronizationRuns: 1
+    });
+    for (const table of ["bank_connections", "provider_sessions", "accounts"]) {
+      expect(database.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get()).toEqual({ total: 1 });
+    }
+    expect(database.prepare("SELECT last_sync_at FROM bank_connections").get()).toEqual({ last_sync_at: null });
+    for (const table of ["transactions", "transactions_raw", "balances", "sync_runs", "desktop_runs"]) {
+      expect(database.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get()).toEqual({ total: 0 });
+    }
+    await expect(access(config.rawDataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    database.close();
+  });
+});

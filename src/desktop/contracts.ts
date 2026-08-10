@@ -20,6 +20,7 @@ import type {
 } from "../settings/localization-store.js";
 import type { EditableAccount } from "../storage/repositories/account-repository.js";
 import type { AuditRunView } from "../storage/repositories/desktop-run-repository.js";
+import type { LocalDataResetResult } from "../storage/local-data-reset.js";
 import type {
   SyncProgressEvent,
   SyncRequest,
@@ -148,7 +149,7 @@ export interface KakeboDesktopApi {
   runDoctor: () => Promise<DoctorCheck[]>;
   openAuditHistory: () => Promise<void>;
   clearAuditHistory: () => Promise<number>;
-  clearExportFiles: () => Promise<number>;
+  clearExportFiles: () => Promise<LocalDataResetResult>;
   openPath: (target: OpenPathTarget) => Promise<void>;
   copyText: (value: string) => Promise<void>;
   setupLocalHttps: () => Promise<boolean>;

@@ -2279,14 +2279,15 @@ function setupActions(): void {
 
   onClick(element<HTMLButtonElement>("clear-exports"), async () => {
     try {
-      if (!(await confirmInApp(t("dialog.clearExports.message", "Delete every generated synchronization result file?"), t("dialog.clearExports.detail", "This deletes current exports and archived Kakebo Harvester exports. Configuration, database, and raw data are preserved."), t("dialog.clearExports.confirm", "Delete result files")))) return;
-      const deleted = await window.kakebo.clearExportFiles();
+      if (!(await confirmInApp(t("dialog.clearExports.message", "Reset all locally collected financial data?"), t("dialog.clearExports.detail", "This permanently removes exports, movements, balances, raw responses, and execution history. Bank connections, account preferences, and all configuration files are preserved."), t("dialog.clearExports.confirm", "Reset local data")))) return;
+      const reset = await window.kakebo.clearExportFiles();
       showToast(
-        deleted > 0
-          ? tf("toast.exportsDeleted", "{count} result files deleted.", {
-              count: deleted
+        reset.exportFiles + reset.transactions + reset.balances + reset.synchronizationRuns > 0
+          ? tf("toast.localDataReset", "Local data reset: {transactions} movements and {balances} balances removed.", {
+              transactions: reset.transactions,
+              balances: reset.balances
             })
-          : t("toast.noExportsDeleted", "No result files were deleted.")
+          : t("toast.noLocalDataReset", "There was no local financial history to remove.")
       );
     } catch (error) {
       showToast(errorMessage(error), true);

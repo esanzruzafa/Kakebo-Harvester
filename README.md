@@ -162,7 +162,7 @@ data/production/exports/kakebo_movements.xlsx
 data/production/exports/kakebo_movements.csv
 ```
 
-The **Delete result files** action removes only Kakebo Harvester's current and archived XLSX/CSV results after an in-app confirmation. It does not remove configuration, SQLite data, raw responses, or audit history.
+The **Reset local data** action permanently removes Kakebo Harvester's current and archived XLSX/CSV results, imported bank and card movements, balances, raw provider responses, and execution history after an in-app confirmation. It preserves bank connections and sessions, account preferences, and every configuration file. The next synchronization therefore starts with empty local financial history without requiring bank reconnection.
 
 Tabs with edited configuration show an in-app choice to save, discard, or cancel
 before navigation. Closing applies the same choice across every edited section.
