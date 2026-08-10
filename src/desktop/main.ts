@@ -346,18 +346,22 @@ function findEnvironmentFile(): string {
     if (existsSync(candidate)) return candidate;
   }
   const portableDirectory = process.env["PORTABLE_EXECUTABLE_DIR"];
+  const environmentCandidates = (directory: string): string[] => [
+    join(directory, "private", ".env.production"),
+    join(directory, ".env.production")
+  ];
   const candidates = [
     ...(portableDirectory
-      ? [join(portableDirectory, ".env.production")]
+      ? environmentCandidates(portableDirectory)
       : []),
-    join(app.getPath("userData"), ".env.production"),
-    join(process.cwd(), ".env.production"),
-    join(dirname(process.execPath), ".env.production")
+    ...environmentCandidates(app.getPath("userData")),
+    ...environmentCandidates(process.cwd()),
+    ...environmentCandidates(dirname(process.execPath))
   ];
   const selected = candidates.find((candidate) => existsSync(candidate));
   if (!selected) {
     throw new Error(
-      "No .env.production file was found. Place it next to the portable executable or in the application data directory."
+      "No .env.production file was found. Place it in private next to the portable executable or in the application data directory."
     );
   }
   return selected;

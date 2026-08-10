@@ -9,11 +9,11 @@ Kakebo-Harvester-*.exe
 coverage/
 .env
 .env.*
-!.env.example
-!.env.sandbox.example
-!.env.production.example
 private/*
 !private/.gitkeep
+!private/.env.example
+!private/.env.sandbox.example
+!private/.env.production.example
 data/**/*.sqlite
 data/**/*.sqlite-*
 data/**/raw/*
@@ -31,4 +31,3 @@ config/export-settings.json.state.json
 config/card-import-profiles.json
 config/ui-settings.json
 config/*.backup
-Ideas.md

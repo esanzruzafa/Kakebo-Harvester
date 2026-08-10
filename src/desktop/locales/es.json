@@ -280,7 +280,7 @@
   "paths.kicker": "Archivos locales",
   "paths.root": "Carpeta de aplicación",
   "paths.title": "Ubicaciones",
-  "portability.description": "Copia de forma segura la carpeta privada, la base de datos, la configuración y .env.production junto al ejecutable. Regenera el certificado para el nuevo usuario de Windows.",
+  "portability.description": "Copia de forma segura la carpeta privada, la base de datos y la configuración junto al ejecutable. private/.env.production permanece dentro de la carpeta privada. Regenera el certificado para el nuevo usuario de Windows.",
   "portability.https": "Preparar HTTPS en este equipo",
   "portability.kicker": "Nuevo ordenador",
   "portability.preparing": "Preparando HTTPS…",

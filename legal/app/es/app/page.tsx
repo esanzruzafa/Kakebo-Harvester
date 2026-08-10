@@ -83,7 +83,7 @@ export default function SpanishApplicationPage() {
           <li>Descarga el último ejecutable portable desde GitHub Releases.</li>
           <li>
             Colócalo en una carpeta privada junto a tu
-            <code>.env.production</code> completo.
+            <code>private/.env.production</code> completo.
           </li>
           <li>
             Guarda el PEM de producción en <code>private/</code>. La
@@ -121,7 +121,7 @@ export default function SpanishApplicationPage() {
             <summary>¿Dónde se guardan mis datos?</summary>
             <p>
               En tu ordenador, en la base de datos SQLite y la carpeta opcional
-              de datos raw configuradas en <code>.env.production</code>.
+              de datos raw configuradas en <code>private/.env.production</code>.
             </p>
           </details>
           <details>

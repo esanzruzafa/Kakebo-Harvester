@@ -233,8 +233,8 @@ Recommended layout:
 ```text
 Kakebo-Harvester/
 ├── Kakebo-Harvester-<version>-x64.exe
-├── .env.production
 ├── private/
+│   ├── .env.production
 │   ├── enable-banking-production.pem
 │   ├── local-https-production.pfx
 │   ├── local-https-production.passphrase
@@ -259,7 +259,7 @@ Kakebo-Harvester/
 authoritative for account aliases and switches; `accounts.json` is a readable
 snapshot.
 
-The executable searches for `.env.production` in this order:
+The executable searches for `private/.env.production` in this order:
 
 1. `KAKEBO_ENV_FILE`, when explicitly set;
 2. next to the portable executable;
@@ -267,7 +267,7 @@ The executable searches for `.env.production` in this order:
 4. the current working directory;
 5. next to the running executable.
 
-All relative paths in `.env.production` are resolved from the directory containing that file. Keeping the environment file next to the portable executable therefore makes the complete folder portable.
+The legacy root-level `.env.production` locations remain supported for existing installations, but `private/.env.production` takes precedence. All relative paths are resolved from the directory containing the selected file. The production template is already written for the recommended `private/` location: secrets use paths inside `private/`, while data and configuration use `../data/...` and `../config/...`.
 
 ## Production setup
 
@@ -280,7 +280,7 @@ Requirements:
 
 Setup:
 
-1. Copy `.env.production.example` to `.env.production`.
+1. Copy `private/.env.production.example` to `private/.env.production`.
 2. Add the Enable Banking application ID and PEM path.
 3. Generate a 32-byte base64 `SESSION_ENCRYPTION_KEY`.
 4. Launch the portable executable.
@@ -300,12 +300,13 @@ Moving to another computer does not require code changes. Kakebo Harvester check
 that the copied CA thumbprint is trusted by the current Windows user; when it is
 not, startup offers to regenerate local HTTPS before opening the callback server.
 
-For a fresh computer, copy the executable, `.env.production`, Enable Banking PEM,
+For a fresh computer, copy the executable, the complete `private/` directory,
 and the configuration you want to retain. The application creates missing
 database and output directories. For a migration with history, close the app and
 scheduled task first, then copy the complete `data/production` directory together
-with `.env.production`, its unchanged `SESSION_ENCRYPTION_KEY`, `private/`, and
-`config/`. Run Doctor and a short synchronization after HTTPS preparation.
+with `private/.env.production`, its unchanged `SESSION_ENCRYPTION_KEY`, the rest
+of `private/`, and `config/`. Run Doctor and a short synchronization after HTTPS
+preparation.
 
 ## Sandbox and CLI
 
@@ -313,15 +314,15 @@ Install dependencies and create a sandbox environment:
 
 ```powershell
 npm ci
-Copy-Item .env.sandbox.example .env.sandbox
+Copy-Item private/.env.sandbox.example private/.env.sandbox
 ```
 
-Register `http://localhost:8000/callback` in the Enable Banking sandbox application and complete `.env.sandbox`.
+Register `http://localhost:8000/callback` in the Enable Banking sandbox application and complete `private/.env.sandbox`.
 
 Common commands:
 
 ```powershell
-$env:KAKEBO_ENV_FILE = ".env.sandbox"
+$env:KAKEBO_ENV_FILE = "private/.env.sandbox"
 npm run cli -- doctor
 npm run cli -- banks --country ES
 npm run cli -- connect --bank "Bank name" --country ES --psu-type personal
@@ -331,7 +332,7 @@ npm run cli -- sync-all
 npm run cli -- export
 ```
 
-When both `.env.sandbox` and `.env.production` exist, set `KAKEBO_ENV_FILE` explicitly for CLI commands.
+When both `private/.env.sandbox` and `private/.env.production` exist, set `KAKEBO_ENV_FILE` explicitly for CLI commands.
 
 ## Windows Task Scheduler
 

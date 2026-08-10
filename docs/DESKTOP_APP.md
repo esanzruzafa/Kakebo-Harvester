@@ -54,15 +54,15 @@ The audit window has a separate preload bridge. It can list audit runs and close
 
 ## Runtime root and configuration
 
-The directory containing the selected `.env.production` is the runtime root. All relative environment paths are resolved from it.
+The directory containing the selected `private/.env.production` is the runtime root. All relative environment paths are resolved from it. The production template therefore uses relative paths inside `private/` for secrets and `../data/...` / `../config/...` for runtime data and editable configuration.
 
-The desktop application searches for `.env.production` in the explicitly configured path, portable-executable directory, application-data directory, current directory, and executable directory. This makes a complete private folder portable without compiling machine-specific paths.
+The desktop application searches for `private/.env.production` in the explicitly configured path, portable-executable directory, application-data directory, current directory, and executable directory. Root-level `.env.production` remains a compatibility fallback. This makes a complete private folder portable without compiling machine-specific paths.
 
 Runtime configuration is divided by responsibility:
 
 | File | Responsibility |
 | --- | --- |
-| `.env.production` | Environment, API identity, secret paths, database paths, retention, and operational limits |
+| `private/.env.production` | Environment, API identity, secret paths, database paths, retention, and operational limits |
 | `config/accounts.json` | Human-readable account-settings snapshot |
 | `config/categorization-rules.json` | Ordered categorization exclusions and automatic categorization rules |
 | `config/categories.json` | Allowed category and dependent subcategory values |
@@ -354,7 +354,7 @@ Before moving computers:
 
 1. close the UI and disable its scheduled task;
 2. copy the complete private runtime folder, including SQLite sidecar files if present;
-3. preserve `.env.production`, `SESSION_ENCRYPTION_KEY`, PEM, configuration, and data together;
+3. preserve `private/.env.production`, `SESSION_ENCRYPTION_KEY`, PEM, configuration, and data together;
 4. launch as the target Windows user;
 5. accept automatic local HTTPS preparation when the copied CA is not trusted;
 6. run Doctor and a short synchronization;
@@ -364,7 +364,7 @@ Losing `SESSION_ENCRYPTION_KEY` makes stored provider sessions unreadable and re
 
 For a fresh installation, the SQLite database, configuration files, and output
 directories may be absent and are created on demand. The executable still needs
-`.env.production`, the Enable Banking production application id, its PEM, and a
+`private/.env.production`, the Enable Banking production application id, its PEM, and a
 valid encryption key. No Node.js installation or compiler is required on the
 target computer because Electron and the native SQLite binary are packaged.
 

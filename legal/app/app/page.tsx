@@ -85,7 +85,7 @@ export default function ApplicationPage() {
           </li>
           <li>
             Place it in a private folder together with your completed
-            <code>.env.production</code>.
+            <code>private/.env.production</code>.
           </li>
           <li>
             Keep the production PEM under <code>private/</code>. Configuration
@@ -123,7 +123,7 @@ export default function ApplicationPage() {
             <summary>Where is my data stored?</summary>
             <p>
               On your computer, in the SQLite database and optional raw-data
-              directory configured in <code>.env.production</code>.
+            directory configured in <code>private/.env.production</code>.
             </p>
           </details>
           <details>

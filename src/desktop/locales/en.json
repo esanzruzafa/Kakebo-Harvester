@@ -280,7 +280,7 @@
   "paths.kicker": "Local files",
   "paths.root": "Application folder",
   "paths.title": "Locations",
-  "portability.description": "Securely copy the private folder, database, configuration, and .env.production next to the executable. Regenerate the certificate for the new Windows user.",
+  "portability.description": "Securely copy the private folder, database, and configuration next to the executable. private/.env.production stays inside the private folder. Regenerate the certificate for the new Windows user.",
   "portability.https": "Prepare HTTPS on this computer",
   "portability.kicker": "New computer",
   "portability.preparing": "Preparing HTTPS…",

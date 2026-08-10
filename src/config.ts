@@ -170,6 +170,20 @@ export function resolveEnvironmentFile(
     return path;
   }
 
+  const privateDirectory = resolve(baseDirectory, "private");
+  const privateDefaultPath = resolve(privateDirectory, ".env");
+  if (existsSync(privateDefaultPath)) return privateDefaultPath;
+
+  const privateCandidates = [".env.sandbox", ".env.production"]
+    .map((filename) => resolve(privateDirectory, filename))
+    .filter((path) => existsSync(path));
+  if (privateCandidates.length === 1) return privateCandidates[0];
+  if (privateCandidates.length > 1) {
+    throw new ConfigurationError(
+      "Hay varios archivos de entorno privados. Define KAKEBO_ENV_FILE de forma explícita."
+    );
+  }
+
   const defaultPath = resolve(baseDirectory, ".env");
   if (existsSync(defaultPath)) return defaultPath;
 
@@ -179,7 +193,7 @@ export function resolveEnvironmentFile(
   if (candidates.length === 1) return candidates[0];
   if (candidates.length > 1) {
     throw new ConfigurationError(
-      "Hay varios archivos de entorno. Define KAKEBO_ENV_FILE como .env.sandbox o .env.production."
+      "Hay varios archivos de entorno. Define KAKEBO_ENV_FILE de forma explícita."
     );
   }
   return undefined;
@@ -198,7 +212,7 @@ export function loadConfig(
     });
   } else if (!process.env["APP_ENV"]) {
     throw new ConfigurationError(
-      "No se encontró .env, .env.sandbox ni .env.production. Copia .env.example y completa sus valores."
+      "No se encontró un archivo de entorno. Usa private/.env.sandbox o private/.env.production y completa sus valores."
     );
   }
 

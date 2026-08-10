@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -22,6 +22,19 @@ describe("environment file selection", () => {
     await writeFile(sandboxPath, "APP_ENV=sandbox\n");
 
     expect(resolveEnvironmentFile(undefined, root)).toBe(sandboxPath);
+  });
+
+  it("prefers an environment file in the private directory", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-config-"));
+    const privateDirectory = join(root, "private");
+    const privatePath = join(privateDirectory, ".env.production");
+    await mkdir(privateDirectory);
+    await Promise.all([
+      writeFile(privatePath, "APP_ENV=production\n"),
+      writeFile(join(root, ".env.production"), "APP_ENV=production\n")
+    ]);
+
+    expect(resolveEnvironmentFile(undefined, root)).toBe(privatePath);
   });
 
   it("requires an explicit choice when both environments exist", async () => {
