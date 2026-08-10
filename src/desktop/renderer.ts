@@ -4,6 +4,7 @@ import type {
   DesktopBootstrap,
   SelectedCardFile
 } from "./contracts.js";
+import { rowDropInsertionIndex } from "./row-drop.js";
 import type { CardImportProfile } from "../settings/card-import-profiles-store.js";
 import type { CategoryDefinition } from "../settings/categories-store.js";
 import type {
@@ -1283,8 +1284,14 @@ function enableRowDrop(
   row.addEventListener("drop", (event) => {
     event.preventDefault();
     row.classList.remove("is-drop-target");
-    const from = Number(event.dataTransfer?.getData("text/x-kakebo-row"));
-    if (Number.isInteger(from) && from !== index) move(from, index);
+    const source = event.dataTransfer?.getData("text/x-kakebo-row");
+    if (source === undefined || source === "") return;
+    const from = Number(source);
+    if (!Number.isInteger(from)) return;
+    const bounds = row.getBoundingClientRect();
+    const dropAfter = event.clientY >= bounds.top + bounds.height / 2;
+    const to = rowDropInsertionIndex(from, index, dropAfter);
+    if (from !== to) move(from, to);
   });
 }
 

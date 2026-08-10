@@ -43,8 +43,9 @@ and runs it under the same cross-process synchronization lock.
 `disconnectBankConnection` attempts `DELETE /sessions/{session_id}` when an
 authorized encrypted provider session exists. It always then deletes local
 provider sessions, deactivates the affected accounts, clears stale retry/error
-state, and marks the connection `REVOKED`; transactions, raw responses,
-exports, and audit history remain intact. A remote network/provider failure is
+state, and marks the connection `REVOKED`, which removes it from the desktop
+connection list; transactions, raw responses, exports, and audit history remain
+intact. A remote network/provider failure is
 not hidden: the result tells the renderer that only local revocation was
 confirmed, so it directs the user to revoke the consent from the bank or Enable
 Banking control panel too. The CLI `disconnect` command calls the same service.

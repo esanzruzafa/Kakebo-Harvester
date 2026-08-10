@@ -75,8 +75,9 @@ Each non-revoked connection in the synchronization view has a **Revoke consent**
 action next to the access renewal action. After an in-app confirmation, Kakebo
 Harvester attempts to delete the remote Enable Banking session, removes every
 local provider session, deactivates the related accounts, and marks the
-connection as revoked. It does not delete historical movements, exports, raw
-responses, or audit records.
+connection as revoked. Revoked connections disappear from the connection list.
+It does not delete historical movements, exports, raw responses, or audit
+records.
 
 Network or provider failures can prevent confirmation of the remote revocation.
 In that case the local disconnect still completes and the application clearly

@@ -571,6 +571,7 @@ function connections(application: KakeboApplication): ConnectionView[] {
        FROM bank_connections
        WHERE environment = ?
          AND provider = 'enable-banking'
+         AND status <> 'REVOKED'
        ORDER BY created_at`
     )
     .all(application.config.appEnv) as Array<{
