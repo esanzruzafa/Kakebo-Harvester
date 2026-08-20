@@ -1,0 +1,304 @@
+import type { SqliteDatabase } from "../database.js";
+import type { AccountResource } from "../../enable-banking/schemas.js";
+import { createId } from "../../utils/crypto.js";
+import { maskIdentifier } from "../../utils/text.js";
+
+export interface StoredAccount {
+  id: string;
+  bank_connection_id: string;
+  provider_account_id: string;
+  identification_hash: string | null;
+  iban_masked: string | null;
+  currency: string | null;
+  name: string | null;
+  display_name: string | null;
+  account_alias: string | null;
+  account_type: string | null;
+  product_type: string | null;
+  sync_enabled: number;
+  export_enabled: number;
+  bank_name: string;
+  connection_alias: string;
+}
+
+export interface EditableAccount {
+  id: string;
+  identificationHash: string | null;
+  bank: string;
+  connection: string;
+  account: string;
+  masked: string | null;
+  currency: string | null;
+  productType: string | null;
+  alias: string;
+  providerActive: boolean;
+  syncEnabled: boolean;
+  exportEnabled: boolean;
+  lastError: {
+    at: string;
+    code: string;
+    message: string;
+  } | null;
+}
+
+export interface AccountSettingsUpdate {
+  id: string;
+  alias: string;
+  syncEnabled: boolean;
+  exportEnabled: boolean;
+}
+
+function providerText(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
+    return value.join(", ");
+  }
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "name" in value &&
+    typeof value.name === "string"
+  ) {
+    return value.name;
+  }
+  return null;
+}
+
+export class AccountRepository {
+  public constructor(private readonly database: SqliteDatabase) {}
+
+  public shouldRefreshDetails(
+    connectionId: string,
+    providerAccountId: string
+  ): boolean {
+    const account = this.database
+      .prepare(
+        `SELECT sync_enabled FROM accounts
+         WHERE bank_connection_id = ? AND provider_account_id = ?`
+      )
+      .get(connectionId, providerAccountId) as { sync_enabled: number } | undefined;
+    return account?.sync_enabled !== 0;
+  }
+
+  public findByProviderAccountId(
+    connectionId: string,
+    providerAccountId: string
+  ): StoredAccount | undefined {
+    return this.database
+      .prepare(
+        `SELECT a.*, c.bank_name, c.alias AS connection_alias
+         FROM accounts a
+         JOIN bank_connections c ON c.id = a.bank_connection_id
+         WHERE a.bank_connection_id = ? AND a.provider_account_id = ?`
+      )
+      .get(connectionId, providerAccountId) as StoredAccount | undefined;
+  }
+
+  public recordLastSyncError(accountId: string, code: string, message: string): void {
+    this.database
+      .prepare(
+        `UPDATE accounts SET
+           last_error_at = ?, last_error_code = ?, last_error_message_safe = ?
+         WHERE id = ?`
+      )
+      .run(new Date().toISOString(), code, message, accountId);
+  }
+
+  public clearLastSyncError(accountId: string): void {
+    this.database
+      .prepare(
+        `UPDATE accounts SET
+           last_error_at = NULL, last_error_code = NULL, last_error_message_safe = NULL
+         WHERE id = ?`
+      )
+      .run(accountId);
+  }
+
+  public upsert(
+    connectionId: string,
+    account: AccountResource,
+    rawPath: string | null
+  ): string {
+    const now = new Date().toISOString();
+    const existingByHash = account.identification_hash
+      ? (this.database
+          .prepare(
+            `SELECT id FROM accounts
+             WHERE bank_connection_id = ? AND identification_hash = ?`
+          )
+          .get(connectionId, account.identification_hash) as { id: string } | undefined)
+      : undefined;
+    const existing =
+      existingByHash ??
+      (this.database
+        .prepare(
+          `SELECT id FROM accounts
+           WHERE bank_connection_id = ? AND provider_account_id = ?`
+        )
+        .get(connectionId, account.uid) as { id: string } | undefined);
+
+    const iban = account.account_id?.iban;
+    if (existing) {
+      this.database
+        .prepare(
+          `UPDATE accounts SET
+             provider_account_id = ?, identification_hash = COALESCE(?, identification_hash),
+             iban_masked = ?, currency = ?, name = ?, display_name = ?,
+             account_type = ?, product_type = ?, active = 1, last_seen_at = ?,
+             raw_response_path = ?, last_error_at = NULL, last_error_code = NULL,
+             last_error_message_safe = NULL
+           WHERE id = ?`
+        )
+        .run(
+          account.uid,
+          account.identification_hash ?? null,
+          maskIdentifier(iban),
+          account.currency ?? null,
+          account.name ?? null,
+          account.details ?? account.name ?? null,
+          account.cash_account_type ?? null,
+          providerText(account.product),
+          now,
+          rawPath,
+          existing.id
+        );
+      return existing.id;
+    }
+
+    const id = createId();
+    this.database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, identification_hash,
+           iban_masked, currency, name, display_name, account_type, product_type,
+           active, first_seen_at, last_seen_at, raw_response_path
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
+      )
+      .run(
+        id,
+        connectionId,
+        account.uid,
+        account.identification_hash ?? null,
+        maskIdentifier(iban),
+        account.currency ?? null,
+        account.name ?? null,
+        account.details ?? account.name ?? null,
+        account.cash_account_type ?? null,
+        providerText(account.product),
+        now,
+        now,
+        rawPath
+      );
+    return id;
+  }
+
+  public listActive(connectionId?: string): StoredAccount[] {
+    const where = connectionId ? "AND a.bank_connection_id = ?" : "";
+    return this.database
+      .prepare(
+        `SELECT a.*, c.bank_name, c.alias AS connection_alias
+         FROM accounts a
+         JOIN bank_connections c ON c.id = a.bank_connection_id
+         WHERE a.active = 1
+           AND a.sync_enabled = 1
+           AND c.provider = 'enable-banking'
+           AND c.status = 'AUTHORIZED'
+           AND c.reauthorization_required = 0
+           ${where}
+         ORDER BY c.bank_name, COALESCE(a.account_alias, a.display_name, a.name)`
+      )
+      .all(...(connectionId ? [connectionId] : [])) as StoredAccount[];
+  }
+
+  public listEditable(): EditableAccount[] {
+    const rows = this.database
+      .prepare(
+        `SELECT
+           a.id,
+           a.identification_hash,
+           c.bank_name,
+           c.alias AS connection_alias,
+           COALESCE(a.display_name, a.name, 'Account') AS account_name,
+           a.iban_masked,
+           a.currency,
+           COALESCE(a.product_type, a.account_type) AS product_type,
+           a.account_alias,
+           a.active,
+           a.sync_enabled,
+           a.export_enabled,
+           a.last_error_at,
+           a.last_error_code,
+           a.last_error_message_safe,
+           c.provider
+         FROM accounts a
+         JOIN bank_connections c ON c.id = a.bank_connection_id
+         ORDER BY c.bank_name, account_name`
+      )
+      .all() as Array<{
+      id: string;
+      identification_hash: string | null;
+      bank_name: string;
+      connection_alias: string;
+      account_name: string;
+      iban_masked: string | null;
+      currency: string | null;
+      product_type: string | null;
+      account_alias: string | null;
+      active: number;
+      sync_enabled: number;
+      export_enabled: number;
+      last_error_at: string | null;
+      last_error_code: string | null;
+      last_error_message_safe: string | null;
+      provider: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      identificationHash: row.identification_hash,
+      bank: row.bank_name,
+      connection: row.connection_alias,
+      account: row.account_name,
+      masked: row.iban_masked,
+      currency: row.currency,
+      productType: row.product_type,
+      alias: row.account_alias ?? "",
+      providerActive: row.active === 1 && row.provider === "enable-banking",
+      syncEnabled: row.sync_enabled === 1,
+      exportEnabled: row.export_enabled === 1,
+      lastError:
+        row.last_error_at && row.last_error_code && row.last_error_message_safe
+          ? {
+              at: row.last_error_at,
+              code: row.last_error_code,
+              message: row.last_error_message_safe
+            }
+          : null
+    }));
+  }
+
+  public updateSettings(updates: AccountSettingsUpdate[]): void {
+    const update = this.database.prepare(
+      `UPDATE accounts SET
+         account_alias = ?, sync_enabled = ?, export_enabled = ?
+       WHERE id = ?`
+    );
+    const transaction = this.database.transaction(() => {
+      for (const item of updates) {
+        const alias = item.alias.trim();
+        if (alias.length > 120) {
+          throw new Error("Account aliases cannot exceed 120 characters.");
+        }
+        const result = update.run(
+          alias || null,
+          item.syncEnabled ? 1 : 0,
+          item.exportEnabled ? 1 : 0,
+          item.id
+        );
+        if (result.changes !== 1) {
+          throw new Error(`Unknown account: ${item.id}`);
+        }
+      }
+    });
+    transaction();
+  }
+}

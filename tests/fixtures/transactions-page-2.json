@@ -1,0 +1,12 @@
+{
+  "transactions": [
+    {
+      "entry_reference": "demo-002",
+      "transaction_amount": { "currency": "EUR", "amount": "2500.00" },
+      "credit_debit_indicator": "CRDT",
+      "status": "BOOK",
+      "booking_date": "2026-07-24",
+      "remittance_information": ["NÓMINA DEMO"]
+    }
+  ]
+}

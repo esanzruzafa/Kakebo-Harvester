@@ -1,0 +1,21 @@
+[
+  {
+    "id": "kutxabank-card-1",
+    "enabled": true,
+    "name": "Kutxabank card 1",
+    "bankName": "Kutxabank",
+    "cardName": "Kutxabank card 1",
+    "sheet": "",
+    "startRow": 9,
+    "columns": {
+      "date": "A",
+      "description": "B",
+      "valueDate": "C",
+      "amount": "D"
+    },
+    "dateFormat": "dmy",
+    "decimalSeparator": ",",
+    "invertAmountSign": false,
+    "currency": "EUR"
+  }
+]
