@@ -49,7 +49,7 @@ describe("database migrations", () => {
     legacy.close();
 
     const migrated = createDatabase(config.databasePath);
-    expect(migrated.pragma("user_version", { simple: true })).toBe(5);
+    expect(migrated.pragma("user_version", { simple: true })).toBe(6);
     expect(
       migrated
         .prepare(
@@ -72,6 +72,12 @@ describe("database migrations", () => {
       )
     ).toBe(true);
     expect(columns.some((column) => column.name === "online_retry_used")).toBe(
+      true
+    );
+    const accountColumns = migrated.pragma("table_info(accounts)") as Array<{
+      name: string;
+    }>;
+    expect(accountColumns.some((column) => column.name === "last_error_at")).toBe(
       true
     );
     migrated.close();

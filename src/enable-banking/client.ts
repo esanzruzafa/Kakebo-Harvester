@@ -140,6 +140,18 @@ function providerFailureMessage(
   }`;
 }
 
+function aspspTemporaryFailureMessage(
+  status: number,
+  payload: ProviderErrorPayload
+): string {
+  const identity = `HTTP ${status}, ${payload.providerCode ?? "ASPSP_ERROR"}`;
+  const detail = payload.message ? ` Detalle del banco: ${payload.message}.` : "";
+  return `El banco ha fallado temporalmente al atender la consulta (${identity}). ` +
+    "No es necesario reconectar por este error. Vuelve a intentarlo dentro de al menos un minuto; " +
+    "si persiste, repite con intervalos de 1, 2 y 4 horas y revisa el registro de solicitudes de Enable Banking." +
+    detail;
+}
+
 export interface StartAuthorizationInput {
   bank: Aspsp;
   state: string;
@@ -227,7 +239,9 @@ export class EnableBankingClient {
         }
         if (providerCode && unavailableErrorCodes.has(providerCode)) {
           throw new BankUnavailableError(
-            providerFailureMessage(response.status, failure),
+            providerCode === "ASPSP_ERROR"
+              ? aspspTemporaryFailureMessage(response.status, failure)
+              : providerFailureMessage(response.status, failure),
             undefined,
             metadata
           );

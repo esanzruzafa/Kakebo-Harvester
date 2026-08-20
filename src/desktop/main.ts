@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -59,6 +60,10 @@ import { AccountRepository } from "../storage/repositories/account-repository.js
 import { resetLocalData } from "../storage/local-data-reset.js";
 import { DesktopRunRepository } from "../storage/repositories/desktop-run-repository.js";
 import { getSyncWindow } from "../sync/sync-window.js";
+import type {
+  AccountFailureDecision,
+  AccountSyncFailure
+} from "../sync/sync-service.js";
 import {
   SynchronizationLock,
   SyncRunner,
@@ -88,6 +93,11 @@ const syncRequestSchema = z.object({
   allowRateLimitOverride: z.boolean().optional()
 });
 
+const accountFailureDecisionSchema = z.object({
+  requestId: z.uuid(),
+  decision: z.enum(["continue", "stop"])
+});
+
 const editableAccountSchema = z.object({
   id: z.string().min(1),
   identificationHash: z.string().nullable(),
@@ -100,7 +110,14 @@ const editableAccountSchema = z.object({
   alias: z.string().max(120),
   providerActive: z.boolean(),
   syncEnabled: z.boolean(),
-  exportEnabled: z.boolean()
+  exportEnabled: z.boolean(),
+  lastError: z
+    .object({
+      at: z.string(),
+      code: z.string(),
+      message: z.string()
+    })
+    .nullable()
 });
 
 const countryCodeSchema = z
@@ -309,6 +326,12 @@ let mainWindow: BrowserWindow | undefined;
 let auditWindow: BrowserWindow | undefined;
 let loadingWindow: BrowserWindow | undefined;
 let closeConfirmed = false;
+let pendingAccountFailureDecision:
+  | {
+      requestId: string;
+      resolve: (decision: AccountFailureDecision) => void;
+    }
+  | undefined;
 let rootDirectory = "";
 let environmentFile = "";
 let coordinator: AuthorizationCoordinator | undefined;
@@ -374,6 +397,29 @@ function scheduledExecutable(): string {
 function sendToRenderer(channel: string, value: unknown): void {
   const window = mainWindow;
   if (window && !window.isDestroyed()) window.webContents.send(channel, value);
+}
+
+function resolvePendingAccountFailureDecision(
+  decision: AccountFailureDecision
+): boolean {
+  const pending = pendingAccountFailureDecision;
+  if (!pending) return false;
+  pendingAccountFailureDecision = undefined;
+  pending.resolve(decision);
+  return true;
+}
+
+async function requestAccountFailureDecision(
+  failure: AccountSyncFailure
+): Promise<AccountFailureDecision> {
+  const window = mainWindow;
+  if (!window || window.isDestroyed()) return "stop";
+  resolvePendingAccountFailureDecision("stop");
+  const requestId = randomUUID();
+  return await new Promise<AccountFailureDecision>((resolve) => {
+    pendingAccountFailureDecision = { requestId, resolve };
+    window.webContents.send("sync:account-failure", { requestId, ...failure });
+  });
 }
 
 async function listenForCallbacks(
@@ -758,6 +804,7 @@ function registerIpc(application: KakeboApplication): void {
         allowRateLimitOverride: request.allowRateLimitOverride === true,
         onProgress: (progress: SyncProgressEvent) =>
           sendToRenderer("sync:progress", progress),
+        onAccountFailure: requestAccountFailureDecision,
         onReauthorization: async (connectionIds) => {
           if (!callbackServer) {
             throw new Error(
@@ -777,6 +824,14 @@ function registerIpc(application: KakeboApplication): void {
     } finally {
       if (activeSync === run) activeSync = undefined;
     }
+  });
+  ipcMain.handle("sync:account-failure:resolve", (event, input: unknown) => {
+    assertTrustedSender(event);
+    const decision = accountFailureDecisionSchema.parse(input);
+    if (pendingAccountFailureDecision?.requestId !== decision.requestId) {
+      return false;
+    }
+    return resolvePendingAccountFailureDecision(decision.decision);
   });
   ipcMain.handle("accounts:save", async (event, input: unknown) => {
     assertTrustedSender(event);
@@ -1071,9 +1126,11 @@ function registerIpc(application: KakeboApplication): void {
         )
       );
     }
-    return await trackOperation(
+    const deleted = await trackOperation(
       withSynchronizationLock(application, () => audit.clear())
     );
+    auditWindow?.webContents.send("audit:history-changed");
+    return deleted;
   });
   ipcMain.handle("exports:clear", async (event) => {
     assertTrustedSender(event);
@@ -1085,11 +1142,13 @@ function registerIpc(application: KakeboApplication): void {
         )
       );
     }
-    return await trackOperation(
+    const result = await trackOperation(
       withSynchronizationLock(application, async () =>
         resetLocalData(application.config, application.database)
       )
     );
+    auditWindow?.webContents.send("audit:history-changed");
+    return result;
   });
   ipcMain.handle("path:open", async (event, input: unknown) => {
     assertTrustedSender(event);
@@ -1316,6 +1375,7 @@ async function createWindow(): Promise<void> {
   loadingWindow = undefined;
   mainWindow.webContents.setZoomFactor(UI_ZOOM_FACTOR);
   mainWindow.on("closed", () => {
+    resolvePendingAccountFailureDecision("stop");
     mainWindow = undefined;
   });
   mainWindow.on("close", (event) => {
@@ -1470,6 +1530,7 @@ app.on("before-quit", (event) => {
   mainWindow?.hide();
   auditWindow?.hide();
   loadingWindow?.hide();
+  resolvePendingAccountFailureDecision("stop");
   coordinator?.cancelAll("The application is closing.");
   shutdownPromise ??= (async () => {
     await Promise.allSettled([...activeOperations]);

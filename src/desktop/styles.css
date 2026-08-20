@@ -693,6 +693,11 @@ tbody tr:last-child td {
   font-size: 10px;
 }
 
+.table-primary .account-last-error {
+  color: var(--danger);
+  line-height: 1.35;
+}
+
 .editable-table .input,
 .editable-table .select {
   min-width: 115px;

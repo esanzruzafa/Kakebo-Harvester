@@ -4,6 +4,8 @@ import type {
   PsuHeaders
 } from "../enable-banking/client.js";
 import {
+  BankUnavailableError,
+  EnableBankingProviderError,
   KakeboError,
   PsuHeadersUnavailableError,
   RateLimitError,
@@ -28,9 +30,28 @@ interface ActiveSession {
   session_ciphertext: string;
 }
 
+export type AccountFailureDecision = "continue" | "stop";
+export type AccountSyncPhase = "accounts" | "balances" | "transactions";
+
+export interface AccountSyncFailure {
+  accountId: string | null;
+  providerAccountId: string;
+  accountName: string;
+  masked: string | null;
+  bankName: string;
+  connectionName: string;
+  phase: AccountSyncPhase;
+  code: string;
+  message: string;
+}
+
 export interface SyncExecutionContext {
   psuHeaders?: PsuHeaders;
   allowRateLimitOverride?: boolean;
+  skippedAccountIds?: Set<string>;
+  onAccountFailure?: (
+    failure: AccountSyncFailure
+  ) => Promise<AccountFailureDecision>;
 }
 
 interface ConnectionPsuRow {
@@ -340,6 +361,59 @@ export class SyncService {
       .run(connectionId);
   }
 
+  private isRecoverableAccountFailure(error: unknown): boolean {
+    return (
+      error instanceof BankUnavailableError ||
+      error instanceof EnableBankingProviderError
+    );
+  }
+
+  private async handleAccountFailure(
+    connectionId: string,
+    providerAccountId: string,
+    phase: AccountSyncPhase,
+    error: unknown,
+    context: SyncExecutionContext,
+    knownAccount?: StoredAccount
+  ): Promise<boolean> {
+    if (!this.isRecoverableAccountFailure(error)) return false;
+    const account =
+      knownAccount ??
+      this.accounts.findByProviderAccountId(connectionId, providerAccountId);
+    const connection = this.database
+      .prepare(
+        `SELECT bank_name, alias FROM bank_connections WHERE id = ?`
+      )
+      .get(connectionId) as { bank_name: string; alias: string } | undefined;
+    const code =
+      providerErrorCode(error) ??
+      (error instanceof KakeboError ? error.code : "SYNC_ERROR");
+    const message = safeMessage(error);
+    if (account) {
+      this.accounts.recordLastSyncError(account.id, code, message);
+      context.skippedAccountIds?.add(account.id);
+    }
+    const failure: AccountSyncFailure = {
+      accountId: account?.id ?? null,
+      providerAccountId,
+      accountName:
+        account?.account_alias ??
+        account?.display_name ??
+        account?.name ??
+        `Account ${providerAccountId}`,
+      masked: account?.iban_masked ?? null,
+      bankName: account?.bank_name ?? connection?.bank_name ?? "Bank",
+      connectionName: account?.connection_alias ?? connection?.alias ?? "Connection",
+      phase,
+      code,
+      message
+    };
+    const decision = context.onAccountFailure
+      ? await context.onAccountFailure(failure)
+      : "stop";
+    return decision === "continue";
+  }
+
   public async syncAccounts(
     context: SyncExecutionContext = {}
   ): Promise<number> {
@@ -356,13 +430,39 @@ export class SyncService {
           throw new ReauthorizationRequiredError(`La sesión está en estado ${session.status}.`);
         }
         for (const accountId of session.accounts) {
-          const account = await this.client.getAccount(
-            accountId,
-            this.connectionPsuHeaders(stored.connection_id, context)
+          if (!this.accounts.shouldRefreshDetails(stored.connection_id, accountId)) {
+            continue;
+          }
+          const knownAccount = this.accounts.findByProviderAccountId(
+            stored.connection_id,
+            accountId
           );
-          const raw = await this.rawStore.write("account", accountId, account);
-          this.accounts.upsert(stored.connection_id, account, raw.path);
-          count += 1;
+          if (knownAccount && context.skippedAccountIds?.has(knownAccount.id)) {
+            continue;
+          }
+          try {
+            const account = await this.client.getAccount(
+              accountId,
+              this.connectionPsuHeaders(stored.connection_id, context)
+            );
+            const raw = await this.rawStore.write("account", accountId, account);
+            this.accounts.upsert(stored.connection_id, account, raw.path);
+            count += 1;
+          } catch (error) {
+            if (
+              await this.handleAccountFailure(
+                stored.connection_id,
+                accountId,
+                "accounts",
+                error,
+                context,
+                knownAccount
+              )
+            ) {
+              continue;
+            }
+            throw error;
+          }
         }
         this.clearConnectionError(stored.connection_id);
       } catch (error) {
@@ -384,6 +484,7 @@ export class SyncService {
       extractedAt: string;
     }> = [];
     for (const account of this.accounts.listActive()) {
+      if (context.skippedAccountIds?.has(account.id)) continue;
       try {
         const response = await this.client.getBalances(
           account.provider_account_id,
@@ -396,7 +497,20 @@ export class SyncService {
           rawPath: raw.path,
           extractedAt: new Date().toISOString()
         });
+        this.accounts.clearLastSyncError(account.id);
       } catch (error) {
+        if (
+          await this.handleAccountFailure(
+            account.bank_connection_id,
+            account.provider_account_id,
+            "balances",
+            error,
+            context,
+            account
+          )
+        ) {
+          continue;
+        }
         throw this.markConnectionError(
           account.bank_connection_id,
           error,
@@ -537,6 +651,7 @@ export class SyncService {
     this.categorizer.reload();
     const total = emptySummary();
     for (const account of this.accounts.listActive()) {
+      if (context.skippedAccountIds?.has(account.id)) continue;
       const runId = createId();
       const startedAt = new Date().toISOString();
       this.database
@@ -574,11 +689,17 @@ export class SyncService {
             runId
           );
       } catch (error) {
-        const reportedError = this.markConnectionError(
+        const continueWithOtherAccounts = await this.handleAccountFailure(
           account.bank_connection_id,
+          account.provider_account_id,
+          "transactions",
           error,
-          context
+          context,
+          account
         );
+        const reportedError = continueWithOtherAccounts
+          ? error
+          : this.markConnectionError(account.bank_connection_id, error, context);
         this.database
           .prepare(
             `UPDATE sync_runs SET
@@ -594,8 +715,10 @@ export class SyncService {
             safeMessage(reportedError),
             runId
           );
+        if (continueWithOtherAccounts) continue;
         throw reportedError;
       }
+      this.accounts.clearLastSyncError(account.id);
       this.clearConnectionError(account.bank_connection_id);
     }
     this.database

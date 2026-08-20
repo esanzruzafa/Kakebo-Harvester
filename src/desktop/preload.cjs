@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("kakebo", {
   bootstrap: () => ipcRenderer.invoke("app:bootstrap"),
   startSync: (request) => ipcRenderer.invoke("sync:start", request),
+  resolveAccountFailure: (input) =>
+    ipcRenderer.invoke("sync:account-failure:resolve", input),
   saveAccounts: (accounts) => ipcRenderer.invoke("accounts:save", accounts),
   saveRules: (configuration) => ipcRenderer.invoke("rules:save", configuration),
   saveCategories: (categories) =>
@@ -40,6 +42,11 @@ contextBridge.exposeInMainWorld("kakebo", {
     const handler = (_event, value) => listener(value);
     ipcRenderer.on("sync:progress", handler);
     return () => ipcRenderer.removeListener("sync:progress", handler);
+  },
+  onAccountFailure: (listener) => {
+    const handler = (_event, value) => listener(value);
+    ipcRenderer.on("sync:account-failure", handler);
+    return () => ipcRenderer.removeListener("sync:account-failure", handler);
   },
   onAuthorizationResult: (listener) => {
     const handler = (_event, value) => listener(value);

@@ -86,6 +86,18 @@ well.
 
 When an ASPSP returns `WRONG_TRANSACTIONS_PERIOD`, Kakebo Harvester retries that account with Enable Banking's `longest` strategy. Pagination continues with the same request parameters, and only movements inside the date interval selected in the application are added to SQLite and exports.
 
+`ASPSP_ERROR` means the bank temporarily failed while Enable Banking was retrieving
+account information. It does not require revocation or reauthorization. Retry the
+operation after at least one minute; if it persists, use wider intervals of one,
+two, and four hours, then review the request log in the Enable Banking control
+panel.
+
+When an enabled account returns a recoverable bank-side error, the desktop app
+identifies the affected account in progress, records its latest error in the
+Accounts view, and asks whether to continue. Continuing skips that account for
+the remaining account, balance, and transaction steps of that execution; the
+next execution tries it again unless it is disabled.
+
 Enable Banking error responses are parsed using their HTTP status, textual
 `error` code, and safe `message`. Known session, authentication, unavailable
 bank, transaction-period, and rate-limit failures retain dedicated application

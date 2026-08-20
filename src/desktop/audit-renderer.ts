@@ -163,6 +163,13 @@ function renderRuns(runs: AuditRunView[]): void {
   );
 }
 
+async function refreshHistory(): Promise<void> {
+  const api = window.kakeboAudit;
+  if (!api) throw new Error("The audit bridge is unavailable.");
+  const data = await api.listHistory();
+  renderRuns(data.runs);
+}
+
 async function initialize(): Promise<void> {
   const api = window.kakeboAudit;
   if (!api) throw new Error("The audit bridge is unavailable.");
@@ -204,6 +211,9 @@ async function initialize(): Promise<void> {
   close.textContent = t("common.close", "Close");
   close.addEventListener("click", () => {
     void api.close();
+  });
+  api.onHistoryChanged(() => {
+    void refreshHistory();
   });
   renderRuns(data.runs);
 }

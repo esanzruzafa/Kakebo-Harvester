@@ -1,4 +1,5 @@
 import type {
+  AccountFailurePrompt,
   AuthorizationUiResult,
   BankOption,
   DesktopBootstrap,
@@ -264,15 +265,19 @@ function onClick(
 
 type ModalChoice = "confirm" | "discard" | "cancel";
 
+let activeModalFinish: ((choice: ModalChoice) => void) | undefined;
+
 interface AppModalOptions {
   title: string;
   detail: string;
   confirmLabel: string;
   discardLabel?: string;
+  cancelLabel?: string;
   danger?: boolean;
 }
 
 function showAppModal(options: AppModalOptions): Promise<ModalChoice> {
+  activeModalFinish?.("cancel");
   const modal = element<HTMLElement>("app-modal");
   element("app-modal-kicker").textContent = t(
     "dialog.kicker",
@@ -287,7 +292,7 @@ function showAppModal(options: AppModalOptions): Promise<ModalChoice> {
   accept.className = options.danger ? "button danger" : "button primary";
   discard.hidden = !options.discardLabel;
   discard.textContent = options.discardLabel ?? "";
-  cancel.textContent = t("common.cancel", "Cancel");
+  cancel.textContent = options.cancelLabel ?? t("common.cancel", "Cancel");
   modal.hidden = false;
   accept.focus();
   return new Promise((resolve) => {
@@ -296,8 +301,10 @@ function showAppModal(options: AppModalOptions): Promise<ModalChoice> {
       accept.onclick = null;
       discard.onclick = null;
       cancel.onclick = null;
+      if (activeModalFinish === finish) activeModalFinish = undefined;
       resolve(value);
     };
+    activeModalFinish = finish;
     accept.onclick = () => finish("confirm");
     discard.onclick = () => finish("discard");
     cancel.onclick = () => finish("cancel");
@@ -958,6 +965,20 @@ function renderAccounts(): void {
     const bank = document.createElement("span");
     bank.textContent = `${account.bank} · ${account.account}`;
     name.append(strong, bank);
+    if (account.lastError) {
+      const error = document.createElement("span");
+      error.className = "account-last-error";
+      error.textContent = tf(
+        "accounts.lastError",
+        "Last sync error ({code}): {message}",
+        { code: account.lastError.code, message: account.lastError.message }
+      );
+      error.title = new Intl.DateTimeFormat(state.language, {
+        dateStyle: "medium",
+        timeStyle: "short"
+      }).format(new Date(account.lastError.at));
+      name.append(error);
+    }
     nameCell.append(name);
 
     row.insertCell().textContent = account.masked ?? "—";
@@ -1683,6 +1704,18 @@ function progressLabel(event: SyncProgressEvent): string {
   if (event.type === "run-started") {
     return t("progress.runStarted", "Synchronization started");
   }
+  if (event.type === "account-failed" && event.accountFailure) {
+    const failure = event.accountFailure;
+    return tf(
+      "progress.accountFailed",
+      "{account}: {step} error — {message}",
+      {
+        account: failure.accountName,
+        step: t(`step.${failure.phase}`, failure.phase),
+        message: failure.message
+      }
+    );
+  }
   if (event.type === "reauthorization-required") {
     return t(
       "progress.reauthorization",
@@ -1705,6 +1738,9 @@ function progressLabel(event: SyncProgressEvent): string {
 
 function progressKey(event: SyncProgressEvent): string {
   if (event.type.startsWith("run-")) return event.type;
+  if (event.type === "account-failed" && event.accountFailure) {
+    return `account-failed-${event.accountFailure.phase}-${event.accountFailure.accountId ?? event.accountFailure.providerAccountId}`;
+  }
   return event.step ? `step-${event.step}` : event.type;
 }
 
@@ -1722,7 +1758,7 @@ function renderProgress(): void {
     const marker = document.createElement("span");
     marker.className = "progress-marker";
     marker.textContent =
-      entry.event.type === "run-failed"
+      entry.event.type === "run-failed" || entry.event.type === "account-failed"
         ? "!"
         : entry.event.type === "reauthorization-required"
           ? "↗"
@@ -1757,6 +1793,33 @@ function handleProgress(event: SyncProgressEvent): void {
       ? 100
       : Math.round((event.completedSteps / Math.max(1, event.totalSteps)) * 100);
   element<HTMLElement>("progress-fill").style.width = `${percent}%`;
+}
+
+async function handleAccountFailure(failure: AccountFailurePrompt): Promise<void> {
+  const account = failure.masked
+    ? `${failure.accountName} (${failure.masked})`
+    : failure.accountName;
+  const choice = await showAppModal({
+    title: tf("dialog.accountFailure.title", "Could not query {account}", {
+      account
+    }),
+    detail: tf(
+      "dialog.accountFailure.detail",
+      "{bank} returned {code} while retrieving {step}. {message} You can skip this account for the rest of this execution and continue with the others, or stop the synchronization.",
+      {
+        bank: failure.bankName,
+        code: failure.code,
+        step: t(`step.${failure.phase}`, failure.phase),
+        message: failure.message
+      }
+    ),
+    confirmLabel: t("dialog.accountFailure.continue", "Continue with other accounts"),
+    cancelLabel: t("dialog.accountFailure.stop", "Stop synchronization")
+  });
+  await window.kakebo.resolveAccountFailure({
+    requestId: failure.requestId,
+    decision: choice === "confirm" ? "continue" : "stop"
+  });
 }
 
 function handleAuthorization(result: AuthorizationUiResult): void {
@@ -2231,8 +2294,13 @@ function setupActions(): void {
           : {})
       });
       const status = element("run-status");
-      status.className = "status-badge success";
-      status.textContent = t("progress.completed", "Completed");
+      const hasAccountFailures = (result.accountFailures ?? 0) > 0;
+      status.className = hasAccountFailures
+        ? "status-badge warning"
+        : "status-badge success";
+      status.textContent = hasAccountFailures
+        ? t("progress.completedWithWarnings", "Completed with warnings")
+        : t("progress.completed", "Completed");
       const summary = element<HTMLElement>("run-result");
       summary.textContent = [
         result.accounts === undefined
@@ -2254,13 +2322,23 @@ function setupActions(): void {
           ? null
           : tf("result.rows", "{count} rows exported", {
               count: result.export.rows
+            }),
+        result.accountFailures === undefined
+          ? null
+          : tf("result.accountFailures", "{count} account issue(s)", {
+              count: result.accountFailures
             })
       ]
         .filter((value): value is string => value !== null)
         .join(" · ");
       summary.hidden = false;
       showToast(
-        t("toast.syncCompleted", "Synchronization completed successfully.")
+        hasAccountFailures
+          ? t(
+              "toast.syncCompletedWithWarnings",
+              "Synchronization completed with account issues."
+            )
+          : t("toast.syncCompleted", "Synchronization completed successfully.")
       );
       await refresh();
     } catch (error) {
@@ -2296,6 +2374,7 @@ function setupActions(): void {
             })
           : t("toast.noLocalDataReset", "There was no local financial history to remove.")
       );
+      await refresh();
     } catch (error) {
       showToast(errorMessage(error), true);
     }
@@ -2319,8 +2398,8 @@ function setupActions(): void {
             count: deleted
           })
         );
-        await refresh();
       }
+      await refresh();
     } catch (error) {
       showToast(errorMessage(error), true);
     }
@@ -2722,6 +2801,9 @@ async function initialize(): Promise<void> {
   setupNavigation();
   setupActions();
   window.kakebo.onSyncProgress(handleProgress);
+  window.kakebo.onAccountFailure((failure) => {
+    void handleAccountFailure(failure);
+  });
   window.kakebo.onAuthorizationResult(handleAuthorization);
   window.kakebo.onCloseRequested(() => {
     if (closePromptOpen) return;

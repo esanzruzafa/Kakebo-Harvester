@@ -286,4 +286,39 @@ describe("Enable Banking client", () => {
       httpStatus: 422
     });
   });
+
+  it("explains ASPSP errors as temporary bank failures without requiring reconnection", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    const client = new EnableBankingClient(
+      config,
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: "ASPSP_ERROR",
+            message: "Error interacting with ASPSP"
+          }),
+          { status: 400 }
+        )
+      )
+    );
+
+    const failure = await client
+      .getBalances("account-id")
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(BankUnavailableError);
+    expect(failure).toMatchObject({
+      providerCode: "ASPSP_ERROR",
+      httpStatus: 400
+    });
+    expect((failure as Error).message).toContain("No es necesario reconectar");
+    expect((failure as Error).message).toContain("al menos un minuto");
+  });
 });

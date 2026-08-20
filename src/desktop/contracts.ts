@@ -21,6 +21,7 @@ import type {
 import type { EditableAccount } from "../storage/repositories/account-repository.js";
 import type { AuditRunView } from "../storage/repositories/desktop-run-repository.js";
 import type { LocalDataResetResult } from "../storage/local-data-reset.js";
+import type { AccountSyncFailure } from "../sync/sync-service.js";
 import type {
   SyncProgressEvent,
   SyncRequest,
@@ -101,6 +102,10 @@ export interface AuthorizationUiResult {
   message?: string;
 }
 
+export interface AccountFailurePrompt extends AccountSyncFailure {
+  requestId: string;
+}
+
 export type OpenPathTarget =
   | "root"
   | "export-directory"
@@ -124,6 +129,10 @@ export interface CardImportUiResult extends CardImportResult {
 export interface KakeboDesktopApi {
   bootstrap: () => Promise<DesktopBootstrap>;
   startSync: (request: SyncRequest) => Promise<SyncRunResult>;
+  resolveAccountFailure: (input: {
+    requestId: string;
+    decision: "continue" | "stop";
+  }) => Promise<boolean>;
   saveAccounts: (accounts: EditableAccount[]) => Promise<EditableAccount[]>;
   saveRules: (
     configuration: CategorizationConfiguration
@@ -156,6 +165,7 @@ export interface KakeboDesktopApi {
   confirmClose: () => Promise<void>;
   onCloseRequested: (listener: () => void) => () => void;
   onSyncProgress: (listener: (event: SyncProgressEvent) => void) => () => void;
+  onAccountFailure: (listener: (failure: AccountFailurePrompt) => void) => () => void;
   onAuthorizationResult: (
     listener: (event: AuthorizationUiResult) => void
   ) => () => void;
@@ -170,6 +180,7 @@ export interface AuditWindowApi {
   }>;
   setHistoryLimit: (limit: AuditHistoryLimit) => Promise<AuditRunView[]>;
   close: () => Promise<void>;
+  onHistoryChanged: (listener: () => void) => () => void;
 }
 
 declare global {

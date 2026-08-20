@@ -12,8 +12,13 @@ import { DesktopRunRepository } from "../storage/repositories/desktop-run-reposi
 import { createId } from "../utils/crypto.js";
 import { assertIsoDate } from "../utils/dates.js";
 import { safeMessage } from "../utils/text.js";
-import type { SyncService, SyncSummary } from "./sync-service.js";
-import type { SyncExecutionContext } from "./sync-service.js";
+import type {
+  AccountFailureDecision,
+  AccountSyncFailure,
+  SyncExecutionContext,
+  SyncService,
+  SyncSummary
+} from "./sync-service.js";
 
 export type SyncStep = "accounts" | "balances" | "transactions" | "export";
 
@@ -29,6 +34,7 @@ export interface SyncRunResult {
   balances?: number;
   transactions?: SyncSummary;
   export?: { path: string; rows: number };
+  accountFailures?: number;
 }
 
 export interface SyncProgressEvent {
@@ -36,6 +42,7 @@ export interface SyncProgressEvent {
     | "run-started"
     | "step-started"
     | "step-completed"
+    | "account-failed"
     | "reauthorization-required"
     | "run-completed"
     | "run-failed";
@@ -43,10 +50,14 @@ export interface SyncProgressEvent {
   completedSteps: number;
   totalSteps: number;
   message: string;
+  accountFailure?: AccountSyncFailure;
 }
 
 export interface SyncRunOptions {
   onProgress?: (event: SyncProgressEvent) => void;
+  onAccountFailure?: (
+    failure: AccountSyncFailure
+  ) => Promise<AccountFailureDecision>;
   onReauthorization?: (connectionIds: readonly string[]) => Promise<void>;
   psuHeaders?: PsuHeaders;
   allowRateLimitOverride?: boolean;
@@ -159,25 +170,36 @@ export class SyncRunner {
     const lock = new SynchronizationLock(this.database);
     const audit = new DesktopRunRepository(this.database);
     const result: SyncRunResult = {};
-    const context: SyncExecutionContext = {
-      ...(options.psuHeaders ? { psuHeaders: options.psuHeaders } : {}),
-      ...(options.allowRateLimitOverride
-        ? { allowRateLimitOverride: true }
-        : {})
-    };
+    let accountFailures = 0;
     let completedSteps = 0;
     const progress = (
       type: SyncProgressEvent["type"],
       message: string,
-      step?: SyncStep
+      step?: SyncStep,
+      accountFailure?: AccountSyncFailure
     ): void => {
       options.onProgress?.({
         type,
         ...(step ? { step } : {}),
+        ...(accountFailure ? { accountFailure } : {}),
         completedSteps,
         totalSteps: steps.length,
         message
       });
+    };
+    const context: SyncExecutionContext = {
+      ...(options.psuHeaders ? { psuHeaders: options.psuHeaders } : {}),
+      ...(options.allowRateLimitOverride
+        ? { allowRateLimitOverride: true }
+        : {}),
+      skippedAccountIds: new Set<string>(),
+      onAccountFailure: async (failure) => {
+        accountFailures += 1;
+        progress("account-failed", failure.message, failure.phase, failure);
+        return options.onAccountFailure
+          ? await options.onAccountFailure(failure)
+          : "stop";
+      }
     };
 
     lock.acquire();
@@ -227,6 +249,7 @@ export class SyncRunner {
         completedSteps += 1;
         progress("step-completed", `${step} completed.`, step);
       }
+      if (accountFailures > 0) result.accountFailures = accountFailures;
       audit.finish(desktopRunId, "SUCCESS");
       progress("run-completed", "Synchronization completed.");
       return result;

@@ -34,6 +34,11 @@ export interface EditableAccount {
   providerActive: boolean;
   syncEnabled: boolean;
   exportEnabled: boolean;
+  lastError: {
+    at: string;
+    code: string;
+    message: string;
+  } | null;
 }
 
 export interface AccountSettingsUpdate {
@@ -61,6 +66,53 @@ function providerText(value: unknown): string | null {
 
 export class AccountRepository {
   public constructor(private readonly database: SqliteDatabase) {}
+
+  public shouldRefreshDetails(
+    connectionId: string,
+    providerAccountId: string
+  ): boolean {
+    const account = this.database
+      .prepare(
+        `SELECT sync_enabled FROM accounts
+         WHERE bank_connection_id = ? AND provider_account_id = ?`
+      )
+      .get(connectionId, providerAccountId) as { sync_enabled: number } | undefined;
+    return account?.sync_enabled !== 0;
+  }
+
+  public findByProviderAccountId(
+    connectionId: string,
+    providerAccountId: string
+  ): StoredAccount | undefined {
+    return this.database
+      .prepare(
+        `SELECT a.*, c.bank_name, c.alias AS connection_alias
+         FROM accounts a
+         JOIN bank_connections c ON c.id = a.bank_connection_id
+         WHERE a.bank_connection_id = ? AND a.provider_account_id = ?`
+      )
+      .get(connectionId, providerAccountId) as StoredAccount | undefined;
+  }
+
+  public recordLastSyncError(accountId: string, code: string, message: string): void {
+    this.database
+      .prepare(
+        `UPDATE accounts SET
+           last_error_at = ?, last_error_code = ?, last_error_message_safe = ?
+         WHERE id = ?`
+      )
+      .run(new Date().toISOString(), code, message, accountId);
+  }
+
+  public clearLastSyncError(accountId: string): void {
+    this.database
+      .prepare(
+        `UPDATE accounts SET
+           last_error_at = NULL, last_error_code = NULL, last_error_message_safe = NULL
+         WHERE id = ?`
+      )
+      .run(accountId);
+  }
 
   public upsert(
     connectionId: string,
@@ -93,7 +145,8 @@ export class AccountRepository {
              provider_account_id = ?, identification_hash = COALESCE(?, identification_hash),
              iban_masked = ?, currency = ?, name = ?, display_name = ?,
              account_type = ?, product_type = ?, active = 1, last_seen_at = ?,
-             raw_response_path = ?
+             raw_response_path = ?, last_error_at = NULL, last_error_code = NULL,
+             last_error_message_safe = NULL
            WHERE id = ?`
         )
         .run(
@@ -173,6 +226,9 @@ export class AccountRepository {
            a.active,
            a.sync_enabled,
            a.export_enabled,
+           a.last_error_at,
+           a.last_error_code,
+           a.last_error_message_safe,
            c.provider
          FROM accounts a
          JOIN bank_connections c ON c.id = a.bank_connection_id
@@ -191,6 +247,9 @@ export class AccountRepository {
       active: number;
       sync_enabled: number;
       export_enabled: number;
+      last_error_at: string | null;
+      last_error_code: string | null;
+      last_error_message_safe: string | null;
       provider: string;
     }>;
     return rows.map((row) => ({
@@ -205,7 +264,15 @@ export class AccountRepository {
       alias: row.account_alias ?? "",
       providerActive: row.active === 1 && row.provider === "enable-banking",
       syncEnabled: row.sync_enabled === 1,
-      exportEnabled: row.export_enabled === 1
+      exportEnabled: row.export_enabled === 1,
+      lastError:
+        row.last_error_at && row.last_error_code && row.last_error_message_safe
+          ? {
+              at: row.last_error_at,
+              code: row.last_error_code,
+              message: row.last_error_message_safe
+            }
+          : null
     }));
   }
 

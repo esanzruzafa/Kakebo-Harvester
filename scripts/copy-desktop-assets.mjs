@@ -33,6 +33,10 @@ const assets = [
   [
     "src/storage/migrations/005_psu_context.sql",
     "dist/src/storage/migrations/005_psu_context.sql"
+  ],
+  [
+    "src/storage/migrations/006_account_sync_errors.sql",
+    "dist/src/storage/migrations/006_account_sync_errors.sql"
   ]
 ];
 
