@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
   app,
@@ -24,6 +24,7 @@ import {
   createKakeboApplication,
   type KakeboApplication
 } from "../application/create-application.js";
+import { resolveEnvironmentFile } from "../config.js";
 import type { AuthorizationCompletionResult } from "../auth/authorization-service.js";
 import { disconnectBankConnection } from "../auth/disconnect-service.js";
 import { runDoctor } from "../doctor.js";
@@ -365,8 +366,9 @@ function desktopArguments(): string[] {
 function findEnvironmentFile(): string {
   const explicit = process.env["KAKEBO_ENV_FILE"];
   if (explicit) {
-    const candidate = isAbsolute(explicit) ? explicit : resolve(process.cwd(), explicit);
-    if (existsSync(candidate)) return candidate;
+    const selected = resolveEnvironmentFile(explicit, process.cwd());
+    if (selected) return selected;
+    throw new Error("The explicitly selected environment file could not be resolved.");
   }
   const portableDirectory = process.env["PORTABLE_EXECUTABLE_DIR"];
   const environmentCandidates = (directory: string): string[] => [

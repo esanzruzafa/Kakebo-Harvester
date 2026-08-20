@@ -20,6 +20,7 @@ export function testConfig(root: string): AppConfig {
     defaultPsuType: "personal",
     defaultLanguage: "es",
     syncLookbackDays: 15,
+    pendingReconciliationWindowDays: 14,
     maxTransactionPages: 10,
     httpTimeoutMs: 1_000,
     logLevel: "silent",

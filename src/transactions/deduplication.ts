@@ -4,6 +4,8 @@ import type { NormalizedTransaction } from "./transaction-mapper.js";
 
 export type UpsertOutcome = "inserted" | "updated" | "duplicate" | "reconciled";
 
+export const DEFAULT_PENDING_RECONCILIATION_WINDOW_DAYS = 14;
+
 const updateSql = `
   UPDATE transactions SET
     movement_key = @movement_key,
@@ -35,7 +37,20 @@ const updateSql = `
   WHERE id = @id`;
 
 export class TransactionRepository {
-  public constructor(private readonly database: SqliteDatabase) {}
+  public constructor(
+    private readonly database: SqliteDatabase,
+    private readonly pendingReconciliationWindowDays =
+      DEFAULT_PENDING_RECONCILIATION_WINDOW_DAYS
+  ) {}
+
+  private reconciliationDate(transaction: NormalizedTransaction): string | null {
+    return (
+      transaction.booking_date ??
+      transaction.value_date ??
+      transaction.transaction_datetime?.slice(0, 10) ??
+      null
+    );
+  }
 
   public upsert(transaction: NormalizedTransaction): UpsertOutcome {
     const now = new Date().toISOString();
@@ -61,14 +76,29 @@ export class TransactionRepository {
       return "updated";
     }
 
-    if (transaction.status === "booked") {
+    const reconciliationDate = this.reconciliationDate(transaction);
+    if (transaction.status === "booked" && reconciliationDate) {
       const pending = this.database
         .prepare(
           `SELECT id FROM transactions
            WHERE account_id = ? AND reconciliation_key = ? AND status = 'pending'
-           ORDER BY first_seen_at DESC LIMIT 1`
+             AND ABS(
+               julianday(COALESCE(booking_date, value_date, substr(transaction_datetime, 1, 10)))
+               - julianday(?)
+             ) <= ?
+           ORDER BY ABS(
+             julianday(COALESCE(booking_date, value_date, substr(transaction_datetime, 1, 10)))
+             - julianday(?)
+           ), first_seen_at DESC
+           LIMIT 1`
         )
-        .get(transaction.account_id, transaction.reconciliation_key) as { id: string } | undefined;
+        .get(
+          transaction.account_id,
+          transaction.reconciliation_key,
+          reconciliationDate,
+          this.pendingReconciliationWindowDays,
+          reconciliationDate
+        ) as { id: string } | undefined;
       if (pending) {
         this.database.prepare(updateSql).run({
           ...transaction,

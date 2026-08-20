@@ -94,7 +94,10 @@ export class SyncService {
     private readonly client: EnableBankingClient
   ) {
     this.accounts = new AccountRepository(database);
-    this.transactions = new TransactionRepository(database);
+    this.transactions = new TransactionRepository(
+      database,
+      config.pendingReconciliationWindowDays
+    );
     this.rawStore = new RawStore(config);
     this.categorizer = new Categorizer(config.categorizationRulesPath);
   }

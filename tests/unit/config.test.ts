@@ -46,6 +46,14 @@ describe("environment file selection", () => {
 
     expect(() => resolveEnvironmentFile(undefined, root)).toThrow(ConfigurationError);
   });
+
+  it("rejects a missing explicitly selected environment file", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-config-"));
+
+    expect(() => resolveEnvironmentFile("private/.env.production", root)).toThrow(
+      ConfigurationError
+    );
+  });
 });
 
 describe("redirect URL isolation", () => {

@@ -432,8 +432,8 @@ This repository includes:
 Create a release after updating `package.json`:
 
 ```powershell
-git tag v0.2.0
-git push origin v0.2.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 GitHub Releases is the recommended home for each portable version. The Pages website links to `/releases/latest`, so it always points to the most recent published version without storing binaries in the Git repository.

@@ -23,6 +23,12 @@ const envSchema = z.object({
   DEFAULT_PSU_TYPE: z.enum(["personal", "business"]),
   DEFAULT_LANGUAGE: z.string().min(2).max(8),
   SYNC_LOOKBACK_DAYS: z.coerce.number().int().min(1).max(365),
+  PENDING_RECONCILIATION_WINDOW_DAYS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(31)
+    .default(14),
   MAX_TRANSACTION_PAGES: z.coerce.number().int().min(1).max(1_000),
   HTTP_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]),
@@ -68,6 +74,7 @@ export interface AppConfig {
   defaultPsuType: PsuType;
   defaultLanguage: string;
   syncLookbackDays: number;
+  pendingReconciliationWindowDays: number;
   maxTransactionPages: number;
   httpTimeoutMs: number;
   logLevel: string;
@@ -249,6 +256,7 @@ export function loadConfig(
     defaultPsuType: env.DEFAULT_PSU_TYPE,
     defaultLanguage: env.DEFAULT_LANGUAGE,
     syncLookbackDays: env.SYNC_LOOKBACK_DAYS,
+    pendingReconciliationWindowDays: env.PENDING_RECONCILIATION_WINDOW_DAYS,
     maxTransactionPages: env.MAX_TRANSACTION_PAGES,
     httpTimeoutMs: env.HTTP_TIMEOUT_MS,
     logLevel: env.LOG_LEVEL,
