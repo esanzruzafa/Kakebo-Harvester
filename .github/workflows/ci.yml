@@ -17,7 +17,8 @@ on:
       - "eslint.config.js"
       - ".env*.example"
       - "private/.env*.example"
-      - ".github/workflows/ci.yml"
+      - ".github/workflows/**"
+      - ".github/dependabot.yml"
   pull_request:
     branches:
       - main
@@ -34,7 +35,8 @@ on:
       - "eslint.config.js"
       - ".env*.example"
       - "private/.env*.example"
-      - ".github/workflows/ci.yml"
+      - ".github/workflows/**"
+      - ".github/dependabot.yml"
   workflow_dispatch:
 
 permissions:

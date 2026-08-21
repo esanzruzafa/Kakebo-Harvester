@@ -438,6 +438,38 @@ git push origin v1.0.0
 
 GitHub Releases is the recommended home for each portable version. The Pages website links to `/releases/latest`, so it always points to the most recent published version without storing binaries in the Git repository.
 
+## Dependency updates
+
+Dependabot is configured in `.github/dependabot.yml`. It is a GitHub service, not a GitHub Actions job: GitHub reads that file and creates dependency pull requests automatically.
+
+- Root npm dependencies are checked weekly on Monday at 06:00 Europe/Madrid.
+- The legal site's npm dependencies are checked weekly at 06:15 Europe/Madrid.
+- GitHub Actions are checked weekly at 06:30 Europe/Madrid.
+- npm minor and patch updates are grouped by package directory to reduce pull-request noise. Major npm updates and every GitHub Actions update remain separate for review.
+- Dependency and workflow configuration pull requests trigger the application and legal validation jobs in CI.
+
+Dependabot alerts, security update PRs, grouped security updates, and Dependabot on Actions are repository Security settings managed in GitHub. They are not enabled by this file. Keep alerts and security updates enabled in the GitHub repository settings; security fixes can arrive outside the weekly version-update schedule.
+
+### Dependabot auto-merge policy
+
+`.github/workflows/dependabot-auto-merge.yml` enables GitHub's native auto-merge only when all of the following conditions are true:
+
+- the pull request was created by `dependabot[bot]` in this repository and targets `main`;
+- it updates the `npm` ecosystem;
+- it changes an indirect dependency only; and
+- it is a SemVer patch or minor update.
+
+Major updates, direct production and development dependencies, and every GitHub Actions update remain manual. Native auto-merge waits for the branch's required checks before merging and uses squash commits. The workflow pins Dependabot's metadata action and matches the exact reviewed head SHA before enabling auto-merge.
+
+Before enabling this workflow on GitHub, configure branch protection as follows:
+
+1. Enable the `main` ruleset and require the `check` and `legal` status checks.
+2. Enable **Allow auto-merge** in the repository's Pull Requests settings.
+3. Allow squash merges only, if a linear main history is desired.
+4. Do not enable Merge Queue unless CI is extended with the `merge_group` trigger and the auto-merge workflow is authenticated with a token that can add pull requests to that queue.
+
+Avoid global branch rules that restrict ordinary branch creation or updates: Dependabot needs to create and update its own branches. Repository write access remains the appropriate control for who may push branches. Public repositories cannot prevent third parties from proposing pull requests from their forks, but they cannot merge or push to this repository without the permissions and protections above.
+
 ## Development
 
 ```powershell
