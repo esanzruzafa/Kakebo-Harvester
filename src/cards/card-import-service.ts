@@ -62,6 +62,18 @@ interface ParsedCardRow {
   amount: string;
   direction: string;
   occurrence: number;
+  statementKey: string;
+}
+
+function cardSemanticKey(row: ParsedCardRow): string {
+  return stableJson({
+    profileId: row.profile.id,
+    bookingDate: row.bookingDate,
+    valueDate: row.valueDate,
+    description: normalizeText(row.description),
+    amount: row.amount,
+    currency: row.profile.currency
+  });
 }
 
 function columnIndex(reference: string): number {
@@ -243,13 +255,23 @@ async function parseFile(
         description,
         amount: money.amount,
         direction: money.direction,
-        occurrence
+        occurrence,
+        statementKey: ""
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`${path}, row ${sourceRow}: ${message}`, { cause: error });
     }
   }
+  const statementKey = sha256(
+    stableJson(
+      parsed.map((row) => ({
+        semanticKey: cardSemanticKey(row),
+        occurrence: row.occurrence
+      }))
+    )
+  );
+  for (const row of parsed) row.statementKey = statementKey;
   return parsed;
 }
 
@@ -268,22 +290,26 @@ function localIds(profile: CardImportProfile): {
 
 function normalizedTransaction(
   config: AppConfig,
-  row: ParsedCardRow
+  row: ParsedCardRow,
+  existingProviderTransactionId?: string
 ): NormalizedTransaction {
   const ids = localIds(row.profile);
   const descriptionNormalized = normalizeText(row.description);
-  const providerTransactionId = sha256(
-    stableJson({
-      source: "manual-card",
-      profileId: row.profile.id,
-      bookingDate: row.bookingDate,
-      valueDate: row.valueDate,
-      amount: row.amount,
-      currency: row.profile.currency,
-      descriptionNormalized,
-      occurrence: row.occurrence
-    })
-  );
+  const providerTransactionId =
+    existingProviderTransactionId ??
+    sha256(
+      stableJson({
+        source: "manual-card",
+        profileId: row.profile.id,
+        statementKey: row.statementKey,
+        bookingDate: row.bookingDate,
+        valueDate: row.valueDate,
+        amount: row.amount,
+        currency: row.profile.currency,
+        descriptionNormalized,
+        occurrence: row.occurrence
+      })
+    );
   const keyInput = {
     accountStableKey: ids.accountStableKey,
     status: "booked",
@@ -392,6 +418,36 @@ function ensureLocalAccount(
     );
 }
 
+function existingCardTransactionIds(
+  database: SqliteDatabase,
+  row: ParsedCardRow
+): string[] {
+  const ids = localIds(row.profile);
+  const rows = database
+    .prepare(
+      `SELECT provider_transaction_id
+       FROM transactions
+       WHERE provider = 'manual-card'
+         AND account_id = ?
+         AND booking_date = ?
+         AND value_date IS ?
+         AND amount = ?
+         AND currency = ?
+         AND description_normalized = ?
+         AND provider_transaction_id IS NOT NULL
+       ORDER BY first_seen_at, id`
+    )
+    .all(
+      ids.accountId,
+      row.bookingDate,
+      row.valueDate,
+      row.amount,
+      row.profile.currency,
+      normalizeText(row.description)
+    ) as Array<{ provider_transaction_id: string }>;
+  return rows.map((item) => item.provider_transaction_id);
+}
+
 export class CardImportService {
   private readonly profilesStore: CardImportProfilesStore;
 
@@ -439,6 +495,22 @@ export class CardImportService {
     this.database.transaction(() => {
       for (const file of parsedFiles) {
         ensureLocalAccount(this.database, this.config, file.profile);
+        const existingBySemanticKey = new Map<string, string[]>();
+        for (const row of file.rows) {
+          const semanticKey = cardSemanticKey(row);
+          if (!existingBySemanticKey.has(semanticKey)) {
+            existingBySemanticKey.set(
+              semanticKey,
+              existingCardTransactionIds(this.database, row)
+            );
+          }
+        }
+        // Two independent matching movements are strong evidence that this is
+        // an overlapping export. A single ambiguous match is kept distinct so
+        // two genuine same-day purchases from separate statements are not lost.
+        const overlapsExistingStatement =
+          [...existingBySemanticKey.values()].filter((ids) => ids.length > 0)
+            .length >= 2;
         const fileResult: CardImportFileResult = {
           path: file.path,
           profileId: file.profile.id,
@@ -449,7 +521,16 @@ export class CardImportService {
           reconciled: 0
         };
         for (const row of file.rows) {
-          const transaction = normalizedTransaction(this.config, row);
+          const existingProviderTransactionId = overlapsExistingStatement
+            ? existingBySemanticKey.get(cardSemanticKey(row))?.[
+                row.occurrence - 1
+              ]
+            : undefined;
+          const transaction = normalizedTransaction(
+            this.config,
+            row,
+            existingProviderTransactionId
+          );
           const category = categorizer.categorize(
             transaction.description_normalized
           );

@@ -600,7 +600,9 @@ export class SyncService {
     for (const connectionId of new Set(
       snapshots.map((snapshot) => snapshot.account.bank_connection_id)
     )) {
-      this.clearConnectionError(connectionId);
+      if (!context.skippedConnectionIds?.has(connectionId)) {
+        this.clearConnectionError(connectionId);
+      }
     }
     return count;
   }

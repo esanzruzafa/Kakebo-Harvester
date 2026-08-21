@@ -18,6 +18,40 @@ afterEach(async () => {
 });
 
 describe("bank reauthorization", () => {
+  it("removes a new pending connection when authorization start fails", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-authorization-start-failure-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const client = {
+      listBanks: vi.fn().mockResolvedValue([
+        {
+          name: "Demo Bank",
+          country: "ES",
+          psu_types: ["personal"],
+          auth_methods: [],
+          maximum_consent_validity: 7_776_000
+        }
+      ]),
+      startAuthorization: vi.fn().mockRejectedValue(new Error("Provider unavailable."))
+    } as unknown as EnableBankingClient;
+    const service = new AuthorizationService(config, database, client);
+
+    await expect(
+      service.connect({
+        bankSearch: "Demo Bank",
+        country: "ES",
+        psuType: "personal"
+      })
+    ).rejects.toThrow("Provider unavailable.");
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM bank_connections").get()
+    ).toEqual({ count: 0 });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM pending_authorizations").get()
+    ).toEqual({ count: 0 });
+    database.close();
+  });
+
   it("reuses the connection and preserves the account alias", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-reauthorization-"));
     const config = testConfig(root);

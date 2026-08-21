@@ -348,4 +348,84 @@ describe("bank rate-limit persistence", () => {
     ).toEqual({ count: 1 });
     database.close();
   });
+
+  it("retains cooldown after a partial balance success on the same connection", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T10:00:00.000Z"));
+    root = await mkdtemp(join(tmpdir(), "kakebo-rate-limit-partial-balances-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    const insertConnection = database.prepare(
+      `INSERT INTO bank_connections (
+         id, provider, environment, bank_name, bank_country, psu_type,
+         alias, status, created_at, required_psu_headers_json
+       ) VALUES (?, 'enable-banking', ?, ?, 'ES', 'personal', ?, 'AUTHORIZED', ?, '[]')`
+    );
+    insertConnection.run("limited", config.appEnv, "A Bank", "A personal", now);
+    insertConnection.run("ready", config.appEnv, "Z Bank", "Z personal", now);
+    const insertSession = database.prepare(
+      `INSERT INTO provider_sessions (
+         id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+       ) VALUES (?, ?, ?, ?, 'AUTHORIZED')`
+    );
+    insertSession.run(
+      "limited-session",
+      "limited",
+      encryptSecret("limited-session", config.sessionEncryptionKey),
+      now
+    );
+    insertSession.run(
+      "ready-session",
+      "ready",
+      encryptSecret("ready-session", config.sessionEncryptionKey),
+      now
+    );
+    const insertAccount = database.prepare(
+      `INSERT INTO accounts (
+         id, bank_connection_id, provider_account_id, name, active,
+         first_seen_at, last_seen_at
+       ) VALUES (?, ?, ?, ?, 1, ?, ?)`
+    );
+    insertAccount.run("limited-a", "limited", "limited-a", "A account", now, now);
+    insertAccount.run("limited-b", "limited", "limited-b", "B account", now, now);
+    insertAccount.run("ready-a", "ready", "ready-a", "Ready account", now, now);
+    const getBalances = vi.fn().mockImplementation((accountId: string) => {
+      if (accountId === "limited-b") {
+        return Promise.reject(
+          new RateLimitError(
+            "Limit reached.",
+            "2026-07-28T16:00:00.000Z",
+            [],
+            "ASPSP_RATE_LIMIT_EXCEEDED"
+          )
+        );
+      }
+      return Promise.resolve({
+        balances: [
+          { balance_amount: { amount: "1", currency: "EUR" } }
+        ]
+      });
+    });
+    const service = new SyncService(
+      config,
+      database,
+      { getBalances } as unknown as EnableBankingClient
+    );
+
+    await expect(service.syncBalances()).resolves.toBe(2);
+    expect(getBalances).toHaveBeenCalledTimes(3);
+    expect(
+      database
+        .prepare(
+          `SELECT retry_after_at, error_code FROM bank_connections
+           WHERE id = 'limited'`
+        )
+        .get()
+    ).toEqual({
+      retry_after_at: "2026-07-28T16:00:00.000Z",
+      error_code: "ASPSP_RATE_LIMIT_EXCEEDED"
+    });
+    database.close();
+  });
 });

@@ -153,7 +153,19 @@ export class AuthorizationService {
         connection.alias,
         new Date().toISOString()
       );
-    return await this.start(connection, bank, "connect");
+    try {
+      return await this.start(connection, bank, "connect");
+    } catch (error) {
+      this.database.transaction(() => {
+        this.database
+          .prepare("DELETE FROM pending_authorizations WHERE bank_connection_id = ?")
+          .run(connection.id);
+        this.database
+          .prepare("DELETE FROM bank_connections WHERE id = ?")
+          .run(connection.id);
+      })();
+      throw error;
+    }
   }
 
   public async reauthorize(connectionId: string): Promise<AuthorizationStartResult> {

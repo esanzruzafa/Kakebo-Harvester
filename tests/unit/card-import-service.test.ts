@@ -204,4 +204,55 @@ describe("CardImportService", () => {
     });
     database.close();
   });
+
+  it("keeps an ambiguous identical purchase from a separate statement", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-identical-statements-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const profiles = createDefaultCardImportProfiles();
+    const profile = profiles[0];
+    if (!profile) throw new Error("The default card profile is missing.");
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save(profiles);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const firstPath = join(root, "statement-one.xlsx");
+    const secondPath = join(root, "statement-two.xlsx");
+    const identical: [string, string, string, string] = [
+      "20/08/2026",
+      "Coffee shop",
+      "20/08/2026",
+      "-4,50"
+    ];
+    await writeXlsxFile(
+      workbookRows([
+        identical,
+        ["19/08/2026", "Statement one anchor", "19/08/2026", "-1,00"]
+      ])
+    ).toFile(firstPath);
+    await writeXlsxFile(
+      workbookRows([
+        identical,
+        ["21/08/2026", "Statement two anchor", "21/08/2026", "-2,00"]
+      ])
+    ).toFile(secondPath);
+    const importer = new CardImportService(config, database);
+
+    await expect(
+      importer.import({ files: [{ path: firstPath, profileId: profile.id }] })
+    ).resolves.toMatchObject({ inserted: 2, duplicates: 0 });
+    await expect(
+      importer.import({ files: [{ path: secondPath, profileId: profile.id }] })
+    ).resolves.toMatchObject({ inserted: 2, duplicates: 0 });
+    await expect(
+      importer.import({ files: [{ path: secondPath, profileId: profile.id }] })
+    ).resolves.toMatchObject({ inserted: 0, duplicates: 2 });
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM transactions
+           WHERE provider = 'manual-card' AND description_raw = 'Coffee shop'`
+        )
+        .get()
+    ).toEqual({ count: 2 });
+    database.close();
+  });
 });
