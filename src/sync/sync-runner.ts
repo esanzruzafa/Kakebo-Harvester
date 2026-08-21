@@ -203,13 +203,14 @@ export class SyncRunner {
     };
 
     lock.acquire();
-    const desktopRunId = audit.begin({
-      dateFrom,
-      dateTo,
-      steps
-    });
-    progress("run-started", "Synchronization started.");
+    let desktopRunId: string | undefined;
     try {
+      desktopRunId = audit.begin({
+        dateFrom,
+        dateTo,
+        steps
+      });
+      progress("run-started", "Synchronization started.");
       for (const step of steps) {
         progress("step-started", `Running ${step}.`, step);
         let reauthorizationAttempts = 0;
@@ -254,13 +255,15 @@ export class SyncRunner {
       progress("run-completed", "Synchronization completed.");
       return result;
     } catch (error) {
-      audit.finish(
-        desktopRunId,
-        "FAILED",
-        safeMessage(error),
-        providerErrorCode(error) ??
-          (error instanceof KakeboError ? error.code : "SYNC_ERROR")
-      );
+      if (desktopRunId) {
+        audit.finish(
+          desktopRunId,
+          "FAILED",
+          safeMessage(error),
+          providerErrorCode(error) ??
+            (error instanceof KakeboError ? error.code : "SYNC_ERROR")
+        );
+      }
       progress("run-failed", error instanceof Error ? error.message : String(error));
       throw error;
     } finally {

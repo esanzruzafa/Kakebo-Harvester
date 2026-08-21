@@ -194,7 +194,8 @@ export class EnableBankingClient {
         });
 
         if (response.ok) {
-          return (await response.json()) as unknown;
+          const body = await response.text();
+          return body.trim().length > 0 ? (JSON.parse(body) as unknown) : undefined;
         }
         const body = (await response.text()).slice(0, 500);
         const failure = providerError(body);

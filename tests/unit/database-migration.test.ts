@@ -49,7 +49,7 @@ describe("database migrations", () => {
     legacy.close();
 
     const migrated = createDatabase(config.databasePath);
-    expect(migrated.pragma("user_version", { simple: true })).toBe(6);
+    expect(migrated.pragma("user_version", { simple: true })).toBe(7);
     expect(
       migrated
         .prepare(
@@ -138,6 +138,64 @@ describe("database migrations", () => {
       retry_after_at: "2026-07-28T16:30:00.000Z",
       error_code: "RATE_LIMIT_EXCEEDED"
     });
+    migrated.close();
+  });
+
+  it("does not assign an ambiguous legacy rate limit to every connection", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-rate-limit-multi-migration-"));
+    const config = testConfig(root);
+    const legacy = new Database(config.databasePath);
+    for (const filename of [
+      "001_initial.sql",
+      "002_desktop.sql",
+      "003_audit_and_exports.sql"
+    ]) {
+      legacy.exec(
+        readFileSync(
+          resolve("src", "storage", "migrations", filename),
+          "utf8"
+        )
+      );
+    }
+    legacy.pragma("user_version = 3");
+    for (const id of ["connection-a", "connection-b"]) {
+      legacy
+        .prepare(
+          `INSERT INTO bank_connections (
+             id, provider, environment, bank_name, bank_country, psu_type,
+             alias, status, created_at
+           ) VALUES (?, 'enable-banking', 'sandbox', 'Demo Bank', 'ES',
+             'personal', ?, 'AUTHORIZED', '2026-07-28T10:00:00.000Z')`
+        )
+        .run(id, id);
+    }
+    legacy
+      .prepare(
+        `INSERT INTO desktop_runs (
+           id, started_at, finished_at, status, date_from, date_to,
+           steps_json, error_message_safe
+         ) VALUES (
+           'run', '2026-07-28T10:30:00.000Z', '2026-07-28T10:31:00.000Z',
+           'FAILED', '2026-01-01', '2026-07-28', '["accounts"]',
+           'Enable Banking ha limitado temporalmente las solicitudes.'
+         )`
+      )
+      .run();
+    legacy.close();
+
+    const migrated = createDatabase(config.databasePath);
+    expect(migrated.pragma("user_version", { simple: true })).toBe(7);
+    expect(
+      migrated
+        .prepare(
+          `SELECT retry_after_at, error_code
+           FROM bank_connections ORDER BY id`
+        )
+        .all()
+    ).toEqual([
+      { retry_after_at: null, error_code: null },
+      { retry_after_at: null, error_code: null }
+    ]);
     migrated.close();
   });
 });

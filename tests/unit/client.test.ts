@@ -130,6 +130,24 @@ describe("Enable Banking client", () => {
     );
   });
 
+  it("accepts a successful session deletion without a JSON response body", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(null, { status: 204 })
+    );
+    const client = new EnableBankingClient(config, fetchMock);
+
+    await expect(client.deleteSession("session-id")).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("classifies EXPIRED_SESSION on HTTP 401 as reauthorization", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-client-"));
     const config = testConfig(root);

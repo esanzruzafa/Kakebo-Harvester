@@ -11,6 +11,7 @@ import {
   SynchronizationLock,
   SyncRunner
 } from "../../src/sync/sync-runner.js";
+import { DesktopRunRepository } from "../../src/storage/repositories/desktop-run-repository.js";
 import type { SyncService } from "../../src/sync/sync-service.js";
 import { testConfig } from "../helpers.js";
 
@@ -88,6 +89,32 @@ describe("synchronization lock", () => {
     const next = new SynchronizationLock(database);
     expect(() => next.acquire()).not.toThrow();
     next.release();
+    database.close();
+  });
+
+  it("releases the lock when audit initialization fails", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-sync-lock-audit-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const runner = new SyncRunner(config, database, {} as SyncService);
+    const begin = vi
+      .spyOn(DesktopRunRepository.prototype, "begin")
+      .mockImplementation(() => {
+        throw new Error("Disk full.");
+      });
+
+    await expect(
+      runner.run({
+        steps: ["accounts"],
+        dateFrom: "2026-01-01",
+        dateTo: "2026-01-31"
+      })
+    ).rejects.toThrow("Disk full.");
+
+    const next = new SynchronizationLock(database);
+    expect(() => next.acquire()).not.toThrow();
+    next.release();
+    begin.mockRestore();
     database.close();
   });
 });

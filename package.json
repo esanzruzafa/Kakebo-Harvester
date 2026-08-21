@@ -7,7 +7,7 @@
   "description": "Local, read-only desktop application for importing financial data through Enable Banking.",
   "author": "Eduardo Sanz",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "cli": "tsx src/index.ts",

@@ -364,7 +364,7 @@ The configured export profile and all account/category settings are reused autom
 
 ## Build the Windows portable executable
 
-Builds should be produced on Windows x64 with Node.js 20 or later. Node.js 24 is used by the repository workflows.
+Builds should be produced on Windows x64 with Node.js 22.19 or later. Node.js 24 is used by the repository workflows.
 
 From a clean checkout:
 

@@ -74,6 +74,10 @@ import {
 import { monthsAgoIso, todayIso } from "../utils/dates.js";
 import { safeMessage } from "../utils/text.js";
 import { configureTlsTrust } from "../tls.js";
+import {
+  isUsableLocalHttpsCertificate,
+  tlsSetupScriptPath
+} from "./local-https.js";
 import type {
   AuthorizationUiResult,
   BankOption,
@@ -500,12 +504,6 @@ async function withSynchronizationLock<Result>(
   }
 }
 
-function tlsSetupScriptPath(): string {
-  return app.isPackaged
-    ? join(process.resourcesPath, "scripts", "setup-local-https.ps1")
-    : join(rootDirectory, "scripts", "setup-local-https.ps1");
-}
-
 async function generateLocalHttps(
   application: KakeboApplication,
   force: boolean
@@ -518,7 +516,11 @@ async function generateLocalHttps(
     "-ExecutionPolicy",
     "Bypass",
     "-File",
-    tlsSetupScriptPath(),
+    tlsSetupScriptPath({
+      packaged: app.isPackaged,
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath
+    }),
     "-PrivateDirectory",
     dirname(application.config.tlsPfxPath),
     "-PfxPath",
@@ -571,7 +573,10 @@ async function localHttpsIsTrusted(
         maxBuffer: 100_000
       }
     );
-    return true;
+    return await isUsableLocalHttpsCertificate({
+      pfxPath: application.config.tlsPfxPath,
+      passphrasePath: application.config.tlsPfxPassphrasePath
+    });
   } catch {
     return false;
   }

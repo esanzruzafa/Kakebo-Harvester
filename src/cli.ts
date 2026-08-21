@@ -7,7 +7,7 @@ import type {
   SyncService,
   SyncSummary
 } from "./sync/sync-service.js";
-import { SyncRunner } from "./sync/sync-runner.js";
+import { SynchronizationLock, SyncRunner } from "./sync/sync-runner.js";
 import { getSyncWindow } from "./sync/sync-window.js";
 import { CsvExporter } from "./export/csv-exporter.js";
 import { AccountRepository } from "./storage/repositories/account-repository.js";
@@ -81,6 +81,19 @@ function printSummary(summary: SyncSummary): void {
       pendingReconciled: summary.pendingReconciled
     }
   ]);
+}
+
+async function withSynchronizationLock<Result>(
+  database: SqliteDatabase,
+  operation: () => Promise<Result>
+): Promise<Result> {
+  const lock = new SynchronizationLock(database);
+  lock.acquire();
+  try {
+    return await operation();
+  } finally {
+    lock.release();
+  }
 }
 
 function printHelp(): void {
@@ -192,15 +205,16 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
       return;
     }
     case "sync-accounts": {
-      const count = await sync.syncAccounts(cliSyncContext(options, config));
+      const count = await withSynchronizationLock(database, () =>
+        sync.syncAccounts(cliSyncContext(options, config))
+      );
       logger.info({ count }, "Account synchronization completed");
       console.log(`Cuentas sincronizadas: ${count}`);
       return;
     }
     case "sync-balances": {
-      const count = await sync.syncBalances(
-        undefined,
-        cliSyncContext(options, config)
+      const count = await withSynchronizationLock(database, () =>
+        sync.syncBalances(undefined, cliSyncContext(options, config))
       );
       logger.info({ count }, "Balance synchronization completed");
       console.log(`Saldos guardados: ${count}`);
@@ -212,10 +226,12 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
         value(options, "from"),
         value(options, "to")
       );
-      const summary = await sync.syncTransactions(
-        window.dateFrom,
-        window.dateTo,
-        cliSyncContext(options, config)
+      const summary = await withSynchronizationLock(database, () =>
+        sync.syncTransactions(
+          window.dateFrom,
+          window.dateTo,
+          cliSyncContext(options, config)
+        )
       );
       logger.info({ ...summary, ...window }, "Transaction synchronization completed");
       printSummary(summary);
@@ -270,7 +286,9 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
       return;
     }
     case "export": {
-      const result = await new CsvExporter(config, database).export();
+      const result = await withSynchronizationLock(database, () =>
+        new CsvExporter(config, database).export()
+      );
       console.log(`Export generated: ${result.path} (${result.rows} rows)`);
       return;
     }
