@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EnableBankingClient } from "../../src/enable-banking/client.js";
 import { BankUnavailableError } from "../../src/errors.js";
 import { createDatabase } from "../../src/storage/database.js";
+import { AccountRepository } from "../../src/storage/repositories/account-repository.js";
 import { SyncRunner } from "../../src/sync/sync-runner.js";
 import type { SyncProgressEvent } from "../../src/sync/sync-runner.js";
 import { SyncService } from "../../src/sync/sync-service.js";
@@ -71,6 +72,86 @@ describe("account detail synchronization selection", () => {
         .prepare("SELECT sync_enabled FROM accounts WHERE id = 'closed-account'")
         .get()
     ).toEqual({ sync_enabled: 0 });
+    database.close();
+  });
+
+  it("deactivates accounts omitted by the session and reactivates them if they return", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-session-accounts-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', ?, 'BBVA', 'ES', 'personal',
+                   'BBVA personal', 'AUTHORIZED', ?)`
+      )
+      .run(config.appEnv, now);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('session', 'connection', ?, ?, 'AUTHORIZED')`
+      )
+      .run(encryptSecret("provider-session", config.sessionEncryptionKey), now);
+    const insertAccount = database.prepare(
+      `INSERT INTO accounts (
+         id, bank_connection_id, provider_account_id, name, account_alias,
+         active, first_seen_at, last_seen_at
+       ) VALUES (?, 'connection', ?, ?, ?, 1, ?, ?)`
+    );
+    insertAccount.run(
+      "returned-account",
+      "returned-provider-account",
+      "Returned account",
+      "Everyday",
+      now,
+      now
+    );
+    insertAccount.run(
+      "omitted-account",
+      "omitted-provider-account",
+      "Omitted account",
+      "Savings",
+      now,
+      now
+    );
+    const getSession = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "AUTHORIZED",
+        accounts: ["returned-provider-account"]
+      })
+      .mockResolvedValueOnce({
+        status: "AUTHORIZED",
+        accounts: ["returned-provider-account", "omitted-provider-account"]
+      });
+    const getAccount = vi.fn((uid: string) => ({
+      uid,
+      name: uid,
+      currency: "EUR"
+    }));
+    const client = { getSession, getAccount } as unknown as EnableBankingClient;
+    const service = new SyncService(config, database, client);
+
+    await expect(service.syncAccounts()).resolves.toBe(1);
+    expect(
+      database
+        .prepare("SELECT active, account_alias FROM accounts WHERE id = 'omitted-account'")
+        .get()
+    ).toEqual({ active: 0, account_alias: "Savings" });
+    expect(
+      new AccountRepository(database).listActive().map((account) => account.id)
+    ).toEqual(["returned-account"]);
+
+    await expect(service.syncAccounts()).resolves.toBe(2);
+    expect(
+      database
+        .prepare("SELECT active, account_alias FROM accounts WHERE id = 'omitted-account'")
+        .get()
+    ).toEqual({ active: 1, account_alias: "Savings" });
     database.close();
   });
 

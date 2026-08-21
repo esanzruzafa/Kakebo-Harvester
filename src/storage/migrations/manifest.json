@@ -8,5 +8,9 @@
   {
     "version": 7,
     "filename": "007_correct_legacy_rate_limit_backfill.sql"
+  },
+  {
+    "version": 8,
+    "filename": "008_account_identification_hashes.sql"
   }
 ]

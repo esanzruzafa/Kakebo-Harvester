@@ -41,15 +41,19 @@ describe("database migrations", () => {
     legacy
       .prepare(
         `INSERT INTO accounts (
-           id, bank_connection_id, provider_account_id, account_alias,
+           id, bank_connection_id, provider_account_id, identification_hash,
+           account_alias,
            first_seen_at, last_seen_at
-         ) VALUES ('account', 'connection', 'provider-account', 'Household', ?, ?)`
+         ) VALUES (
+           'account', 'connection', 'provider-account', 'stable-hash',
+           'Household', ?, ?
+         )`
       )
       .run(now, now);
     legacy.close();
 
     const migrated = createDatabase(config.databasePath);
-    expect(migrated.pragma("user_version", { simple: true })).toBe(7);
+    expect(migrated.pragma("user_version", { simple: true })).toBe(8);
     expect(
       migrated
         .prepare(
@@ -80,6 +84,18 @@ describe("database migrations", () => {
     expect(accountColumns.some((column) => column.name === "last_error_at")).toBe(
       true
     );
+    expect(
+      migrated
+        .prepare(
+          `SELECT bank_connection_id, identification_hash, account_id
+           FROM account_identification_hashes`
+        )
+        .get()
+    ).toEqual({
+      bank_connection_id: "connection",
+      identification_hash: "stable-hash",
+      account_id: "account"
+    });
     migrated.close();
   });
 
@@ -184,7 +200,7 @@ describe("database migrations", () => {
     legacy.close();
 
     const migrated = createDatabase(config.databasePath);
-    expect(migrated.pragma("user_version", { simple: true })).toBe(7);
+    expect(migrated.pragma("user_version", { simple: true })).toBe(8);
     expect(
       migrated
         .prepare(

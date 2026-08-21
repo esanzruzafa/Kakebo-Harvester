@@ -48,6 +48,25 @@ export interface AccountSettingsUpdate {
   exportEnabled: boolean;
 }
 
+interface AccountIdentityRow {
+  id: string;
+  identification_hash: string | null;
+  account_alias: string | null;
+  first_seen_at: string;
+}
+
+function stableIdentificationHashes(account: AccountResource): string[] {
+  return [
+    account.identification_hash,
+    ...(account.identification_hashes ?? [])
+  ].filter(
+    (value, index, values): value is string =>
+      typeof value === "string" &&
+      value.length > 0 &&
+      values.indexOf(value) === index
+  );
+}
+
 function providerText(value: unknown): string | null {
   if (typeof value === "string") return value;
   if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
@@ -114,44 +133,188 @@ export class AccountRepository {
       .run(accountId);
   }
 
+  public reconcileProviderActiveSet(
+    connectionId: string,
+    providerAccountIds: string[]
+  ): void {
+    const now = new Date().toISOString();
+    const reconcile = this.database.transaction(() => {
+      this.database
+        .prepare("UPDATE accounts SET active = 0 WHERE bank_connection_id = ?")
+        .run(connectionId);
+      if (providerAccountIds.length === 0) return;
+      const placeholders = providerAccountIds.map(() => "?").join(", ");
+      this.database
+        .prepare(
+          `UPDATE accounts
+           SET active = 1, last_seen_at = ?
+           WHERE bank_connection_id = ?
+             AND provider_account_id IN (${placeholders})`
+        )
+        .run(now, connectionId, ...providerAccountIds);
+    });
+    reconcile();
+  }
+
+  private findByIdentificationHashes(
+    connectionId: string,
+    hashes: string[]
+  ): AccountIdentityRow[] {
+    if (hashes.length === 0) return [];
+    const placeholders = hashes.map(() => "?").join(", ");
+    return this.database
+      .prepare(
+        `SELECT DISTINCT a.id, a.identification_hash, a.account_alias, a.first_seen_at
+         FROM accounts a
+         LEFT JOIN account_identification_hashes h ON h.account_id = a.id
+         WHERE a.bank_connection_id = ?
+           AND (
+             a.identification_hash IN (${placeholders})
+             OR h.identification_hash IN (${placeholders})
+           )
+         ORDER BY (a.account_alias IS NOT NULL) DESC, a.first_seen_at, a.id`
+      )
+      .all(connectionId, ...hashes, ...hashes) as AccountIdentityRow[];
+  }
+
+  private findIdentityByProviderAccountId(
+    connectionId: string,
+    providerAccountId: string
+  ): AccountIdentityRow | undefined {
+    return this.database
+      .prepare(
+        `SELECT id, identification_hash, account_alias, first_seen_at
+         FROM accounts
+         WHERE bank_connection_id = ? AND provider_account_id = ?`
+      )
+      .get(connectionId, providerAccountId) as AccountIdentityRow | undefined;
+  }
+
+  private mergeAccount(canonicalId: string, duplicateId: string): void {
+    if (canonicalId === duplicateId) return;
+    this.database
+      .prepare(
+        `UPDATE accounts
+         SET account_alias = COALESCE(
+           account_alias,
+           (SELECT account_alias FROM accounts WHERE id = ?)
+         )
+         WHERE id = ?`
+      )
+      .run(duplicateId, canonicalId);
+    for (const table of ["balances", "transactions_raw", "transactions", "sync_runs"]) {
+      this.database
+        .prepare(`UPDATE ${table} SET account_id = ? WHERE account_id = ?`)
+        .run(canonicalId, duplicateId);
+    }
+    this.database
+      .prepare(
+        `INSERT OR IGNORE INTO desktop_run_accounts (
+           run_id, account_id, bank_name, account_name, amount, currency,
+           balance_type, balance_reference_date, balance_extracted_at
+         )
+         SELECT run_id, ?, bank_name, account_name, amount, currency,
+                balance_type, balance_reference_date, balance_extracted_at
+         FROM desktop_run_accounts
+         WHERE account_id = ?`
+      )
+      .run(canonicalId, duplicateId);
+    this.database
+      .prepare("DELETE FROM desktop_run_accounts WHERE account_id = ?")
+      .run(duplicateId);
+    this.database
+      .prepare(
+        "UPDATE account_identification_hashes SET account_id = ? WHERE account_id = ?"
+      )
+      .run(canonicalId, duplicateId);
+    this.database.prepare("DELETE FROM accounts WHERE id = ?").run(duplicateId);
+  }
+
+  private registerIdentificationHashes(
+    connectionId: string,
+    accountId: string,
+    hashes: string[]
+  ): void {
+    const statement = this.database.prepare(
+      `INSERT INTO account_identification_hashes (
+         bank_connection_id, identification_hash, account_id
+       ) VALUES (?, ?, ?)
+       ON CONFLICT(bank_connection_id, identification_hash)
+       DO UPDATE SET account_id = excluded.account_id`
+    );
+    for (const hash of hashes) statement.run(connectionId, hash, accountId);
+  }
+
   public upsert(
     connectionId: string,
     account: AccountResource,
     rawPath: string | null
   ): string {
-    const now = new Date().toISOString();
-    const existingByHash = account.identification_hash
-      ? (this.database
-          .prepare(
-            `SELECT id FROM accounts
-             WHERE bank_connection_id = ? AND identification_hash = ?`
-          )
-          .get(connectionId, account.identification_hash) as { id: string } | undefined)
-      : undefined;
-    const existing =
-      existingByHash ??
-      (this.database
-        .prepare(
-          `SELECT id FROM accounts
-           WHERE bank_connection_id = ? AND provider_account_id = ?`
-        )
-        .get(connectionId, account.uid) as { id: string } | undefined);
+    const execute = this.database.transaction(() => {
+      const now = new Date().toISOString();
+      const hashes = stableIdentificationHashes(account);
+      const matchesByHash = this.findByIdentificationHashes(connectionId, hashes);
+      const matchByProviderId = this.findIdentityByProviderAccountId(
+        connectionId,
+        account.uid
+      );
+      const existing = matchesByHash[0] ?? matchByProviderId;
+      const duplicateIds = new Set(
+        [...matchesByHash, matchByProviderId]
+          .filter((row): row is AccountIdentityRow => row !== undefined)
+          .map((row) => row.id)
+      );
+      if (existing) {
+        duplicateIds.delete(existing.id);
+        for (const duplicateId of duplicateIds) {
+          this.mergeAccount(existing.id, duplicateId);
+        }
+      }
 
-    const iban = account.account_id?.iban;
-    if (existing) {
+      const iban = account.account_id?.iban;
+      if (existing) {
+        this.database
+          .prepare(
+            `UPDATE accounts SET
+               provider_account_id = ?,
+               identification_hash = COALESCE(identification_hash, ?),
+               iban_masked = ?, currency = ?, name = ?, display_name = ?,
+               account_type = ?, product_type = ?, active = 1, last_seen_at = ?,
+               raw_response_path = ?, last_error_at = NULL, last_error_code = NULL,
+               last_error_message_safe = NULL
+             WHERE id = ?`
+          )
+          .run(
+            account.uid,
+            hashes[0] ?? null,
+            maskIdentifier(iban),
+            account.currency ?? null,
+            account.name ?? null,
+            account.details ?? account.name ?? null,
+            account.cash_account_type ?? null,
+            providerText(account.product),
+            now,
+            rawPath,
+            existing.id
+          );
+        this.registerIdentificationHashes(connectionId, existing.id, hashes);
+        return existing.id;
+      }
+
+      const id = createId();
       this.database
         .prepare(
-          `UPDATE accounts SET
-             provider_account_id = ?, identification_hash = COALESCE(?, identification_hash),
-             iban_masked = ?, currency = ?, name = ?, display_name = ?,
-             account_type = ?, product_type = ?, active = 1, last_seen_at = ?,
-             raw_response_path = ?, last_error_at = NULL, last_error_code = NULL,
-             last_error_message_safe = NULL
-           WHERE id = ?`
+          `INSERT INTO accounts (
+             id, bank_connection_id, provider_account_id, identification_hash,
+             iban_masked, currency, name, display_name, account_type, product_type,
+             active, first_seen_at, last_seen_at, raw_response_path
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
         )
         .run(
+          id,
+          connectionId,
           account.uid,
-          account.identification_hash ?? null,
+          hashes[0] ?? null,
           maskIdentifier(iban),
           account.currency ?? null,
           account.name ?? null,
@@ -159,37 +322,13 @@ export class AccountRepository {
           account.cash_account_type ?? null,
           providerText(account.product),
           now,
-          rawPath,
-          existing.id
+          now,
+          rawPath
         );
-      return existing.id;
-    }
-
-    const id = createId();
-    this.database
-      .prepare(
-        `INSERT INTO accounts (
-           id, bank_connection_id, provider_account_id, identification_hash,
-           iban_masked, currency, name, display_name, account_type, product_type,
-           active, first_seen_at, last_seen_at, raw_response_path
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
-      )
-      .run(
-        id,
-        connectionId,
-        account.uid,
-        account.identification_hash ?? null,
-        maskIdentifier(iban),
-        account.currency ?? null,
-        account.name ?? null,
-        account.details ?? account.name ?? null,
-        account.cash_account_type ?? null,
-        providerText(account.product),
-        now,
-        now,
-        rawPath
-      );
-    return id;
+      this.registerIdentificationHashes(connectionId, id, hashes);
+      return id;
+    });
+    return execute();
   }
 
   public listActive(connectionId?: string): StoredAccount[] {

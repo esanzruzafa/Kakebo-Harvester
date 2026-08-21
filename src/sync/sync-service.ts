@@ -432,6 +432,10 @@ export class SyncService {
         if (session.status !== "AUTHORIZED") {
           throw new ReauthorizationRequiredError(`La sesión está en estado ${session.status}.`);
         }
+        this.accounts.reconcileProviderActiveSet(
+          stored.connection_id,
+          session.accounts
+        );
         for (const accountId of session.accounts) {
           if (!this.accounts.shouldRefreshDetails(stored.connection_id, accountId)) {
             continue;

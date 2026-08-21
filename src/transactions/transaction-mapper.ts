@@ -44,10 +44,15 @@ export function normalizeDecimal(
   if (!/^[+-]?\d+(?:\.\d+)?$/.test(trimmed)) {
     throw new Error(`Invalid decimal amount: ${value}`);
   }
-  const unsigned = trimmed.replace(/^[+-]/, "").replace(/^0+(?=\d)/, "");
-  const normalizedUnsigned = unsigned.startsWith(".") ? `0${unsigned}` : unsigned;
+  const unsigned = trimmed.replace(/^[+-]/, "");
+  const [wholePart = "0", fractionalPart] = unsigned.split(".");
+  const normalizedWhole = wholePart.replace(/^0+(?=\d)/, "") || "0";
+  const normalizedFraction = fractionalPart?.replace(/0+$/, "");
+  const normalizedUnsigned = normalizedFraction
+    ? `${normalizedWhole}.${normalizedFraction}`
+    : normalizedWhole;
   const isDebit = indicator === "DBIT" || (!indicator && trimmed.startsWith("-"));
-  const isZero = /^0+(?:\.0+)?$/.test(normalizedUnsigned);
+  const isZero = normalizedUnsigned === "0";
   return {
     amount: isDebit && !isZero ? `-${normalizedUnsigned}` : normalizedUnsigned,
     direction: isDebit ? "expense" : "income"
