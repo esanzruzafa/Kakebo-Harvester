@@ -56,6 +56,16 @@ async function createConnection(): Promise<{
 describe("bank connection revocation", () => {
   it("revokes the remote session and preserves local history", async () => {
     const { config, database } = await createConnection();
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('recovery', 'connection', ?, ?, 'REVOCATION_REQUIRED')`
+      )
+      .run(
+        encryptSecret("recovery-provider-session", config.sessionEncryptionKey),
+        new Date().toISOString()
+      );
     const deleteSession = vi.fn().mockResolvedValue(undefined);
     const client = { deleteSession } as unknown as EnableBankingClient;
 
@@ -67,6 +77,8 @@ describe("bank connection revocation", () => {
     });
 
     expect(deleteSession).toHaveBeenCalledWith("provider-session");
+    expect(deleteSession).toHaveBeenCalledWith("recovery-provider-session");
+    expect(deleteSession).toHaveBeenCalledTimes(2);
     expect(result).toEqual({
       remoteRevocationAttempted: true,
       remoteRevoked: true

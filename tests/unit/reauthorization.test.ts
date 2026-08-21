@@ -6,6 +6,7 @@ import { AuthorizationService } from "../../src/auth/authorization-service.js";
 import type { EnableBankingClient } from "../../src/enable-banking/client.js";
 import { createDatabase } from "../../src/storage/database.js";
 import { RawStore } from "../../src/storage/raw-store.js";
+import { encryptSecret } from "../../src/utils/crypto.js";
 import { testConfig } from "../helpers.js";
 
 let root: string | undefined;
@@ -42,6 +43,16 @@ describe("bank reauthorization", () => {
       .run(now);
     database
       .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('recovery-session', 'connection', ?, ?, 'REVOCATION_REQUIRED')`
+      )
+      .run(
+        encryptSecret("recovery-provider-session", config.sessionEncryptionKey),
+        now
+      );
+    database
+      .prepare(
         `INSERT INTO accounts (
            id, bank_connection_id, provider_account_id, identification_hash,
            name, account_alias, active, first_seen_at, last_seen_at
@@ -53,6 +64,7 @@ describe("bank reauthorization", () => {
       .run(now, now);
 
     let authorizationState = "";
+    const deleteSession = vi.fn().mockResolvedValue(undefined);
     const client = {
       listBanks: vi.fn().mockResolvedValue([
         {
@@ -78,7 +90,8 @@ describe("bank reauthorization", () => {
           }
         ],
         access: { valid_until: "2026-10-01T00:00:00Z" }
-      })
+      }),
+      deleteSession
     } as unknown as EnableBankingClient;
     const service = new AuthorizationService(config, database, client);
 
@@ -90,6 +103,15 @@ describe("bank reauthorization", () => {
 
     expect(started.connectionId).toBe("connection");
     expect(completed.status).toBe("authorized");
+    expect(deleteSession).toHaveBeenCalledWith("recovery-provider-session");
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM provider_sessions
+           WHERE status = 'REVOCATION_REQUIRED'`
+        )
+        .get()
+    ).toEqual({ count: 0 });
     expect(
       database.prepare("SELECT COUNT(*) AS count FROM bank_connections").get()
     ).toEqual({ count: 1 });

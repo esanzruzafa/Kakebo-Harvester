@@ -350,7 +350,7 @@ export class SyncService {
           error.retryAt ?? null,
           code,
           safeMessage(error),
-          context.psuHeaders ? 1 : 0,
+          context.allowRateLimitOverride === true ? 1 : 0,
           connectionId
         );
       return new RateLimitError(
@@ -439,6 +439,8 @@ export class SyncService {
   ): Promise<number> {
     await this.assertConnectionsReady(context);
     let count = 0;
+    let completedConnections = 0;
+    let deferredRateLimit: RateLimitError | undefined;
     for (const stored of this.listSessions(context.skippedConnectionIds)) {
       try {
         const sessionId = decryptSecret(
@@ -489,10 +491,22 @@ export class SyncService {
           }
         }
         this.clearConnectionError(stored.connection_id);
+        completedConnections += 1;
       } catch (error) {
-        throw this.markConnectionError(stored.connection_id, error, context);
+        const reported = this.markConnectionError(
+          stored.connection_id,
+          error,
+          context
+        );
+        if (reported instanceof RateLimitError) {
+          context.skippedConnectionIds?.add(stored.connection_id);
+          deferredRateLimit ??= reported;
+          continue;
+        }
+        throw reported;
       }
     }
+    if (deferredRateLimit && completedConnections === 0) throw deferredRateLimit;
     return count;
   }
 
@@ -501,6 +515,8 @@ export class SyncService {
     context: SyncExecutionContext = {}
   ): Promise<number> {
     await this.assertConnectionsReady(context);
+    let deferredRateLimit: RateLimitError | undefined;
+    const completedConnectionIds = new Set<string>();
     const snapshots: Array<{
       account: StoredAccount;
       response: Awaited<ReturnType<EnableBankingClient["getBalances"]>>;
@@ -522,6 +538,7 @@ export class SyncService {
           rawPath: raw.path,
           extractedAt: new Date().toISOString()
         });
+        completedConnectionIds.add(account.bank_connection_id);
         this.accounts.clearLastSyncError(account.id);
       } catch (error) {
         if (
@@ -536,12 +553,22 @@ export class SyncService {
         ) {
           continue;
         }
-        throw this.markConnectionError(
+        const reported = this.markConnectionError(
           account.bank_connection_id,
           error,
           context
         );
+        if (reported instanceof RateLimitError) {
+          context.skippedConnectionIds?.add(account.bank_connection_id);
+          completedConnectionIds.delete(account.bank_connection_id);
+          deferredRateLimit ??= reported;
+          continue;
+        }
+        throw reported;
       }
+    }
+    if (deferredRateLimit && completedConnectionIds.size === 0) {
+      throw deferredRateLimit;
     }
     const insert = this.database.prepare(
       `INSERT INTO balances (
@@ -675,6 +702,8 @@ export class SyncService {
     await this.assertConnectionsReady(context);
     this.categorizer.reload();
     const total = emptySummary();
+    let deferredRateLimit: RateLimitError | undefined;
+    const completedConnectionIds = new Set<string>();
     for (const account of this.accounts.listActive()) {
       if (context.skippedConnectionIds?.has(account.bank_connection_id)) continue;
       if (context.skippedAccountIds?.has(account.id)) continue;
@@ -697,6 +726,7 @@ export class SyncService {
         for (const key of Object.keys(total) as Array<keyof SyncSummary>) {
           total[key] += summary[key];
         }
+        completedConnectionIds.add(account.bank_connection_id);
         this.database
           .prepare(
             `UPDATE sync_runs SET
@@ -742,10 +772,19 @@ export class SyncService {
             runId
           );
         if (continueWithOtherAccounts) continue;
+        if (reportedError instanceof RateLimitError) {
+          context.skippedConnectionIds?.add(account.bank_connection_id);
+          completedConnectionIds.delete(account.bank_connection_id);
+          deferredRateLimit ??= reportedError;
+          continue;
+        }
         throw reportedError;
       }
       this.accounts.clearLastSyncError(account.id);
       this.clearConnectionError(account.bank_connection_id);
+    }
+    if (deferredRateLimit && completedConnectionIds.size === 0) {
+      throw deferredRateLimit;
     }
     const skippedConnectionIds = [...(context.skippedConnectionIds ?? [])];
     const excluded = skippedConnectionIds.length

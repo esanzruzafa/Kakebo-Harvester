@@ -16,34 +16,36 @@ export async function disconnectBankConnection(input: {
 }): Promise<DisconnectResult> {
   const connection = input.database
     .prepare(
-      `SELECT c.id, s.provider_session_id_ciphertext
+      `SELECT c.id
        FROM bank_connections c
-       LEFT JOIN provider_sessions s ON s.bank_connection_id = c.id
-         AND s.status = 'AUTHORIZED'
        WHERE c.id = ?
          AND c.environment = ?
-         AND c.provider = 'enable-banking'
-       ORDER BY s.created_at DESC LIMIT 1`
+         AND c.provider = 'enable-banking'`
     )
-    .get(input.connectionId, input.config.appEnv) as
-    | { id: string; provider_session_id_ciphertext: string | null }
-    | undefined;
+    .get(input.connectionId, input.config.appEnv) as { id: string } | undefined;
   if (!connection) {
     throw new Error("The bank connection does not exist or is unavailable.");
   }
 
-  const remoteRevocationAttempted =
-    connection.provider_session_id_ciphertext !== null;
-  let remoteRevoked = false;
-  if (connection.provider_session_id_ciphertext) {
+  const sessions = input.database
+    .prepare(
+      `SELECT provider_session_id_ciphertext
+       FROM provider_sessions
+       WHERE bank_connection_id = ?
+         AND status IN ('AUTHORIZED', 'REVOCATION_REQUIRED')
+       ORDER BY created_at DESC`
+    )
+    .all(connection.id) as Array<{ provider_session_id_ciphertext: string }>;
+  const remoteRevocationAttempted = sessions.length > 0;
+  let remoteRevoked = remoteRevocationAttempted;
+  for (const session of sessions) {
     try {
       await input.client.deleteSession(
         decryptSecret(
-          connection.provider_session_id_ciphertext,
+          session.provider_session_id_ciphertext,
           input.config.sessionEncryptionKey
         )
       );
-      remoteRevoked = true;
     } catch {
       remoteRevoked = false;
     }

@@ -76,13 +76,14 @@ describe("bank rate-limit persistence", () => {
     expect(
       database
         .prepare(
-          `SELECT error_code, retry_after_at
+          `SELECT error_code, retry_after_at, online_retry_used
            FROM bank_connections WHERE id = 'connection'`
         )
         .get()
     ).toEqual({
       error_code: "ASPSP_RATE_LIMIT_EXCEEDED",
-      retry_after_at: "2026-07-28T16:00:00.000Z"
+      retry_after_at: "2026-07-28T16:00:00.000Z",
+      online_retry_used: 0
     });
 
     await expect(service.syncAccounts()).rejects.toBeInstanceOf(RateLimitError);
@@ -245,6 +246,106 @@ describe("bank rate-limit persistence", () => {
         .prepare("SELECT COUNT(*) AS count FROM accounts WHERE bank_connection_id = 'limited'")
         .get()
     ).toEqual({ count: 0 });
+    database.close();
+  });
+
+  it("continues with another bank when a connection first enters cooldown", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T10:00:00.000Z"));
+    root = await mkdtemp(join(tmpdir(), "kakebo-rate-limit-first-response-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    const insertConnection = database.prepare(
+      `INSERT INTO bank_connections (
+         id, provider, environment, bank_name, bank_country, psu_type,
+         alias, status, created_at, required_psu_headers_json
+       ) VALUES (?, 'enable-banking', ?, ?, 'ES', 'personal', ?, 'AUTHORIZED', ?, '[]')`
+    );
+    insertConnection.run(
+      "limited",
+      config.appEnv,
+      "Limited Bank",
+      "Limited personal",
+      now
+    );
+    insertConnection.run(
+      "ready",
+      config.appEnv,
+      "Ready Bank",
+      "Ready personal",
+      now
+    );
+    const insertSession = database.prepare(
+      `INSERT INTO provider_sessions (
+         id, bank_connection_id, provider_session_id_ciphertext,
+         created_at, status
+       ) VALUES (?, ?, ?, ?, 'AUTHORIZED')`
+    );
+    insertSession.run(
+      "limited-session",
+      "limited",
+      encryptSecret("limited-provider-session", config.sessionEncryptionKey),
+      now
+    );
+    insertSession.run(
+      "ready-session",
+      "ready",
+      encryptSecret("ready-provider-session", config.sessionEncryptionKey),
+      now
+    );
+    const getSession = vi.fn().mockImplementation((sessionId: string) =>
+      Promise.resolve({
+        status: "AUTHORIZED",
+        accounts: [
+          sessionId === "limited-provider-session"
+            ? "limited-account"
+            : "ready-account"
+        ]
+      })
+    );
+    const getAccount = vi.fn().mockImplementation((accountId: string) => {
+      if (accountId === "limited-account") {
+        return Promise.reject(
+          new RateLimitError(
+            "Limit reached.",
+            "2026-07-28T16:00:00.000Z",
+            [],
+            "ASPSP_RATE_LIMIT_EXCEEDED"
+          )
+        );
+      }
+      return Promise.resolve({
+        uid: accountId,
+        identification_hash: "ready-hash",
+        name: "Ready account",
+        currency: "EUR"
+      });
+    });
+    const service = new SyncService(
+      config,
+      database,
+      { getSession, getAccount } as unknown as EnableBankingClient
+    );
+
+    await expect(service.syncAccounts()).resolves.toBe(1);
+    expect(getSession).toHaveBeenCalledTimes(2);
+    expect(
+      database
+        .prepare(
+          `SELECT retry_after_at, online_retry_used
+           FROM bank_connections WHERE id = 'limited'`
+        )
+        .get()
+    ).toEqual({
+      retry_after_at: "2026-07-28T16:00:00.000Z",
+      online_retry_used: 0
+    });
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS count FROM accounts WHERE bank_connection_id = 'ready'")
+        .get()
+    ).toEqual({ count: 1 });
     database.close();
   });
 });

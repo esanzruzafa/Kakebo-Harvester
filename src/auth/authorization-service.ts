@@ -4,7 +4,12 @@ import type { Aspsp } from "../enable-banking/schemas.js";
 import type { SqliteDatabase } from "../storage/database.js";
 import { RawStore } from "../storage/raw-store.js";
 import { AccountRepository } from "../storage/repositories/account-repository.js";
-import { createAuthorizationState, createId, encryptSecret } from "../utils/crypto.js";
+import {
+  createAuthorizationState,
+  createId,
+  decryptSecret,
+  encryptSecret
+} from "../utils/crypto.js";
 import {
   AuthorizationDeniedError,
   KakeboError,
@@ -211,6 +216,31 @@ export class AuthorizationService {
     try {
       const session = await this.client.authorizeSession(input.code);
       createdSession = session;
+      const recoverySessions = this.database
+        .prepare(
+          `SELECT id, provider_session_id_ciphertext
+           FROM provider_sessions
+           WHERE bank_connection_id = ? AND status = 'REVOCATION_REQUIRED'`
+        )
+        .all(pending.bankConnectionId) as Array<{
+          id: string;
+          provider_session_id_ciphertext: string;
+        }>;
+      for (const recovery of recoverySessions) {
+        try {
+          await this.client.deleteSession(
+            decryptSecret(
+              recovery.provider_session_id_ciphertext,
+              this.config.sessionEncryptionKey
+            )
+          );
+          this.database
+            .prepare("DELETE FROM provider_sessions WHERE id = ?")
+            .run(recovery.id);
+        } catch {
+          // Retain the recovery row so a later retry or disconnect can revoke it.
+        }
+      }
       const raw = await this.rawStore.write("session", pending.bankConnectionId, session);
       const now = new Date().toISOString();
       const validUntil = session.access?.valid_until ?? null;
@@ -273,7 +303,7 @@ export class AuthorizationService {
                 `INSERT INTO provider_sessions (
                    id, bank_connection_id, provider_session_id_ciphertext,
                    created_at, valid_until, status, raw_response_path
-                 ) VALUES (?, ?, ?, ?, ?, 'AUTHORIZED', NULL)`
+                 ) VALUES (?, ?, ?, ?, ?, 'REVOCATION_REQUIRED', NULL)`
               )
               .run(
                 createId(),
