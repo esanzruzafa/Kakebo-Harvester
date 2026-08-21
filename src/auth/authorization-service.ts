@@ -205,8 +205,12 @@ export class AuthorizationService {
       };
     }
 
+    let createdSession:
+      | Awaited<ReturnType<EnableBankingClient["authorizeSession"]>>
+      | undefined;
     try {
       const session = await this.client.authorizeSession(input.code);
+      createdSession = session;
       const raw = await this.rawStore.write("session", pending.bankConnectionId, session);
       const now = new Date().toISOString();
       const validUntil = session.access?.valid_until ?? null;
@@ -259,6 +263,33 @@ export class AuthorizationService {
         status: "authorized"
       };
     } catch (error) {
+      if (createdSession) {
+        try {
+          await this.client.deleteSession(createdSession.session_id);
+        } catch {
+          try {
+            this.database
+              .prepare(
+                `INSERT INTO provider_sessions (
+                   id, bank_connection_id, provider_session_id_ciphertext,
+                   created_at, valid_until, status, raw_response_path
+                 ) VALUES (?, ?, ?, ?, ?, 'AUTHORIZED', NULL)`
+              )
+              .run(
+                createId(),
+                pending.bankConnectionId,
+                encryptSecret(
+                  createdSession.session_id,
+                  this.config.sessionEncryptionKey
+                ),
+                new Date().toISOString(),
+                createdSession.access?.valid_until ?? null
+              );
+          } catch {
+            // The remote revocation was attempted first. Local recovery storage is best effort.
+          }
+        }
+      }
       const message = safeMessage(error);
       this.database
         .prepare(

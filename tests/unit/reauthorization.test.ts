@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthorizationService } from "../../src/auth/authorization-service.js";
 import type { EnableBankingClient } from "../../src/enable-banking/client.js";
 import { createDatabase } from "../../src/storage/database.js";
+import { RawStore } from "../../src/storage/raw-store.js";
 import { testConfig } from "../helpers.js";
 
 let root: string | undefined;
@@ -181,6 +182,53 @@ describe("bank reauthorization", () => {
         .prepare("SELECT COUNT(*) AS count FROM accounts WHERE active = 1")
         .get()
     ).toEqual({ count: 1 });
+    database.close();
+  });
+
+  it("revokes a newly created remote session when local finalization fails", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-authorization-compensation-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    let authorizationState = "";
+    const deleteSession = vi.fn().mockResolvedValue(undefined);
+    const client = {
+      listBanks: vi.fn().mockResolvedValue([
+        {
+          name: "Demo Bank",
+          country: "ES",
+          psu_types: ["personal"],
+          auth_methods: [],
+          maximum_consent_validity: 7_776_000
+        }
+      ]),
+      startAuthorization: vi.fn().mockImplementation((input: { state: string }) => {
+        authorizationState = input.state;
+        return Promise.resolve({ url: "https://bank.example/authorize" });
+      }),
+      authorizeSession: vi.fn().mockResolvedValue({
+        session_id: "orphan-session",
+        accounts: []
+      }),
+      deleteSession
+    } as unknown as EnableBankingClient;
+    const service = new AuthorizationService(config, database, client);
+    await service.connect({
+      bankSearch: "Demo Bank",
+      country: "ES",
+      psuType: "personal"
+    });
+    vi.spyOn(RawStore.prototype, "write").mockRejectedValue(new Error("Disk full."));
+
+    const completed = await service.complete({
+      state: authorizationState,
+      code: "authorization-code"
+    });
+
+    expect(completed.status).toBe("failed");
+    expect(deleteSession).toHaveBeenCalledExactlyOnceWith("orphan-session");
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM provider_sessions").get()
+    ).toEqual({ count: 0 });
     database.close();
   });
 });

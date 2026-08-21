@@ -169,4 +169,82 @@ describe("bank rate-limit persistence", () => {
     expect(getSession).not.toHaveBeenCalled();
     database.close();
   });
+
+  it("skips only the connection in cooldown and synchronizes other banks", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T10:00:00.000Z"));
+    root = await mkdtemp(join(tmpdir(), "kakebo-rate-limit-isolation-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    const insertConnection = database.prepare(
+      `INSERT INTO bank_connections (
+         id, provider, environment, bank_name, bank_country, psu_type,
+         alias, status, created_at, required_psu_headers_json, retry_after_at,
+         error_code
+       ) VALUES (?, 'enable-banking', ?, ?, 'ES', 'personal', ?, 'AUTHORIZED', ?,
+                 '[]', ?, ?)`
+    );
+    insertConnection.run(
+      "limited",
+      config.appEnv,
+      "Limited Bank",
+      "Limited personal",
+      now,
+      "2026-07-28T16:00:00.000Z",
+      "ASPSP_RATE_LIMIT_EXCEEDED"
+    );
+    insertConnection.run(
+      "ready",
+      config.appEnv,
+      "Ready Bank",
+      "Ready personal",
+      now,
+      null,
+      null
+    );
+    const insertSession = database.prepare(
+      `INSERT INTO provider_sessions (
+         id, bank_connection_id, provider_session_id_ciphertext,
+         created_at, status
+       ) VALUES (?, ?, ?, ?, 'AUTHORIZED')`
+    );
+    insertSession.run(
+      "limited-session",
+      "limited",
+      encryptSecret("limited-provider-session", config.sessionEncryptionKey),
+      now
+    );
+    insertSession.run(
+      "ready-session",
+      "ready",
+      encryptSecret("ready-provider-session", config.sessionEncryptionKey),
+      now
+    );
+    const getSession = vi.fn().mockResolvedValue({
+      status: "AUTHORIZED",
+      accounts: ["ready-account"]
+    });
+    const getAccount = vi.fn().mockResolvedValue({
+      uid: "ready-account",
+      identification_hash: "ready-hash",
+      name: "Ready account",
+      currency: "EUR"
+    });
+    const service = new SyncService(
+      config,
+      database,
+      { getSession, getAccount } as unknown as EnableBankingClient
+    );
+
+    await expect(service.syncAccounts()).resolves.toBe(1);
+    expect(getSession).toHaveBeenCalledExactlyOnceWith("ready-provider-session");
+    expect(getAccount).toHaveBeenCalledExactlyOnceWith("ready-account", undefined);
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS count FROM accounts WHERE bank_connection_id = 'limited'")
+        .get()
+    ).toEqual({ count: 0 });
+    database.close();
+  });
 });

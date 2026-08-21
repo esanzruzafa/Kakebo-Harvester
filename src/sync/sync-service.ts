@@ -49,6 +49,7 @@ export interface SyncExecutionContext {
   psuHeaders?: PsuHeaders;
   allowRateLimitOverride?: boolean;
   skippedAccountIds?: Set<string>;
+  skippedConnectionIds?: Set<string>;
   onAccountFailure?: (
     failure: AccountSyncFailure
   ) => Promise<AccountFailureDecision>;
@@ -210,18 +211,8 @@ export class SyncService {
   private async assertConnectionsReady(
     context: SyncExecutionContext = {}
   ): Promise<void> {
-    if (context.psuHeaders) {
-      await this.refreshMissingPsuMetadata();
-      const rows = this.database
-        .prepare(
-          `SELECT id FROM bank_connections
-           WHERE provider = 'enable-banking'
-             AND environment = ?
-             AND status = 'AUTHORIZED'`
-        )
-        .all(this.config.appEnv) as Array<{ id: string }>;
-      for (const row of rows) this.connectionPsuHeaders(row.id, context);
-    }
+    context.skippedConnectionIds ??= new Set<string>();
+    context.skippedConnectionIds.clear();
     const now = new Date().toISOString();
     this.database
       .prepare(
@@ -247,22 +238,45 @@ export class SyncService {
         online_retry_used: number;
       }>;
     if (limited.length > 0) {
-      const canTryOnline =
-        context.allowRateLimitOverride === true &&
-        context.psuHeaders !== undefined &&
-        limited.every((row) => row.online_retry_used === 0);
-      if (canTryOnline) {
-        for (const row of limited) {
+      for (const row of limited) {
+        const canTryOnline =
+          context.allowRateLimitOverride === true &&
+          context.psuHeaders !== undefined &&
+          row.online_retry_used === 0;
+        if (!canTryOnline) context.skippedConnectionIds.add(row.id);
+      }
+      const authorized = this.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM bank_connections
+           WHERE provider = 'enable-banking'
+             AND environment = ?
+             AND status = 'AUTHORIZED'`
+        )
+        .get(this.config.appEnv) as { count: number };
+      if (context.skippedConnectionIds.size >= authorized.count) {
+        const retryAt = limited[0]?.retry_after_at;
+        throw new RateLimitError(
+          `El banco ha alcanzado su límite de consultas. Próximo intento permitido: ${retryAt}. (${limited[0]?.error_code ?? "ASPSP_RATE_LIMIT_EXCEEDED"})`,
+          retryAt,
+          [...context.skippedConnectionIds],
+          limited[0]?.error_code ?? "ASPSP_RATE_LIMIT_EXCEEDED"
+        );
+      }
+    }
+    if (context.psuHeaders) {
+      await this.refreshMissingPsuMetadata();
+      const rows = this.database
+        .prepare(
+          `SELECT id FROM bank_connections
+           WHERE provider = 'enable-banking'
+             AND environment = ?
+             AND status = 'AUTHORIZED'`
+        )
+        .all(this.config.appEnv) as Array<{ id: string }>;
+      for (const row of rows) {
+        if (!context.skippedConnectionIds.has(row.id)) {
           this.connectionPsuHeaders(row.id, context);
         }
-      } else {
-      const retryAt = limited[0]?.retry_after_at;
-      throw new RateLimitError(
-        `El banco ha alcanzado su límite de consultas. Próximo intento permitido: ${retryAt}. (${limited[0]?.error_code ?? "ASPSP_RATE_LIMIT_EXCEEDED"})`,
-        retryAt,
-        limited.map((row) => row.id),
-        limited[0]?.error_code ?? "ASPSP_RATE_LIMIT_EXCEEDED"
-      );
       }
     }
     const connectionIds = this.listConnectionsRequiringAuthorization();
@@ -274,8 +288,8 @@ export class SyncService {
     }
   }
 
-  private listSessions(): ActiveSession[] {
-    return this.database
+  private listSessions(skippedConnectionIds?: Set<string>): ActiveSession[] {
+    const sessions = this.database
       .prepare(
         `SELECT c.id AS connection_id,
                 s.provider_session_id_ciphertext AS session_ciphertext
@@ -289,6 +303,9 @@ export class SyncService {
          )`
       )
       .all() as ActiveSession[];
+    return sessions.filter(
+      (session) => !skippedConnectionIds?.has(session.connection_id)
+    );
   }
 
   private markReauthorization(connectionId: string, error: unknown): void {
@@ -422,7 +439,7 @@ export class SyncService {
   ): Promise<number> {
     await this.assertConnectionsReady(context);
     let count = 0;
-    for (const stored of this.listSessions()) {
+    for (const stored of this.listSessions(context.skippedConnectionIds)) {
       try {
         const sessionId = decryptSecret(
           stored.session_ciphertext,
@@ -491,6 +508,7 @@ export class SyncService {
       extractedAt: string;
     }> = [];
     for (const account of this.accounts.listActive()) {
+      if (context.skippedConnectionIds?.has(account.bank_connection_id)) continue;
       if (context.skippedAccountIds?.has(account.id)) continue;
       try {
         const response = await this.client.getBalances(
@@ -658,6 +676,7 @@ export class SyncService {
     this.categorizer.reload();
     const total = emptySummary();
     for (const account of this.accounts.listActive()) {
+      if (context.skippedConnectionIds?.has(account.bank_connection_id)) continue;
       if (context.skippedAccountIds?.has(account.id)) continue;
       const runId = createId();
       const startedAt = new Date().toISOString();
@@ -728,12 +747,16 @@ export class SyncService {
       this.accounts.clearLastSyncError(account.id);
       this.clearConnectionError(account.bank_connection_id);
     }
+    const skippedConnectionIds = [...(context.skippedConnectionIds ?? [])];
+    const excluded = skippedConnectionIds.length
+      ? `AND id NOT IN (${skippedConnectionIds.map(() => "?").join(", ")})`
+      : "";
     this.database
       .prepare(
         `UPDATE bank_connections SET last_sync_at = ?
-         WHERE status = 'AUTHORIZED'`
+         WHERE status = 'AUTHORIZED' ${excluded}`
       )
-      .run(new Date().toISOString());
+      .run(new Date().toISOString(), ...skippedConnectionIds);
     return total;
   }
 
