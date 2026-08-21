@@ -157,6 +157,22 @@ export function spreadsheetCurrencyFormat(currency: string): string {
   }`;
 }
 
+export function exactSpreadsheetNumber(value: string): number | null {
+  const match = /^([+-]?)(\d+)(?:\.(\d+))?$/u.exec(value.trim());
+  if (!match) return null;
+  const fraction = match[3] ?? "";
+  const sign = match[1] === "-" ? -1n : 1n;
+  const scaled = sign * BigInt(`${match[2]}${fraction}`);
+  if (scaled > BigInt(Number.MAX_SAFE_INTEGER) || scaled < BigInt(Number.MIN_SAFE_INTEGER)) {
+    return null;
+  }
+  const number = Number(scaled) / 10 ** fraction.length;
+  const roundTrip = Math.round(number * 10 ** fraction.length);
+  return Number.isSafeInteger(roundTrip) && BigInt(roundTrip) === scaled
+    ? number
+    : null;
+}
+
 function formatMoney(
   value: string,
   currency: string,
@@ -429,8 +445,19 @@ export class CsvExporter {
             ? { backgroundColor: HIGHLIGHT_COLORS[source] }
             : {};
           if (column.field === "amount") {
+            const exactNumber = exactSpreadsheetNumber(row.amount);
+            if (exactNumber === null) {
+              return {
+                value: safeSpreadsheetText(
+                  formatMoney(row.amount, row.currency, ".")
+                ),
+                type: String,
+                format: "@",
+                ...background
+              };
+            }
             return {
-              value: Number(row.amount),
+              value: exactNumber,
               type: Number,
               format: spreadsheetCurrencyFormat(row.currency),
               ...background

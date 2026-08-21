@@ -44,6 +44,43 @@ export class AuthorizationService {
   private readonly accounts: AccountRepository;
   private readonly rawStore: RawStore;
 
+  private hasUsableAuthorizedSession(connectionId: string): boolean {
+    const now = new Date().toISOString();
+    return Boolean(
+      this.database
+        .prepare(
+          `SELECT 1
+           FROM bank_connections c
+           JOIN provider_sessions s ON s.bank_connection_id = c.id
+           WHERE c.id = ?
+             AND c.status = 'AUTHORIZED'
+             AND c.reauthorization_required = 0
+             AND (c.valid_until IS NULL OR c.valid_until > ?)
+             AND s.status = 'AUTHORIZED'
+             AND (s.valid_until IS NULL OR s.valid_until > ?)
+           LIMIT 1`
+        )
+        .get(connectionId, now, now)
+    );
+  }
+
+  private failedAuthorizationState(
+    purpose: "connect" | "reauthorize",
+    connectionId: string,
+    initialStatus: string
+  ): { status: string; reauthorizationRequired: number } {
+    if (
+      purpose === "reauthorize" &&
+      this.hasUsableAuthorizedSession(connectionId)
+    ) {
+      return { status: "AUTHORIZED", reauthorizationRequired: 0 };
+    }
+    return {
+      status: purpose === "reauthorize" ? "REAUTHORIZATION_REQUIRED" : initialStatus,
+      reauthorizationRequired: purpose === "reauthorize" ? 1 : 0
+    };
+  }
+
   public constructor(
     private readonly config: AppConfig,
     private readonly database: SqliteDatabase,
@@ -101,15 +138,14 @@ export class AuthorizationService {
     this.database
       .prepare(
         `UPDATE bank_connections SET
-           status = ?, error_code = NULL, error_message_safe = NULL,
+           status = CASE WHEN ? = 'connect' THEN 'PENDING_AUTHORIZATION' ELSE status END,
+           error_code = NULL, error_message_safe = NULL,
            retry_after_at = NULL, online_retry_used = 0,
            required_psu_headers_json = ?
          WHERE id = ?`
       )
       .run(
-        purpose === "reauthorize"
-          ? "PENDING_REAUTHORIZATION"
-          : "PENDING_AUTHORIZATION",
+        purpose,
         JSON.stringify(
           (bank.required_psu_headers ?? []).map((header) =>
             header.toLowerCase()
@@ -200,6 +236,11 @@ export class AuthorizationService {
         input.errorDescription ??
         (input.error ? "Autorización denegada." : "El callback no contiene code.")
       ).slice(0, 300);
+      const fallback = this.failedAuthorizationState(
+        pending.purpose,
+        pending.bankConnectionId,
+        "DENIED"
+      );
       this.database
         .prepare(
           `UPDATE bank_connections SET
@@ -208,8 +249,8 @@ export class AuthorizationService {
            WHERE id = ?`
         )
         .run(
-          pending.purpose === "reauthorize" ? "REAUTHORIZATION_REQUIRED" : "DENIED",
-          pending.purpose === "reauthorize" ? 1 : 0,
+          fallback.status,
+          fallback.reauthorizationRequired,
           input.error ?? "MISSING_AUTHORIZATION_CODE",
           message,
           pending.bankConnectionId
@@ -239,33 +280,13 @@ export class AuthorizationService {
           id: string;
           provider_session_id_ciphertext: string;
         }>;
-      for (const previous of previousSessions) {
-        try {
-          await this.client.deleteSession(
-            decryptSecret(
-              previous.provider_session_id_ciphertext,
-              this.config.sessionEncryptionKey
-            )
-          );
-          this.database
-            .prepare("DELETE FROM provider_sessions WHERE id = ?")
-            .run(previous.id);
-        } catch {
-          this.database
-            .prepare(
-              `UPDATE provider_sessions SET status = 'REVOCATION_REQUIRED'
-               WHERE id = ?`
-            )
-            .run(previous.id);
-        }
-      }
       const raw = await this.rawStore.write("session", pending.bankConnectionId, session);
       const now = new Date().toISOString();
       const validUntil = session.access?.valid_until ?? null;
       const dbTransaction = this.database.transaction(() => {
         this.database
           .prepare(
-            `UPDATE provider_sessions SET status = 'SUPERSEDED'
+            `UPDATE provider_sessions SET status = 'REVOCATION_REQUIRED'
              WHERE bank_connection_id = ? AND status = 'AUTHORIZED'`
           )
           .run(pending.bankConnectionId);
@@ -305,6 +326,21 @@ export class AuthorizationService {
         }
       });
       dbTransaction();
+      for (const previous of previousSessions) {
+        try {
+          await this.client.deleteSession(
+            decryptSecret(
+              previous.provider_session_id_ciphertext,
+              this.config.sessionEncryptionKey
+            )
+          );
+          this.database
+            .prepare("DELETE FROM provider_sessions WHERE id = ?")
+            .run(previous.id);
+        } catch {
+          // The durable recovery row remains available to renewal and disconnect.
+        }
+      }
       return {
         connectionId: pending.bankConnectionId,
         bankName: pending.bankName,
@@ -339,6 +375,11 @@ export class AuthorizationService {
         }
       }
       const message = safeMessage(error);
+      const fallback = this.failedAuthorizationState(
+        pending.purpose,
+        pending.bankConnectionId,
+        "AUTHORIZATION_FAILED"
+      );
       this.database
         .prepare(
           `UPDATE bank_connections SET
@@ -347,10 +388,8 @@ export class AuthorizationService {
            WHERE id = ?`
         )
         .run(
-          pending.purpose === "reauthorize"
-            ? "REAUTHORIZATION_REQUIRED"
-            : "AUTHORIZATION_FAILED",
-          pending.purpose === "reauthorize" ? 1 : 0,
+          fallback.status,
+          fallback.reauthorizationRequired,
           providerErrorCode(error) ??
             (error instanceof KakeboError ? error.code : "CALLBACK_ERROR"),
           message,

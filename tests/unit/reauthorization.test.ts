@@ -310,6 +310,111 @@ describe("bank reauthorization", () => {
     database.close();
   });
 
+  it("keeps a valid consent usable until renewal is durable", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-safe-renewal-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    const validUntil = new Date(Date.now() + 86_400_000).toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at, valid_until
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo Bank', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?, ?)`
+      )
+      .run(now, validUntil);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at,
+           valid_until, status
+         ) VALUES ('old-session', 'connection', ?, ?, ?, 'AUTHORIZED')`
+      )
+      .run(
+        encryptSecret("old-provider-session", config.sessionEncryptionKey),
+        now,
+        validUntil
+      );
+
+    let authorizationState = "";
+    const deleteSession = vi.fn().mockResolvedValue(undefined);
+    const client = {
+      listBanks: vi.fn().mockResolvedValue([
+        {
+          name: "Demo Bank",
+          country: "ES",
+          psu_types: ["personal"],
+          auth_methods: [],
+          maximum_consent_validity: 7_776_000
+        }
+      ]),
+      startAuthorization: vi.fn().mockImplementation((input: { state: string }) => {
+        authorizationState = input.state;
+        return Promise.resolve({ url: "https://bank.example/authorize" });
+      }),
+      authorizeSession: vi.fn().mockResolvedValue({
+        session_id: "new-session",
+        accounts: [],
+        access: { valid_until: validUntil }
+      }),
+      deleteSession
+    } as unknown as EnableBankingClient;
+    const service = new AuthorizationService(config, database, client);
+
+    await service.reauthorize("connection");
+    expect(
+      database
+        .prepare(
+          `SELECT status, reauthorization_required
+           FROM bank_connections WHERE id = 'connection'`
+        )
+        .get()
+    ).toEqual({ status: "AUTHORIZED", reauthorization_required: 0 });
+
+    const denied = await service.complete({
+      state: authorizationState,
+      error: "access_denied"
+    });
+    expect(denied.status).toBe("denied");
+    expect(
+      database
+        .prepare(
+          `SELECT status, reauthorization_required
+           FROM bank_connections WHERE id = 'connection'`
+        )
+        .get()
+    ).toEqual({ status: "AUTHORIZED", reauthorization_required: 0 });
+
+    await service.reauthorize("connection");
+    vi.spyOn(RawStore.prototype, "write").mockRejectedValue(new Error("Disk full."));
+    const failed = await service.complete({
+      state: authorizationState,
+      code: "authorization-code"
+    });
+
+    expect(failed.status).toBe("failed");
+    expect(deleteSession).toHaveBeenCalledExactlyOnceWith("new-session");
+    expect(
+      database
+        .prepare(
+          `SELECT status FROM provider_sessions
+           WHERE id = 'old-session'`
+        )
+        .get()
+    ).toEqual({ status: "AUTHORIZED" });
+    expect(
+      database
+        .prepare(
+          `SELECT status, reauthorization_required
+           FROM bank_connections WHERE id = 'connection'`
+        )
+        .get()
+    ).toEqual({ status: "AUTHORIZED", reauthorization_required: 0 });
+    database.close();
+  });
+
   it("revokes a newly created remote session when local finalization fails", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-authorization-compensation-"));
     const config = testConfig(root);

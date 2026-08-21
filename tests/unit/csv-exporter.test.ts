@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { unzipSync } from "fflate";
 import {
   CsvExporter,
+  exactSpreadsheetNumber,
   spreadsheetCurrencyFormat
 } from "../../src/export/csv-exporter.js";
 import {
@@ -26,6 +27,11 @@ describe("CSV export", () => {
     expect(spreadsheetCurrencyFormat("JPY")).toMatch(/#,##0$/u);
     expect(spreadsheetCurrencyFormat("EUR")).toMatch(/#,##0\.00$/u);
     expect(spreadsheetCurrencyFormat("KWD")).toMatch(/#,##0\.000$/u);
+  });
+
+  it("does not coerce unsafe decimal amounts into spreadsheet numbers", () => {
+    expect(exactSpreadsheetNumber("1234.56")).toBe(1234.56);
+    expect(exactSpreadsheetNumber("9007199254740993.00")).toBeNull();
   });
 
   it("writes an Excel-compatible BOM, semicolon separator and no IBAN", async () => {
