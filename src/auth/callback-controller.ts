@@ -35,9 +35,11 @@ export interface CallbackControllerEvents {
   translate?: (key: string, fallback: string) => string;
 }
 
+export type AuthorizationCompleter = Pick<AuthorizationService, "complete">;
+
 export function registerCallback(
   server: FastifyInstance,
-  authorizationService: AuthorizationService,
+  authorizationService: AuthorizationCompleter,
   events: CallbackControllerEvents = {}
 ): void {
   server.get<{ Querystring: CallbackQuery }>("/callback", async (request, reply) => {

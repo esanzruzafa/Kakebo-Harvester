@@ -1,15 +1,15 @@
 import { readFileSync } from "node:fs";
 import Fastify, { LogController, type FastifyInstance } from "fastify";
 import type { AppConfig } from "./config.js";
-import type { AuthorizationService } from "./auth/authorization-service.js";
 import {
   registerCallback,
+  type AuthorizationCompleter,
   type CallbackControllerEvents
 } from "./auth/callback-controller.js";
 
 export function createCallbackServer(
   config: AppConfig,
-  authorizationService: AuthorizationService,
+  authorizationService: AuthorizationCompleter,
   events: CallbackControllerEvents = {}
 ): FastifyInstance {
   const https =
@@ -31,7 +31,7 @@ export function createCallbackServer(
 
 export async function startCallbackServer(
   config: AppConfig,
-  authorizationService: AuthorizationService,
+  authorizationService: AuthorizationCompleter,
   events: CallbackControllerEvents = {}
 ): Promise<FastifyInstance> {
   const server = createCallbackServer(config, authorizationService, events);
@@ -41,7 +41,7 @@ export async function startCallbackServer(
 
 export async function startServer(
   config: AppConfig,
-  authorizationService: AuthorizationService
+  authorizationService: AuthorizationCompleter
 ): Promise<void> {
   const server = await startCallbackServer(config, authorizationService);
   await new Promise<void>((resolve) => {

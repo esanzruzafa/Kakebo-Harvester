@@ -97,6 +97,16 @@ async function withSynchronizationLock<Result>(
   }
 }
 
+export function serializedAuthorizationCompleter(
+  database: SqliteDatabase,
+  authorization: AuthorizationService
+): Pick<AuthorizationService, "complete"> {
+  return {
+    complete: (input) =>
+      withSynchronizationLock(database, () => authorization.complete(input))
+  };
+}
+
 function printHelp(): void {
   console.log(`Kakebo Harvester (solo lectura)
 
@@ -165,11 +175,15 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
       if (!["personal", "business"].includes(psuType)) {
         throw new Error("--psu-type debe ser personal o business.");
       }
-      const result = await authorization.connect({
-        bankSearch: required(options, "bank"),
-        country: value(options, "country", config.defaultCountry) ?? config.defaultCountry,
-        psuType
-      });
+      const result = await withSynchronizationLock(database, () =>
+        authorization.connect({
+          bankSearch: required(options, "bank"),
+          country:
+            value(options, "country", config.defaultCountry) ??
+            config.defaultCountry,
+          psuType
+        })
+      );
       console.log(`Conexión: ${result.connectionAlias}`);
       console.log(`Abre esta URL oficial para autorizar:\n${result.url}`);
       console.log(
@@ -178,7 +192,10 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
       return;
     }
     case "server":
-      await startServer(config, authorization);
+      await startServer(
+        config,
+        serializedAuthorizationCompleter(database, authorization)
+      );
       return;
     case "connections": {
       const rows = database

@@ -116,7 +116,7 @@ describe("account synchronization eligibility", () => {
     database
       .prepare(
         `UPDATE accounts
-         SET account_alias = 'Household', sync_enabled = 0, export_enabled = 0
+         SET account_alias = 'Household'
          WHERE id = ?`
       )
       .run(canonicalId);
@@ -154,6 +154,12 @@ describe("account synchronization eligibility", () => {
                    1, ?, ?)`
       )
       .run(now, now);
+    database
+      .prepare(
+        `UPDATE accounts SET sync_enabled = 0, export_enabled = 0
+         WHERE id = 'duplicate'`
+      )
+      .run();
     database
       .prepare(
         `INSERT INTO balances (

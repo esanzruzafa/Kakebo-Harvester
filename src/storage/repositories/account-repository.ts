@@ -199,10 +199,18 @@ export class AccountRepository {
          SET account_alias = COALESCE(
            account_alias,
            (SELECT account_alias FROM accounts WHERE id = ?)
+         ),
+         sync_enabled = MIN(
+           sync_enabled,
+           (SELECT sync_enabled FROM accounts WHERE id = ?)
+         ),
+         export_enabled = MIN(
+           export_enabled,
+           (SELECT export_enabled FROM accounts WHERE id = ?)
          )
          WHERE id = ?`
       )
-      .run(duplicateId, canonicalId);
+      .run(duplicateId, duplicateId, duplicateId, canonicalId);
     for (const table of ["balances", "transactions_raw", "transactions", "sync_runs"]) {
       this.database
         .prepare(`UPDATE ${table} SET account_id = ? WHERE account_id = ?`)

@@ -2,7 +2,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runCli } from "../../src/cli.js";
+import {
+  runCli,
+  serializedAuthorizationCompleter
+} from "../../src/cli.js";
 import { SyncAlreadyRunningError } from "../../src/errors.js";
 import { createDatabase } from "../../src/storage/database.js";
 import { SynchronizationLock } from "../../src/sync/sync-runner.js";
@@ -61,6 +64,38 @@ describe("CLI synchronization commands", () => {
     ).rejects.toBeInstanceOf(SyncAlreadyRunningError);
 
     expect(deleteSession).not.toHaveBeenCalled();
+    lock.release();
+    database.close();
+  });
+
+  it("does not start or complete authorization while synchronization holds the lock", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-cli-authorization-lock-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const connect = vi.fn();
+    const complete = vi.fn();
+    const lock = new SynchronizationLock(database);
+    lock.acquire();
+
+    await expect(
+      runCli(["connect", "--bank", "Demo Bank"], {
+        config,
+        database,
+        client: {} as never,
+        authorization: { connect } as never,
+        sync: {} as SyncService,
+        logger: {} as never
+      })
+    ).rejects.toBeInstanceOf(SyncAlreadyRunningError);
+    await expect(
+      serializedAuthorizationCompleter(
+        database,
+        { complete } as never
+      ).complete({ state: "state", code: "code" })
+    ).rejects.toBeInstanceOf(SyncAlreadyRunningError);
+
+    expect(connect).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
     lock.release();
     database.close();
   });

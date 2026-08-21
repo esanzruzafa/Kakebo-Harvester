@@ -6,6 +6,7 @@ import type {
   SelectedCardFile
 } from "./contracts.js";
 import { rowDropInsertionIndex } from "./row-drop.js";
+import { rateLimitPlan } from "./rate-limit-plan.js";
 import type { CardImportProfile } from "../settings/card-import-profiles-store.js";
 import type { CategoryDefinition } from "../settings/categories-store.js";
 import type {
@@ -2233,35 +2234,16 @@ function setupActions(): void {
     const start = element<HTMLButtonElement>("start-sync");
     const steps = selectedSteps();
     const accessesBank = steps.some((step) => step !== "export");
-    const limited = accessesBank
-      ? state.connections.filter(
-          (connection) =>
-            connection.retryAfterAt &&
-            new Date(connection.retryAfterAt).getTime() > Date.now()
-        )
-      : [];
+    const limitPlan = accessesBank
+      ? rateLimitPlan(state.connections)
+      : { retryable: [], exhausted: [], hasEligibleConnection: false };
     let allowRateLimitOverride = false;
-    if (limited.length > 0) {
-      const retryAt = limited
+    if (limitPlan.retryable.length > 0) {
+      const retryAt = limitPlan.retryable
         .map((connection) => connection.retryAfterAt)
         .filter((value): value is string => Boolean(value))
         .sort()
         .at(-1);
-      if (limited.some((connection) => connection.onlineRetryUsed)) {
-        await showAppModal({
-          title: t(
-            "dialog.onlineRetryUsed.title",
-            "Online attempt already used"
-          ),
-          detail: tf(
-            "dialog.onlineRetryUsed.detail",
-            "The bank still applies its limit. Try again after {date}.",
-            { date: localDate(retryAt ?? "") }
-          ),
-          confirmLabel: t("common.accept", "OK")
-        });
-        return;
-      }
       const choice = await showAppModal({
         title: t(
           "dialog.onlineRetry.title",
@@ -2279,6 +2261,28 @@ function setupActions(): void {
       });
       if (choice !== "confirm") return;
       allowRateLimitOverride = true;
+    } else if (
+      limitPlan.exhausted.length > 0 &&
+      !limitPlan.hasEligibleConnection
+    ) {
+      const retryAt = limitPlan.exhausted
+        .map((connection) => connection.retryAfterAt)
+        .filter((value): value is string => Boolean(value))
+        .sort()
+        .at(-1);
+      await showAppModal({
+        title: t(
+          "dialog.onlineRetryUsed.title",
+          "Online attempt already used"
+        ),
+        detail: tf(
+          "dialog.onlineRetryUsed.detail",
+          "The bank still applies its limit. Try again after {date}.",
+          { date: localDate(retryAt ?? "") }
+        ),
+        confirmLabel: t("common.accept", "OK")
+      });
+      return;
     }
     operationInProgress = true;
     start.disabled = true;
