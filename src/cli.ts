@@ -295,19 +295,21 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
     }
     case "disconnect": {
       const alias = required(options, "connection");
-      const connection = database
-        .prepare(
-          `SELECT id FROM bank_connections
-           WHERE alias = ? AND environment = ? AND provider = 'enable-banking'
-           ORDER BY created_at DESC LIMIT 1`
-        )
-        .get(alias, config.appEnv) as { id: string } | undefined;
-      if (!connection) throw new Error(`No existe la conexión "${alias}".`);
-      const result = await disconnectBankConnection({
-        config,
-        database,
-        client,
-        connectionId: connection.id
+      const result = await withSynchronizationLock(database, async () => {
+        const connection = database
+          .prepare(
+            `SELECT id FROM bank_connections
+             WHERE alias = ? AND environment = ? AND provider = 'enable-banking'
+             ORDER BY created_at DESC LIMIT 1`
+          )
+          .get(alias, config.appEnv) as { id: string } | undefined;
+        if (!connection) throw new Error(`No existe la conexión "${alias}".`);
+        return disconnectBankConnection({
+          config,
+          database,
+          client,
+          connectionId: connection.id
+        });
       });
       if (result.remoteRevocationAttempted && !result.remoteRevoked) {
         logger.warn("Remote session could not be revoked; continuing with local disconnect");

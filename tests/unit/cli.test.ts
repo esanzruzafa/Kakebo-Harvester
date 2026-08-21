@@ -40,4 +40,28 @@ describe("CLI synchronization commands", () => {
     lock.release();
     database.close();
   });
+
+  it("does not disconnect a connection while synchronization holds the lock", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-cli-disconnect-lock-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const deleteSession = vi.fn();
+    const lock = new SynchronizationLock(database);
+    lock.acquire();
+
+    await expect(
+      runCli(["disconnect", "--connection", "Demo Bank personal"], {
+        config,
+        database,
+        client: { deleteSession } as never,
+        authorization: {} as never,
+        sync: {} as SyncService,
+        logger: { warn: vi.fn() } as never
+      })
+    ).rejects.toBeInstanceOf(SyncAlreadyRunningError);
+
+    expect(deleteSession).not.toHaveBeenCalled();
+    lock.release();
+    database.close();
+  });
 });

@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDatabase } from "../../src/storage/database.js";
 import { AccountRepository } from "../../src/storage/repositories/account-repository.js";
+import { TransactionRepository } from "../../src/transactions/deduplication.js";
+import { mapTransaction } from "../../src/transactions/transaction-mapper.js";
 import { testConfig } from "../helpers.js";
 
 let root: string | undefined;
@@ -121,9 +123,9 @@ describe("account synchronization eligibility", () => {
     database
       .prepare(
         `INSERT INTO accounts (
-           id, bank_connection_id, provider_account_id, name,
+           id, bank_connection_id, provider_account_id, identification_hash, name,
            active, first_seen_at, last_seen_at
-         ) VALUES ('duplicate', 'connection', 'new-provider-id', 'Duplicate',
+         ) VALUES ('duplicate', 'connection', 'new-provider-id', 'old-duplicate-hash', 'Duplicate',
                    1, ?, ?)`
       )
       .run(now, now);
@@ -134,6 +136,29 @@ describe("account synchronization eligibility", () => {
          ) VALUES ('balance', 'duplicate', '100', 'EUR', ?)`
       )
       .run(now);
+    const transactionRepository = new TransactionRepository(database);
+    const providerTransaction = {
+      status: "BOOK",
+      booking_date: "2026-08-20",
+      transaction_amount: { amount: "-25.00", currency: "EUR" },
+      remittance_information: "Recurring purchase"
+    };
+    const duplicateAccount = repository.findByProviderAccountId(
+      "connection",
+      "new-provider-id"
+    );
+    expect(duplicateAccount).toBeDefined();
+    if (!duplicateAccount) throw new Error("Expected duplicate account fixture.");
+    expect(
+      transactionRepository.upsert(
+        mapTransaction({
+          transaction: providerTransaction,
+          account: duplicateAccount,
+          environment: "sandbox",
+          rawPath: null
+        })
+      )
+    ).toBe("inserted");
 
     expect(
       repository.upsert(
@@ -168,6 +193,28 @@ describe("account synchronization eligibility", () => {
     ]);
     expect(
       database.prepare("SELECT account_id FROM balances WHERE id = 'balance'").get()
+    ).toEqual({ account_id: canonicalId });
+    const canonicalAccount = repository.findByProviderAccountId(
+      "connection",
+      "new-provider-id"
+    );
+    expect(canonicalAccount).toBeDefined();
+    if (!canonicalAccount) throw new Error("Expected canonical account fixture.");
+    expect(
+      transactionRepository.upsert(
+        mapTransaction({
+          transaction: providerTransaction,
+          account: canonicalAccount,
+          environment: "sandbox",
+          rawPath: null
+        })
+      )
+    ).toBe("duplicate");
+    expect(database.prepare("SELECT COUNT(*) AS count FROM transactions").get()).toEqual({
+      count: 1
+    });
+    expect(
+      database.prepare("SELECT account_id FROM transactions").get()
     ).toEqual({ account_id: canonicalId });
     expect(
       database
