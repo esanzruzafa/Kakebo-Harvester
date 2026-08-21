@@ -14,6 +14,7 @@ export interface NormalizedTransaction {
   account_id: string;
   provider_transaction_id: string | null;
   entry_reference: string | null;
+  fallback_occurrence: number | null;
   status: string;
   booking_date: string | null;
   value_date: string | null;
@@ -85,6 +86,7 @@ export function mapTransaction(input: {
   account: StoredAccount;
   environment: AppEnvironment;
   rawPath: string | null;
+  fallbackOccurrence?: number | undefined;
 }): NormalizedTransaction {
   const transaction = input.transaction;
   const money = normalizeDecimal(
@@ -111,17 +113,20 @@ export function mapTransaction(input: {
       : accountIdentifier(transaction.debtor_account);
   const counterparty = normalizeText(counterpartyName ?? counterpartyAccount ?? "");
   const accountStableKey = input.account.identification_hash ?? input.account.id;
+  const entryReference = transaction.entry_reference?.trim() || null;
+  const providerTransactionId = transaction.transaction_id?.trim() || null;
   const keyInput = {
     accountStableKey,
     status,
-    entryReference: transaction.entry_reference,
-    providerTransactionId: transaction.transaction_id,
+    entryReference,
+    providerTransactionId,
     bookingDate: transaction.booking_date,
     valueDate: transaction.value_date,
     amount: money.amount,
     currency: transaction.transaction_amount.currency,
     descriptionNormalized,
-    counterparty
+    counterparty,
+    fallbackOccurrence: input.fallbackOccurrence
   };
   const bankCode = [
     transaction.bank_transaction_code?.code,
@@ -137,8 +142,10 @@ export function mapTransaction(input: {
     environment: input.environment,
     bank_connection_id: input.account.bank_connection_id,
     account_id: input.account.id,
-    provider_transaction_id: transaction.transaction_id ?? null,
-    entry_reference: transaction.entry_reference ?? null,
+    provider_transaction_id: providerTransactionId,
+    entry_reference: entryReference,
+    fallback_occurrence:
+      entryReference || providerTransactionId ? null : (input.fallbackOccurrence ?? 1),
     status,
     booking_date: transaction.booking_date ?? null,
     value_date: transaction.value_date ?? null,

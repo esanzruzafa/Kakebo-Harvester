@@ -23,6 +23,7 @@ const updateSql = `
     reconciliation_key = @reconciliation_key,
     provider_transaction_id = @provider_transaction_id,
     entry_reference = @entry_reference,
+    fallback_occurrence = @fallback_occurrence,
     status = @status,
     booking_date = @booking_date,
     value_date = @value_date,
@@ -86,6 +87,10 @@ export class TransactionRepository {
                AND @provider_transaction_id IS NULL
                AND entry_reference IS NULL
                AND provider_transaction_id IS NULL
+               AND (
+                 fallback_occurrence IS @fallback_occurrence
+                 OR (fallback_occurrence IS NULL AND @fallback_occurrence = 1)
+               )
                AND status = @status
                AND booking_date IS @booking_date
                AND value_date IS @value_date
@@ -274,6 +279,7 @@ export class TransactionRepository {
         `INSERT INTO transactions (
            id, movement_key, reconciliation_key, provider, environment,
            bank_connection_id, account_id, provider_transaction_id, entry_reference,
+           fallback_occurrence,
            status, booking_date, value_date, transaction_datetime, amount, currency,
            direction, description_raw, description_normalized, merchant_name,
            creditor_name, debtor_name, counterparty_iban_masked, bank_transaction_code,
@@ -283,6 +289,7 @@ export class TransactionRepository {
          ) VALUES (
            @id, @movement_key, @reconciliation_key, @provider, @environment,
            @bank_connection_id, @account_id, @provider_transaction_id, @entry_reference,
+           @fallback_occurrence,
            @status, @booking_date, @value_date, @transaction_datetime, @amount, @currency,
            @direction, @description_raw, @description_normalized, @merchant_name,
            @creditor_name, @debtor_name, @counterparty_iban_masked, @bank_transaction_code,

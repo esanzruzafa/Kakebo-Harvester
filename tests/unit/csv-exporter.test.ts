@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { unzipSync } from "fflate";
-import { CsvExporter } from "../../src/export/csv-exporter.js";
+import {
+  CsvExporter,
+  spreadsheetCurrencyFormat
+} from "../../src/export/csv-exporter.js";
 import {
   ExportSettingsStore,
   createDefaultExportSettings
@@ -19,6 +22,12 @@ afterEach(async () => {
 });
 
 describe("CSV export", () => {
+  it("uses each currency's fraction digits in spreadsheet formats", () => {
+    expect(spreadsheetCurrencyFormat("JPY")).toMatch(/#,##0$/u);
+    expect(spreadsheetCurrencyFormat("EUR")).toMatch(/#,##0\.00$/u);
+    expect(spreadsheetCurrencyFormat("KWD")).toMatch(/#,##0\.000$/u);
+  });
+
   it("writes an Excel-compatible BOM, semicolon separator and no IBAN", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-export-"));
     const config = testConfig(root);

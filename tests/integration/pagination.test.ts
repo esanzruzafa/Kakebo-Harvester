@@ -188,4 +188,73 @@ describe("paginated transaction synchronization", () => {
     ]);
     database.close();
   });
+
+  it("preserves repeated ID-less movements and remains idempotent", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-repeated-idless-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Banco Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('session', 'connection', 'encrypted-session', ?, 'AUTHORIZED')`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, identification_hash,
+           name, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider-account', 'stable-account',
+                   'Cuenta Demo', 1, ?, ?)`
+      )
+      .run(now, now);
+    const repeatedMovement = {
+      transaction_amount: { currency: "EUR", amount: "2.50" },
+      credit_debit_indicator: "DBIT" as const,
+      status: "BOOK",
+      booking_date: "2026-07-24",
+      remittance_information: "Identical transit fare"
+    };
+    const firstPage = transactionsResponseSchema.parse({
+      transactions: [repeatedMovement],
+      continuation_key: "repeated-page-2"
+    });
+    const secondPage = transactionsResponseSchema.parse({
+      transactions: [repeatedMovement],
+      continuation_key: null
+    });
+    const client = {
+      getTransactions: vi.fn(
+        (_accountId: string, query: { continuationKey?: string }) =>
+          Promise.resolve(query.continuationKey ? secondPage : firstPage)
+      )
+    } as unknown as EnableBankingClient;
+    const service = new SyncService(config, database, client);
+
+    const first = await service.syncTransactions("2026-07-01", "2026-07-31");
+    const second = await service.syncTransactions("2026-07-01", "2026-07-31");
+
+    expect(first).toMatchObject({ received: 2, inserted: 2 });
+    expect(second).toMatchObject({ received: 2, duplicates: 2 });
+    expect(
+      database
+        .prepare(
+          `SELECT fallback_occurrence
+           FROM transactions ORDER BY fallback_occurrence`
+        )
+        .all()
+    ).toEqual([{ fallback_occurrence: 1 }, { fallback_occurrence: 2 }]);
+    database.close();
+  });
 });

@@ -1,6 +1,7 @@
 import type { SqliteDatabase } from "../database.js";
 import { createId } from "../../utils/crypto.js";
 import type { SyncStep } from "../../sync/sync-runner.js";
+import { currencyFractionDigits } from "../../utils/currency.js";
 
 export interface AuditAccountView {
   id: string;
@@ -100,18 +101,7 @@ function balanceTotals(accounts: AuditAccountView[]): AuditBalanceTotal[] {
   return [...totals]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([currency, total]) => {
-      let fractionDigits = 2;
-      if (currency) {
-        try {
-          fractionDigits =
-            new Intl.NumberFormat("en", {
-              style: "currency",
-              currency
-            }).resolvedOptions().maximumFractionDigits ?? 2;
-        } catch {
-          // Unknown currency codes retain the conventional two-decimal fallback.
-        }
-      }
+      const fractionDigits = currencyFractionDigits(currency);
       let units = total.units;
       if (total.scale > fractionDigits) {
         const divisor = 10n ** BigInt(total.scale - fractionDigits);

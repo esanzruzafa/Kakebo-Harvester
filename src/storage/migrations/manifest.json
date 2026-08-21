@@ -12,5 +12,9 @@
   {
     "version": 8,
     "filename": "008_account_identification_hashes.sql"
+  },
+  {
+    "version": 9,
+    "filename": "009_transaction_fallback_occurrence.sql"
   }
 ]

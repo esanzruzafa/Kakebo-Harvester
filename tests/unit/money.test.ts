@@ -50,5 +50,20 @@ describe("financial amount convention", () => {
     expect(oneDecimal.reconciliation_key).toBe(
       threeDecimals.reconciliation_key
     );
+
+    const secondOccurrence = mapTransaction({
+      transaction: {
+        transaction_amount: { amount: "10.00", currency: "EUR" },
+        booking_date: "2026-08-21",
+        status: "BOOK",
+        remittance_information: "Equivalent movement"
+      },
+      account,
+      environment: "sandbox",
+      rawPath: null,
+      fallbackOccurrence: 2
+    });
+    expect(secondOccurrence.movement_key).not.toBe(oneDecimal.movement_key);
+    expect(secondOccurrence.fallback_occurrence).toBe(2);
   });
 });

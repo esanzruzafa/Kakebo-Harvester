@@ -330,6 +330,7 @@ function normalizedTransaction(
     account_id: ids.accountId,
     provider_transaction_id: providerTransactionId,
     entry_reference: null,
+    fallback_occurrence: null,
     status: "booked",
     booking_date: row.bookingDate,
     value_date: row.valueDate,

@@ -615,6 +615,7 @@ export class SyncService {
   ): Promise<SyncSummary> {
     const summary = emptySummary();
     const seenKeys = new Set<string>();
+    const fallbackOccurrences = new Map<string, number>();
     let continuationKey: string | undefined;
     let page = 1;
     let strategy: "longest" | undefined;
@@ -653,12 +654,30 @@ export class SyncService {
       summary.pages += 1;
       const databaseTransaction = this.database.transaction(() => {
         for (const providerTransaction of response.transactions) {
-          const normalized = mapTransaction({
+          let normalized = mapTransaction({
             transaction: providerTransaction,
             account,
             environment: this.config.appEnv,
-            rawPath: raw.path
+            rawPath: raw.path,
+            fallbackOccurrence: 1
           });
+          if (
+            normalized.entry_reference === null &&
+            normalized.provider_transaction_id === null
+          ) {
+            const fallbackIdentity = normalized.movement_key;
+            const occurrence = (fallbackOccurrences.get(fallbackIdentity) ?? 0) + 1;
+            fallbackOccurrences.set(fallbackIdentity, occurrence);
+            if (occurrence > 1) {
+              normalized = mapTransaction({
+                transaction: providerTransaction,
+                account,
+                environment: this.config.appEnv,
+                rawPath: raw.path,
+                fallbackOccurrence: occurrence
+              });
+            }
+          }
           const movementDate =
             normalized.booking_date ??
             normalized.transaction_datetime?.slice(0, 10) ??

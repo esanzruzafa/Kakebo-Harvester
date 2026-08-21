@@ -14,6 +14,7 @@ function transaction(overrides: Partial<NormalizedTransaction> = {}): Normalized
     account_id: "account",
     provider_transaction_id: null,
     entry_reference: null,
+    fallback_occurrence: null,
     status: "pending",
     booking_date: "2026-07-24",
     value_date: null,

@@ -25,6 +25,7 @@ import {
   type ExportSettings
 } from "../settings/export-settings-store.js";
 import type { SqliteDatabase } from "../storage/database.js";
+import { currencyFractionDigits } from "../utils/currency.js";
 
 interface ExportRow {
   movement_key: string;
@@ -147,6 +148,13 @@ function currencySymbol(currency: string): string {
       .formatToParts(0)
       .find((part) => part.type === "currency")?.value ?? currency
   );
+}
+
+export function spreadsheetCurrencyFormat(currency: string): string {
+  const fractionDigits = currencyFractionDigits(currency);
+  return `"${currencySymbol(currency)}" #,##0${
+    fractionDigits > 0 ? `.${"0".repeat(fractionDigits)}` : ""
+  }`;
 }
 
 function formatMoney(
@@ -424,7 +432,7 @@ export class CsvExporter {
             return {
               value: Number(row.amount),
               type: Number,
-              format: `"${currencySymbol(row.currency)}" #,##0.00`,
+              format: spreadsheetCurrencyFormat(row.currency),
               ...background
             };
           }

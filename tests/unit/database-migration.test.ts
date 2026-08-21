@@ -53,7 +53,7 @@ describe("database migrations", () => {
     legacy.close();
 
     const migrated = createDatabase(config.databasePath);
-    expect(migrated.pragma("user_version", { simple: true })).toBe(8);
+    expect(migrated.pragma("user_version", { simple: true })).toBe(9);
     expect(
       migrated
         .prepare(
@@ -202,7 +202,7 @@ describe("database migrations", () => {
       legacy.close();
 
       const migrated = createDatabase(config.databasePath);
-      expect(migrated.pragma("user_version", { simple: true })).toBe(8);
+      expect(migrated.pragma("user_version", { simple: true })).toBe(9);
       expect(
         migrated
           .prepare(
