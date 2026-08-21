@@ -139,8 +139,11 @@ export class TransactionsPeriodError extends KakeboError {
 }
 
 export class MalformedProviderResponseError extends KakeboError {
-  public constructor(message = "Enable Banking devolvió una respuesta con formato inesperado.") {
-    super(message, "MALFORMED_PROVIDER_RESPONSE", 7);
+  public constructor(
+    message = "Enable Banking devolvió una respuesta con formato inesperado.",
+    options?: ErrorOptions
+  ) {
+    super(message, "MALFORMED_PROVIDER_RESPONSE", 7, options);
   }
 }
 

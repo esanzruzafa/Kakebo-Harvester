@@ -173,7 +173,9 @@ export class EnableBankingClient {
     }
 
     const retryStatuses = new Set([408, 502, 503, 504]);
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+    const method = options.method ?? "GET";
+    const maximumAttempts = method === "POST" ? 1 : 4;
+    for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
       const jwt = await createApplicationJwt({
         applicationId: this.config.applicationId,
         privateKeyPath: this.config.privateKeyPath
@@ -195,7 +197,15 @@ export class EnableBankingClient {
 
         if (response.ok) {
           const body = await response.text();
-          return body.trim().length > 0 ? (JSON.parse(body) as unknown) : undefined;
+          if (body.trim().length === 0) return undefined;
+          try {
+            return JSON.parse(body) as unknown;
+          } catch (error) {
+            throw new MalformedProviderResponseError(
+              "Enable Banking devolvió una respuesta JSON no válida.",
+              { cause: error }
+            );
+          }
         }
         const body = (await response.text()).slice(0, 500);
         const failure = providerError(body);
@@ -278,7 +288,7 @@ export class EnableBankingClient {
             metadata
           );
         }
-        if (attempt === 3) {
+        if (attempt === maximumAttempts - 1) {
           throw new BankUnavailableError(
             providerFailureMessage(response.status, failure),
             undefined,
@@ -297,7 +307,7 @@ export class EnableBankingClient {
         ) {
           throw error;
         }
-        if (attempt === 3) {
+        if (attempt === maximumAttempts - 1) {
           throw new BankUnavailableError("No se pudo conectar con Enable Banking.", {
             cause: error
           });

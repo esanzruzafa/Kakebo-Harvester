@@ -78,6 +78,7 @@ import {
   isUsableLocalHttpsCertificate,
   tlsSetupScriptPath
 } from "./local-https.js";
+import { saveAccountSettings } from "./account-settings.js";
 import type {
   AuthorizationUiResult,
   BankOption,
@@ -843,17 +844,19 @@ function registerIpc(application: KakeboApplication): void {
   ipcMain.handle("accounts:save", async (event, input: unknown) => {
     assertTrustedSender(event);
     const accounts = z.array(editableAccountSchema).parse(input);
-    accountRepository.updateSettings(
-      accounts.map((account) => ({
-        id: account.id,
-        alias: account.alias,
-        syncEnabled: account.syncEnabled,
-        exportEnabled: account.exportEnabled
-      }))
+    return await trackOperation(
+      saveAccountSettings({
+        database: application.database,
+        repository: accountRepository,
+        store: accountsStore,
+        updates: accounts.map((account) => ({
+          id: account.id,
+          alias: account.alias,
+          syncEnabled: account.syncEnabled,
+          exportEnabled: account.exportEnabled
+        }))
+      })
     );
-    const saved = accountRepository.listEditable();
-    await accountsStore.save(saved);
-    return saved;
   });
   ipcMain.handle("rules:save", async (event, input: unknown) => {
     assertTrustedSender(event);

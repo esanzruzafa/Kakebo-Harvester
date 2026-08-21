@@ -93,21 +93,50 @@ export interface AppConfig {
   sessionEncryptionKey: Buffer;
 }
 
-const loopbackHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+function effectivePort(url: URL): number {
+  if (url.port) return Number(url.port);
+  return url.protocol === "https:" ? 443 : 80;
+}
 
-function isLoopbackUrl(url: URL): boolean {
-  return loopbackHosts.has(url.hostname);
+function matchesLocalListener(
+  environment: AppEnvironment,
+  value: string,
+  appPort: number,
+  pathname: string
+): boolean {
+  const url = new URL(value);
+  const protocol = environment === "production" ? "https:" : "http:";
+  return (
+    url.protocol === protocol &&
+    url.hostname === "localhost" &&
+    effectivePort(url) === appPort &&
+    url.pathname === pathname &&
+    url.search === "" &&
+    url.hash === "" &&
+    url.username === "" &&
+    url.password === ""
+  );
 }
 
 export function isRedirectUrlAllowed(
   environment: AppEnvironment,
-  redirectUrl: string
+  redirectUrl: string,
+  appPort: number
 ): boolean {
   try {
-    const redirect = new URL(redirectUrl);
-    return environment === "sandbox"
-      ? isLoopbackUrl(redirect) && ["http:", "https:"].includes(redirect.protocol)
-      : isLoopbackUrl(redirect) && redirect.protocol === "https:";
+    return matchesLocalListener(environment, redirectUrl, appPort, "/callback");
+  } catch {
+    return false;
+  }
+}
+
+export function isAppBaseUrlAllowed(
+  environment: AppEnvironment,
+  appBaseUrl: string,
+  appPort: number
+): boolean {
+  try {
+    return matchesLocalListener(environment, appBaseUrl, appPort, "/");
   } catch {
     return false;
   }
@@ -140,18 +169,15 @@ function assertEnvironmentIsolation(config: AppConfig): void {
     );
   }
 
-  const appBaseUrl = new URL(config.appBaseUrl);
-  if (!isLoopbackUrl(appBaseUrl)) {
+  if (!isAppBaseUrlAllowed(config.appEnv, config.appBaseUrl, config.appPort)) {
     throw new ConfigurationError(
-      "APP_BASE_URL debe apuntar a localhost porque Kakebo Harvester se ejecuta localmente."
+      `APP_BASE_URL debe ser ${config.appEnv === "production" ? "https" : "http"}://localhost:${config.appPort}.`
     );
   }
 
-  if (!isRedirectUrlAllowed(config.appEnv, config.redirectUrl)) {
+  if (!isRedirectUrlAllowed(config.appEnv, config.redirectUrl, config.appPort)) {
     throw new ConfigurationError(
-      config.appEnv === "sandbox"
-        ? "El callback de sandbox debe apuntar a localhost."
-        : "El callback de producción debe usar HTTPS y apuntar a localhost."
+      `ENABLE_BANKING_REDIRECT_URL debe ser ${config.appEnv === "production" ? "https" : "http"}://localhost:${config.appPort}/callback.`
     );
   }
 

@@ -81,7 +81,7 @@ export async function runDoctor(
   const redirect = new URL(config.redirectUrl);
   checks.push({
     check: "Redirect URL",
-    ok: isRedirectUrlAllowed(config.appEnv, config.redirectUrl),
+    ok: isRedirectUrlAllowed(config.appEnv, config.redirectUrl, config.appPort),
     detail: `${redirect.protocol}//${redirect.host}${redirect.pathname}`
   });
   checks.push({

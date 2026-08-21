@@ -7,6 +7,7 @@ import { EnableBankingClient } from "../../src/enable-banking/client.js";
 import {
   BankUnavailableError,
   EnableBankingProviderError,
+  MalformedProviderResponseError,
   RateLimitError,
   ReauthorizationRequiredError,
   TransactionsPeriodError
@@ -338,5 +339,97 @@ describe("Enable Banking client", () => {
     });
     expect((failure as Error).message).toContain("No es necesario reconectar");
     expect((failure as Error).message).toContain("al menos un minuto");
+  });
+
+  it("does not retry a non-idempotent authorization POST after a network failure", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-post-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(new TypeError("Connection reset after send."));
+    const client = new EnableBankingClient(config, fetchMock);
+
+    await expect(
+      client.startAuthorization({
+        bank: {
+          name: "Demo Bank",
+          country: "ES",
+          psu_types: ["personal"],
+          auth_methods: [],
+          maximum_consent_validity: 7_776_000
+        },
+        state: "state",
+        redirectUrl: config.redirectUrl,
+        psuType: "personal",
+        language: "en"
+      })
+    ).rejects.toBeInstanceOf(BankUnavailableError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry session creation after a retryable provider status", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-post-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response("Service unavailable", { status: 503 }));
+    const client = new EnableBankingClient(config, fetchMock);
+
+    await expect(client.authorizeSession("one-time-code")).rejects.toBeInstanceOf(
+      BankUnavailableError
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a successful POST whose JSON body is malformed", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-post-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response("{invalid", { status: 200 }));
+    const client = new EnableBankingClient(config, fetchMock);
+
+    await expect(client.authorizeSession("one-time-code")).rejects.toBeInstanceOf(
+      MalformedProviderResponseError
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains retries for safe GET requests", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-get-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("Service unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    const client = new EnableBankingClient(config, fetchMock);
+
+    await expect(client.checkApplication()).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

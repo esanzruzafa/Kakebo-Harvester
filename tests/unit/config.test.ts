@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  isAppBaseUrlAllowed,
   isRedirectUrlAllowed,
   resolveEnvironmentFile
 } from "../../src/config.js";
@@ -59,22 +60,64 @@ describe("environment file selection", () => {
 describe("redirect URL isolation", () => {
   it("keeps sandbox callbacks on the local loopback server", () => {
     expect(
-      isRedirectUrlAllowed("sandbox", "http://localhost:8000/callback")
+      isRedirectUrlAllowed("sandbox", "http://localhost:8000/callback", 8_000)
     ).toBe(true);
     expect(
-      isRedirectUrlAllowed("sandbox", "https://example.com/callback")
+      isRedirectUrlAllowed("sandbox", "https://example.com/callback", 8_000)
     ).toBe(false);
   });
 
   it("requires an HTTPS loopback callback in production", () => {
     expect(
-      isRedirectUrlAllowed("production", "https://localhost:8000/callback")
+      isRedirectUrlAllowed(
+        "production",
+        "https://localhost:8000/callback",
+        8_000
+      )
     ).toBe(true);
     expect(
-      isRedirectUrlAllowed("production", "http://localhost:8000/callback")
+      isRedirectUrlAllowed(
+        "production",
+        "http://localhost:8000/callback",
+        8_000
+      )
     ).toBe(false);
     expect(
-      isRedirectUrlAllowed("production", "https://example.com/callback")
+      isRedirectUrlAllowed(
+        "production",
+        "https://example.com/callback",
+        8_000
+      )
+    ).toBe(false);
+  });
+
+  it("matches the exact listener host, port, and callback path", () => {
+    for (const invalid of [
+      "https://127.0.0.1:8000/callback",
+      "https://localhost:9000/callback",
+      "https://localhost:8000/other",
+      "https://localhost:8000/callback?unexpected=true"
+    ]) {
+      expect(isRedirectUrlAllowed("production", invalid, 8_000)).toBe(false);
+    }
+    expect(
+      isRedirectUrlAllowed(
+        "production",
+        "https://localhost:8443/callback",
+        8_443
+      )
+    ).toBe(true);
+  });
+
+  it("matches APP_BASE_URL to the same local listener", () => {
+    expect(
+      isAppBaseUrlAllowed("production", "https://localhost:8000", 8_000)
+    ).toBe(true);
+    expect(
+      isAppBaseUrlAllowed("production", "https://localhost:9000", 8_000)
+    ).toBe(false);
+    expect(
+      isAppBaseUrlAllowed("sandbox", "https://localhost:8000", 8_000)
     ).toBe(false);
   });
 });
