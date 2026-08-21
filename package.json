@@ -33,7 +33,7 @@
     "desktop:installer": "npm run build && npm run desktop:rebuild-native && electron-builder --win nsis --config.npmRebuild=false",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "vitest run --maxWorkers=4 --testTimeout=15000 --hookTimeout=15000",
     "audit:production": "npm audit --omit=dev --audit-level=high",
     "test:watch": "vitest",
     "setup:https": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-local-https.ps1",
