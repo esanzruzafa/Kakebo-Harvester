@@ -14,6 +14,7 @@ import { AccountRepository } from "./storage/repositories/account-repository.js"
 import { startServer } from "./server.js";
 import { runDoctor } from "./doctor.js";
 import { disconnectBankConnection } from "./auth/disconnect-service.js";
+import { APPLICATION_VERSION } from "./version.js";
 import type { Logger } from "pino";
 
 interface ParsedArguments {
@@ -61,7 +62,7 @@ function cliSyncContext(
   if (!options.has("online")) return {};
   return {
     psuHeaders: {
-      userAgent: `Kakebo-Harvester-CLI/0.1.0 (${process.platform}; Node/${process.versions.node})`,
+      userAgent: `Kakebo-Harvester-CLI/${APPLICATION_VERSION} (${process.platform}; Node/${process.versions.node})`,
       acceptLanguage: config.defaultLanguage
     },
     ...(options.has("retry-rate-limit")

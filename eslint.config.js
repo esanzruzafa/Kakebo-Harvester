@@ -34,8 +34,7 @@ export default tseslint.config(
   },
   {
     files: [
-      "scripts/copy-desktop-assets.mjs",
-      "scripts/verify-packaged-sqlite.cjs",
+      "scripts/**/*.{mjs,cjs}",
       "src/desktop/preload.cjs",
       "src/desktop/audit-preload.cjs"
     ],

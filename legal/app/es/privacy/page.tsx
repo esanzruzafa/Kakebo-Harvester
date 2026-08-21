@@ -8,7 +8,7 @@ export default function SpanishPrivacyPage() {
     <div className="legal-shell" lang="es">
       <aside className="legal-aside">
         <p className="eyebrow">Documento 01</p>
-        <p>Versión: 25 de julio de 2026</p>
+        <p>Versión: 21 de agosto de 2026</p>
         <p>Ámbito: España</p>
         <p>
           Contacto:{" "}
@@ -22,8 +22,8 @@ export default function SpanishPrivacyPage() {
         <h1>Política de privacidad</h1>
 
         <div className="notice">
-          Kakebo Harvester es una aplicación personal, no comercial y de solo
-          lectura. No inicia pagos, transferencias ni operaciones financieras.
+          Kakebo Harvester es una aplicación local y de solo lectura. No inicia
+          pagos, transferencias ni operaciones financieras.
         </div>
 
         <h2>1. Responsable</h2>

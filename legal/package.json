@@ -2,11 +2,13 @@
   "name": "kakebo-harvester-pages",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "next typegen && tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit",
+    "audit:production": "npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {
     "next": "^16.2.11",

@@ -370,7 +370,9 @@ From a clean checkout:
 
 ```powershell
 npm ci
+npm run audit:production
 npm run check
+npm run build
 npm run desktop:dist
 ```
 
@@ -408,9 +410,13 @@ visible, followed by the animated Electron loading window.
 rebuilds it for Electron and disables the packager's implicit native rebuild so
 that a Node.js binary cannot be copied into the application by mistake. The
 portable build then opens an in-memory database with the packaged module and
-fails if its Electron ABI is incompatible. If CLI development or tests will
-continue in the same checkout after packaging, restore the Node.js binary and
-rerun validation:
+applies every packaged SQL migration to a temporary database. It fails if the
+Electron ABI is incompatible, a migration is missing, or the packaged schema
+cannot reach its latest version. Regular pull-request validation also builds the
+application and checks that all runtime assets and migrations were copied. If
+It also verifies the packaged entry point, splash image, and extra resources
+declared in `package.json`. If CLI development or tests will continue in the
+same checkout after packaging, restore the Node.js binary and rerun validation:
 
 ```powershell
 npm rebuild better-sqlite3
@@ -484,6 +490,11 @@ npm run build
 Tests use temporary SQLite databases, fictional fixtures, and mocked HTTP calls. They never call production.
 
 Technical implementation details are documented in [`docs/DESKTOP_APP.md`](docs/DESKTOP_APP.md).
+
+## License
+
+Kakebo Harvester is open-source software licensed under the [MIT License](LICENSE).
+Copyright © 2026 Eduardo Sanz.
 
 ## Known limitations
 

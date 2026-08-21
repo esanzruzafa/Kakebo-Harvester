@@ -83,13 +83,13 @@ describe("Enable Banking client", () => {
     const client = new EnableBankingClient(config, fetchMock);
 
     await client.getBalances("account-id", {
-      userAgent: "Kakebo-Harvester/0.1.0 Electron/43",
+      userAgent: "Kakebo-Harvester/1.0.0 Electron/43",
       acceptLanguage: "es"
     });
 
     const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
     expect(headers.get("psu-user-agent")).toBe(
-      "Kakebo-Harvester/0.1.0 Electron/43"
+      "Kakebo-Harvester/1.0.0 Electron/43"
     );
     expect(headers.get("psu-accept-language")).toBe("es");
     expect(headers.get("psu-ip-address")).toBeNull();

@@ -3,18 +3,9 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { DatabaseError } from "../errors.js";
+import { migrations } from "./migration-manifest.js";
 
 export type SqliteDatabase = Database.Database;
-
-const migrations = [
-  { version: 1, filename: "001_initial.sql" },
-  { version: 2, filename: "002_desktop.sql" },
-  { version: 3, filename: "003_audit_and_exports.sql" },
-  { version: 4, filename: "004_provider_errors.sql" },
-  { version: 5, filename: "005_psu_context.sql" },
-  { version: 6, filename: "006_account_sync_errors.sql" },
-  { version: 7, filename: "007_correct_legacy_rate_limit_backfill.sql" }
-] as const;
 
 function applyMigrations(database: SqliteDatabase): void {
   let currentVersion = database.pragma("user_version", { simple: true }) as number;

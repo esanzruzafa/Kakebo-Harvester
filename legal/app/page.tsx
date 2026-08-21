@@ -40,8 +40,7 @@ export default function HomePage() {
           <span className="card-number">03</span>
           <h2>Terms</h2>
           <p>
-            Conditions for a personal, non-commercial and informational
-            service.
+            Conditions for lawful, secure and informational use.
           </p>
           <Link className="card-link" href="/terms">
             Read the terms of use →

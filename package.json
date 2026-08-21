@@ -6,6 +6,15 @@
   "main": "dist/src/desktop/main.js",
   "description": "Local, read-only desktop application for importing financial data through Enable Banking.",
   "author": "Eduardo Sanz",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/esanzruzafa/Kakebo-Harvester.git"
+  },
+  "homepage": "https://esanzruzafa.github.io/Kakebo-Harvester/",
+  "bugs": {
+    "url": "https://github.com/esanzruzafa/Kakebo-Harvester/issues"
+  },
   "engines": {
     "node": ">=22.19.0"
   },
@@ -13,7 +22,8 @@
     "cli": "tsx src/index.ts",
     "build": "npm run build:core && npm run build:assets",
     "build:core": "tsc -p tsconfig.json",
-    "build:assets": "node scripts/copy-desktop-assets.mjs",
+    "build:assets": "node scripts/copy-desktop-assets.mjs && npm run verify:desktop-assets",
+    "verify:desktop-assets": "node scripts/verify-desktop-assets.mjs",
     "desktop": "npm run build && electron .",
     "desktop:rebuild-native": "electron-rebuild -f -w better-sqlite3",
     "desktop:verify-package": "set ELECTRON_RUN_AS_NODE=1&& \"release\\portable\\win-unpacked\\Kakebo Harvester.exe\" scripts\\verify-packaged-sqlite.cjs",
@@ -24,6 +34,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
+    "audit:production": "npm audit --omit=dev --audit-level=high",
     "test:watch": "vitest",
     "setup:https": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-local-https.ps1",
     "check": "npm run lint && npm run typecheck && npm test"
@@ -95,6 +106,8 @@
   },
   "allowScripts": {
     "better-sqlite3@12.11.1": true,
-    "electron@43.2.0": true
+    "electron@43.2.0": true,
+    "electron-winstaller@5.4.0": true,
+    "esbuild@0.28.1": true
   }
 }

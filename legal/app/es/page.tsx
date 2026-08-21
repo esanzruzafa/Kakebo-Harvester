@@ -46,8 +46,7 @@ export default function SpanishHomePage() {
           <span className="card-number">03</span>
           <h2>Términos</h2>
           <p>
-            Condiciones de un servicio personal, no comercial y exclusivamente
-            informativo.
+            Condiciones para un uso lícito, seguro y exclusivamente informativo.
           </p>
           <Link className="card-link" href="/es/terms">
             Leer los términos de uso →

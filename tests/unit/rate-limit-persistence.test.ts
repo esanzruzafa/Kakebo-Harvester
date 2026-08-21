@@ -92,7 +92,7 @@ describe("bank rate-limit persistence", () => {
     await expect(
       service.syncAccounts({
         psuHeaders: {
-          userAgent: "Kakebo-Harvester/0.1.0 Electron/43",
+          userAgent: "Kakebo-Harvester/1.0.0 Electron/43",
           acceptLanguage: "es"
         },
         allowRateLimitOverride: true
@@ -112,7 +112,7 @@ describe("bank rate-limit persistence", () => {
     await expect(
       service.syncAccounts({
         psuHeaders: {
-          userAgent: "Kakebo-Harvester/0.1.0 Electron/43",
+          userAgent: "Kakebo-Harvester/1.0.0 Electron/43",
           acceptLanguage: "es"
         },
         allowRateLimitOverride: true
@@ -161,7 +161,7 @@ describe("bank rate-limit persistence", () => {
     await expect(
       service.syncAccounts({
         psuHeaders: {
-          userAgent: "Kakebo-Harvester/0.1.0 Electron/43",
+          userAgent: "Kakebo-Harvester/1.0.0 Electron/43",
           acceptLanguage: "es"
         }
       })
