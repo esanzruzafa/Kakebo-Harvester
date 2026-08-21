@@ -75,20 +75,65 @@ function parseSteps(value: string): SyncStep[] {
 }
 
 function balanceTotals(accounts: AuditAccountView[]): AuditBalanceTotal[] {
-  const totals = new Map<string, number>();
+  const totals = new Map<string, { units: bigint; scale: number }>();
   for (const account of accounts) {
     if (account.amount === null) continue;
-    const amount = Number(account.amount);
-    if (!Number.isFinite(amount)) continue;
+    const match = /^([+-]?)(\d+)(?:\.(\d+))?$/.exec(account.amount.trim());
+    if (!match) continue;
+    const fraction = match[3] ?? "";
+    const sign = match[1] === "-" ? -1n : 1n;
+    const units = sign * BigInt(`${match[2]}${fraction}`);
     const currency = account.currency ?? "";
-    totals.set(currency, (totals.get(currency) ?? 0) + amount);
+    const current = totals.get(currency);
+    if (!current) {
+      totals.set(currency, { units, scale: fraction.length });
+      continue;
+    }
+    const scale = Math.max(current.scale, fraction.length);
+    totals.set(currency, {
+      units:
+        current.units * 10n ** BigInt(scale - current.scale) +
+        units * 10n ** BigInt(scale - fraction.length),
+      scale
+    });
   }
   return [...totals]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([currency, amount]) => ({
-      amount: amount.toFixed(2),
-      currency: currency || null
-    }));
+    .map(([currency, total]) => {
+      let fractionDigits = 2;
+      if (currency) {
+        try {
+          fractionDigits =
+            new Intl.NumberFormat("en", {
+              style: "currency",
+              currency
+            }).resolvedOptions().maximumFractionDigits ?? 2;
+        } catch {
+          // Unknown currency codes retain the conventional two-decimal fallback.
+        }
+      }
+      let units = total.units;
+      if (total.scale > fractionDigits) {
+        const divisor = 10n ** BigInt(total.scale - fractionDigits);
+        const absolute = units < 0n ? -units : units;
+        const rounded = (absolute + divisor / 2n) / divisor;
+        units = units < 0n ? -rounded : rounded;
+      } else if (total.scale < fractionDigits) {
+        units *= 10n ** BigInt(fractionDigits - total.scale);
+      }
+      const negative = units < 0n;
+      const absolute = (negative ? -units : units)
+        .toString()
+        .padStart(fractionDigits + 1, "0");
+      const amount =
+        fractionDigits === 0
+          ? absolute
+          : `${absolute.slice(0, -fractionDigits)}.${absolute.slice(-fractionDigits)}`;
+      return {
+        amount: negative && units !== 0n ? `-${amount}` : amount,
+        currency: currency || null
+      };
+    });
 }
 
 export class DesktopRunRepository {

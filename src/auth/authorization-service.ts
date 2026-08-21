@@ -228,29 +228,35 @@ export class AuthorizationService {
     try {
       const session = await this.client.authorizeSession(input.code);
       createdSession = session;
-      const recoverySessions = this.database
+      const previousSessions = this.database
         .prepare(
           `SELECT id, provider_session_id_ciphertext
            FROM provider_sessions
-           WHERE bank_connection_id = ? AND status = 'REVOCATION_REQUIRED'`
+           WHERE bank_connection_id = ?
+             AND status IN ('AUTHORIZED', 'REVOCATION_REQUIRED')`
         )
         .all(pending.bankConnectionId) as Array<{
           id: string;
           provider_session_id_ciphertext: string;
         }>;
-      for (const recovery of recoverySessions) {
+      for (const previous of previousSessions) {
         try {
           await this.client.deleteSession(
             decryptSecret(
-              recovery.provider_session_id_ciphertext,
+              previous.provider_session_id_ciphertext,
               this.config.sessionEncryptionKey
             )
           );
           this.database
             .prepare("DELETE FROM provider_sessions WHERE id = ?")
-            .run(recovery.id);
+            .run(previous.id);
         } catch {
-          // Retain the recovery row so a later retry or disconnect can revoke it.
+          this.database
+            .prepare(
+              `UPDATE provider_sessions SET status = 'REVOCATION_REQUIRED'
+               WHERE id = ?`
+            )
+            .run(previous.id);
         }
       }
       const raw = await this.rawStore.write("session", pending.bankConnectionId, session);

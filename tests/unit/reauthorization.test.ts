@@ -72,9 +72,9 @@ describe("bank reauthorization", () => {
       .prepare(
         `INSERT INTO provider_sessions (
            id, bank_connection_id, provider_session_id_ciphertext, created_at, status
-         ) VALUES ('old-session', 'connection', 'ciphertext', ?, 'AUTHORIZED')`
+         ) VALUES ('old-session', 'connection', ?, ?, 'AUTHORIZED')`
       )
-      .run(now);
+      .run(encryptSecret("old-provider-session", config.sessionEncryptionKey), now);
     database
       .prepare(
         `INSERT INTO provider_sessions (
@@ -138,6 +138,7 @@ describe("bank reauthorization", () => {
     expect(started.connectionId).toBe("connection");
     expect(completed.status).toBe("authorized");
     expect(deleteSession).toHaveBeenCalledWith("recovery-provider-session");
+    expect(deleteSession).toHaveBeenCalledWith("old-provider-session");
     expect(
       database
         .prepare(
@@ -163,12 +164,9 @@ describe("bank reauthorization", () => {
     });
     expect(
       database
-        .prepare(
-          `SELECT status FROM provider_sessions
-           WHERE id = 'old-session'`
-        )
+        .prepare("SELECT status FROM provider_sessions WHERE id = 'old-session'")
         .get()
-    ).toEqual({ status: "SUPERSEDED" });
+    ).toBeUndefined();
     database.close();
   });
 
@@ -236,6 +234,77 @@ describe("bank reauthorization", () => {
     expect(
       database
         .prepare("SELECT COUNT(*) AS count FROM accounts WHERE active = 1")
+        .get()
+    ).toEqual({ count: 1 });
+    database.close();
+  });
+
+  it("keeps a previous session reachable when remote revocation fails", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-reauthorization-recovery-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo Bank', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('old-session', 'connection', ?, ?, 'AUTHORIZED')`
+      )
+      .run(encryptSecret("old-provider-session", config.sessionEncryptionKey), now);
+
+    let authorizationState = "";
+    const client = {
+      listBanks: vi.fn().mockResolvedValue([
+        {
+          name: "Demo Bank",
+          country: "ES",
+          psu_types: ["personal"],
+          auth_methods: [],
+          maximum_consent_validity: 7_776_000
+        }
+      ]),
+      startAuthorization: vi.fn().mockImplementation((input: { state: string }) => {
+        authorizationState = input.state;
+        return Promise.resolve({ url: "https://bank.example/authorize" });
+      }),
+      authorizeSession: vi.fn().mockResolvedValue({
+        session_id: "new-session",
+        accounts: []
+      }),
+      deleteSession: vi.fn().mockRejectedValue(new Error("Provider unavailable."))
+    } as unknown as EnableBankingClient;
+    const service = new AuthorizationService(config, database, client);
+
+    await service.reauthorize("connection");
+    const completed = await service.complete({
+      state: authorizationState,
+      code: "authorization-code"
+    });
+
+    expect(completed.status).toBe("authorized");
+    expect(
+      database
+        .prepare(
+          `SELECT status FROM provider_sessions
+           WHERE id = 'old-session'`
+        )
+        .get()
+    ).toEqual({ status: "REVOCATION_REQUIRED" });
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM provider_sessions
+           WHERE status = 'AUTHORIZED'`
+        )
         .get()
     ).toEqual({ count: 1 });
     database.close();

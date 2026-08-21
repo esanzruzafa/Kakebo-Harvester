@@ -72,4 +72,58 @@ describe("desktop run repository", () => {
     ).toEqual({ total: 1 });
     database.close();
   });
+
+  it("sums audit balances with exact currency precision", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-audit-precision-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo Bank', 'KW',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    for (const id of ["one", "two"] as const) {
+      database
+        .prepare(
+          `INSERT INTO accounts (
+             id, bank_connection_id, provider_account_id, name, active,
+             first_seen_at, last_seen_at
+           ) VALUES (?, 'connection', ?, ?, 1, ?, ?)`
+        )
+        .run(id, id, id, now, now);
+    }
+    const repository = new DesktopRunRepository(database);
+    const runId = repository.begin({
+      dateFrom: "2026-01-01",
+      dateTo: "2026-01-31",
+      steps: ["balances"]
+    });
+    database
+      .prepare(
+        `INSERT INTO balances (
+           id, account_id, balance_type, amount, currency, extracted_at,
+           desktop_run_id
+         ) VALUES (?, ?, 'CLBD', ?, 'KWD', ?, ?)`
+      )
+      .run("balance-one", "one", "9007199254740993.125", now, runId);
+    database
+      .prepare(
+        `INSERT INTO balances (
+           id, account_id, balance_type, amount, currency, extracted_at,
+           desktop_run_id
+         ) VALUES (?, ?, 'CLBD', ?, 'KWD', ?, ?)`
+      )
+      .run("balance-two", "two", "0.550", now, runId);
+    repository.finish(runId, "SUCCESS");
+
+    expect(repository.list()[0]?.totals).toEqual([
+      { amount: "9007199254740993.675", currency: "KWD" }
+    ]);
+    database.close();
+  });
 });
