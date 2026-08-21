@@ -37,6 +37,10 @@ const assets = [
   [
     "src/storage/migrations/006_account_sync_errors.sql",
     "dist/src/storage/migrations/006_account_sync_errors.sql"
+  ],
+  [
+    "src/storage/migrations/007_correct_legacy_rate_limit_backfill.sql",
+    "dist/src/storage/migrations/007_correct_legacy_rate_limit_backfill.sql"
   ]
 ];
 
