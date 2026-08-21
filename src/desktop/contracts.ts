@@ -134,12 +134,15 @@ export interface KakeboDesktopApi {
     decision: "continue" | "stop";
   }) => Promise<boolean>;
   saveAccounts: (accounts: EditableAccount[]) => Promise<EditableAccount[]>;
-  saveRules: (
-    configuration: CategorizationConfiguration
-  ) => Promise<CategorizationConfiguration>;
-  saveCategories: (
-    categories: CategoryDefinition[]
-  ) => Promise<CategoryDefinition[]>;
+  saveCategorization: (input: {
+    categories: CategoryDefinition[];
+    exclusions: CategorizationConfiguration["exclusions"];
+    rules: CategorizationConfiguration["rules"];
+  }) => Promise<{
+    categories: CategoryDefinition[];
+    exclusions: CategorizationConfiguration["exclusions"];
+    rules: CategorizationConfiguration["rules"];
+  }>;
   saveExportSettings: (settings: ExportSettings) => Promise<ExportSettings>;
   saveCardImportProfiles: (
     profiles: CardImportProfile[]

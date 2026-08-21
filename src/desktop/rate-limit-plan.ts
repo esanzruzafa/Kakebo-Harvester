@@ -6,6 +6,22 @@ export interface RateLimitPlan {
   hasEligibleConnection: boolean;
 }
 
+export interface OnlineRetryDecision {
+  proceed: boolean;
+  allowOverride: boolean;
+}
+
+export function onlineRetryDecision(
+  plan: RateLimitPlan,
+  accepted: boolean
+): OnlineRetryDecision {
+  if (accepted) return { proceed: true, allowOverride: true };
+  return {
+    proceed: plan.hasEligibleConnection,
+    allowOverride: false
+  };
+}
+
 export function rateLimitPlan(
   connections: ConnectionView[],
   now = Date.now()

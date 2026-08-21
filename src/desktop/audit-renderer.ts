@@ -3,6 +3,7 @@ import type {
   TranslationDictionary
 } from "../settings/localization-store.js";
 import type { AuditRunView } from "../storage/repositories/desktop-run-repository.js";
+import { formatExactCurrencyDecimal } from "../utils/currency.js";
 
 let language = "en";
 let translations: TranslationDictionary = {};
@@ -52,20 +53,7 @@ function balance(run: {
   currency: string | null;
 }): string {
   if (run.amount === null) return t("audit.noBalance", "No balance");
-  const amount = Number(run.amount);
-  if (!Number.isFinite(amount)) {
-    return [run.amount, run.currency].filter(Boolean).join(" ");
-  }
-  try {
-    return new Intl.NumberFormat(language, {
-      style: run.currency ? "currency" : "decimal",
-      ...(run.currency ? { currency: run.currency } : {}),
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(amount);
-  } catch {
-    return [run.amount, run.currency].filter(Boolean).join(" ");
-  }
+  return formatExactCurrencyDecimal(run.amount, run.currency, language);
 }
 
 function renderRun(run: AuditRunView, expanded = false): HTMLElement {

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ConnectionView } from "../../src/desktop/contracts.js";
-import { rateLimitPlan } from "../../src/desktop/rate-limit-plan.js";
+import {
+  onlineRetryDecision,
+  rateLimitPlan
+} from "../../src/desktop/rate-limit-plan.js";
 
 function connection(
   id: string,
@@ -23,6 +26,21 @@ function connection(
 }
 
 describe("desktop rate-limit planning", () => {
+  it("continues eligible banks when the online override is declined", () => {
+    expect(
+      onlineRetryDecision(
+        { retryable: [], exhausted: [], hasEligibleConnection: true },
+        false
+      )
+    ).toEqual({ proceed: true, allowOverride: false });
+    expect(
+      onlineRetryDecision(
+        { retryable: [], exhausted: [], hasEligibleConnection: false },
+        false
+      )
+    ).toEqual({ proceed: false, allowOverride: false });
+  });
+
   it("keeps ready banks eligible when another bank exhausted its online retry", () => {
     const plan = rateLimitPlan(
       [

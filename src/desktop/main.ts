@@ -40,13 +40,10 @@ import {
   cardImportProfileSchema
 } from "../settings/card-import-profiles-store.js";
 import {
-  CategoriesStore,
-  categoryDefinitionSchema
+  CategoriesStore
 } from "../settings/categories-store.js";
 import {
-  CategorizationRulesStore,
-  categorizationExclusionSchema,
-  categorizationRuleSchema
+  CategorizationRulesStore
 } from "../settings/categorization-rules-store.js";
 import {
   ExportSettingsStore,
@@ -79,6 +76,10 @@ import {
   tlsSetupScriptPath
 } from "./local-https.js";
 import { saveAccountSettings } from "./account-settings.js";
+import {
+  CategorizationReferenceError,
+  saveCategorizationSettings
+} from "./categorization-settings.js";
 import type {
   AuthorizationUiResult,
   BankOption,
@@ -858,47 +859,28 @@ function registerIpc(application: KakeboApplication): void {
       })
     );
   });
-  ipcMain.handle("rules:save", async (event, input: unknown) => {
+  ipcMain.handle("categorization:save", async (event, input: unknown) => {
     assertTrustedSender(event);
-    const configuration = z
-      .object({
-        exclusions: z.array(categorizationExclusionSchema),
-        rules: z.array(categorizationRuleSchema)
-      })
-      .parse(input);
-    const { rules } = configuration;
-    const categories = await categoriesStore.load();
-    for (const [index, rule] of rules.entries()) {
-      const category = categories.find((item) => item.name === rule.category);
-      if (!category) {
+    try {
+      return await saveCategorizationSettings(categoriesStore, rulesStore, input);
+    } catch (error) {
+      if (error instanceof CategorizationReferenceError) {
         throw new Error(
-          trf(
-            "error.ruleCategory",
-            'Rule {number} uses an unknown category: "{category}".',
-            { number: index + 1, category: rule.category }
-          )
+          error.subcategory
+            ? trf(
+                "error.ruleSubcategory",
+                'Rule {number} uses a subcategory that does not belong to "{category}".',
+                { number: error.ruleNumber, category: error.category }
+              )
+            : trf(
+                "error.ruleCategory",
+                'Rule {number} uses an unknown category: "{category}".',
+                { number: error.ruleNumber, category: error.category }
+              )
         );
       }
-      if (
-        rule.subcategory &&
-        !category.subcategories.includes(rule.subcategory)
-      ) {
-        throw new Error(
-          trf(
-            "error.ruleSubcategory",
-            'Rule {number} uses a subcategory that does not belong to "{category}".',
-            { number: index + 1, category: rule.category }
-          )
-        );
-      }
+      throw error;
     }
-    return await rulesStore.saveConfiguration(configuration);
-  });
-  ipcMain.handle("categories:save", async (event, input: unknown) => {
-    assertTrustedSender(event);
-    return await categoriesStore.save(
-      z.array(categoryDefinitionSchema).parse(input)
-    );
   });
   ipcMain.handle("export-settings:save", async (event, input: unknown) => {
     assertTrustedSender(event);

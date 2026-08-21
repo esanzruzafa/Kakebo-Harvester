@@ -6,7 +6,8 @@ import type {
   SelectedCardFile
 } from "./contracts.js";
 import { rowDropInsertionIndex } from "./row-drop.js";
-import { rateLimitPlan } from "./rate-limit-plan.js";
+import { onlineRetryDecision, rateLimitPlan } from "./rate-limit-plan.js";
+import { formatExactCurrencyDecimal } from "../utils/currency.js";
 import type { CardImportProfile } from "../settings/card-import-profiles-store.js";
 import type { CategoryDefinition } from "../settings/categories-store.js";
 import type {
@@ -797,20 +798,11 @@ function balanceLabel(account: {
   currency: string | null;
 }): string {
   if (account.amount === null) return t("audit.noBalance", "No balance");
-  const amount = Number(account.amount);
-  if (!Number.isFinite(amount)) {
-    return [account.amount, account.currency].filter(Boolean).join(" ");
-  }
-  try {
-    return new Intl.NumberFormat(state.language, {
-      style: account.currency ? "currency" : "decimal",
-      ...(account.currency ? { currency: account.currency } : {}),
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(amount);
-  } catch {
-    return [account.amount, account.currency].filter(Boolean).join(" ");
-  }
+  return formatExactCurrencyDecimal(
+    account.amount,
+    account.currency,
+    state.language
+  );
 }
 
 function createAuditRun(run: AuditRunView, expanded = false): HTMLElement {
@@ -2032,8 +2024,12 @@ async function saveTab(tab: EditableTab, notify = true): Promise<void> {
     const categories = categoryValues();
     const rules = ruleValues();
     const exclusions = exclusionValues();
-    state.categories = await window.kakebo.saveCategories(categories);
-    const saved = await window.kakebo.saveRules({ exclusions, rules });
+    const saved = await window.kakebo.saveCategorization({
+      categories,
+      exclusions,
+      rules
+    });
+    state.categories = saved.categories;
     state.exclusions = saved.exclusions;
     state.rules = saved.rules;
     renderCategories();
@@ -2259,8 +2255,12 @@ function setupActions(): void {
           "Try once as online"
         )
       });
-      if (choice !== "confirm") return;
-      allowRateLimitOverride = true;
+      const decision = onlineRetryDecision(
+        limitPlan,
+        choice === "confirm"
+      );
+      if (!decision.proceed) return;
+      allowRateLimitOverride = decision.allowOverride;
     } else if (
       limitPlan.exhausted.length > 0 &&
       !limitPlan.hasEligibleConnection

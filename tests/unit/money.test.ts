@@ -4,8 +4,21 @@ import {
   mapTransaction,
   normalizeDecimal
 } from "../../src/transactions/transaction-mapper.js";
+import { formatExactCurrencyDecimal } from "../../src/utils/currency.js";
 
 describe("financial amount convention", () => {
+  it("formats audit amounts without losing currency precision", () => {
+    expect(formatExactCurrencyDecimal("2.675", "KWD", "en")).toContain(
+      "2.675"
+    );
+    expect(formatExactCurrencyDecimal("2675", "JPY", "en")).toContain(
+      "2675"
+    );
+    expect(
+      formatExactCurrencyDecimal("9007199254740993.125", "KWD", "en")
+    ).toContain("9007199254740993.125");
+  });
+
   it("stores debits as negative exact decimal strings", () => {
     expect(normalizeDecimal("0012.3400", "DBIT")).toEqual({
       amount: "-12.34",

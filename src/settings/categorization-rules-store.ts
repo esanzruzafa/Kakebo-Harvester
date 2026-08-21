@@ -52,7 +52,9 @@ function validateAndSort<T extends { priority: number; operator: string; value: 
   return values.sort((left, right) => left.priority - right.priority);
 }
 
-function parseConfiguration(value: unknown): CategorizationConfiguration {
+export function validateCategorizationConfiguration(
+  value: unknown
+): CategorizationConfiguration {
   if (Array.isArray(value)) {
     return {
       exclusions: [],
@@ -76,7 +78,7 @@ export class CategorizationRulesStore {
 
   public async loadConfiguration(): Promise<CategorizationConfiguration> {
     try {
-      return parseConfiguration(
+      return validateCategorizationConfiguration(
         JSON.parse(await readFile(this.path, "utf8")) as unknown
       );
     } catch (error) {
@@ -91,7 +93,7 @@ export class CategorizationRulesStore {
 
   public loadConfigurationSync(): CategorizationConfiguration {
     try {
-      return parseConfiguration(
+      return validateCategorizationConfiguration(
         JSON.parse(readFileSync(this.path, "utf8")) as unknown
       );
     } catch (error) {
@@ -117,7 +119,7 @@ export class CategorizationRulesStore {
   ): Promise<CategorizationConfiguration> {
     let configuration: CategorizationConfiguration;
     try {
-      configuration = parseConfiguration(input);
+      configuration = validateCategorizationConfiguration(input);
     } catch (error) {
       throw new ConfigurationError("The categorization rules are not valid.", {
         cause: error

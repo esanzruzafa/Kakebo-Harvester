@@ -10,7 +10,7 @@ export const categoryDefinitionSchema = z.object({
 
 export type CategoryDefinition = z.output<typeof categoryDefinitionSchema>;
 
-function parseCategories(value: unknown): CategoryDefinition[] {
+export function validateCategories(value: unknown): CategoryDefinition[] {
   const categories = z.array(categoryDefinitionSchema).max(200).parse(value);
   const names = new Set<string>();
   for (const category of categories) {
@@ -38,7 +38,7 @@ export class CategoriesStore {
 
   public async load(): Promise<CategoryDefinition[]> {
     try {
-      return parseCategories(
+      return validateCategories(
         JSON.parse(await readFile(this.path, "utf8")) as unknown
       );
     } catch (error) {
@@ -52,7 +52,7 @@ export class CategoriesStore {
   public async save(input: unknown): Promise<CategoryDefinition[]> {
     let categories: CategoryDefinition[];
     try {
-      categories = parseCategories(input);
+      categories = validateCategories(input);
     } catch (error) {
       throw new ConfigurationError("The category dependencies are not valid.", {
         cause: error
