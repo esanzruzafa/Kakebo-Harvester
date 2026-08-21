@@ -71,13 +71,19 @@ const orderedSteps: SyncStep[] = [
 ];
 
 export class SynchronizationLock {
+  private static readonly staleAfterMs = 6 * 60 * 60 * 1_000;
+  private static readonly heartbeatIntervalMs = 5 * 60 * 1_000;
   private readonly owner = createId();
   private acquired = false;
+  private heartbeat: NodeJS.Timeout | undefined;
+  private renewalError: Error | undefined;
 
   public constructor(private readonly database: SqliteDatabase) {}
 
   public acquire(): void {
-    const staleBefore = new Date(Date.now() - 6 * 60 * 60 * 1_000).toISOString();
+    const staleBefore = new Date(
+      Date.now() - SynchronizationLock.staleAfterMs
+    ).toISOString();
     const transaction = this.database.transaction(() => {
       this.database
         .prepare(
@@ -95,6 +101,15 @@ export class SynchronizationLock {
     try {
       transaction();
       this.acquired = true;
+      this.heartbeat = setInterval(() => {
+        try {
+          this.renew();
+        } catch (error) {
+          this.renewalError =
+            error instanceof Error ? error : new Error(String(error));
+        }
+      }, SynchronizationLock.heartbeatIntervalMs);
+      this.heartbeat.unref();
     } catch (error) {
       if (
         typeof error === "object" &&
@@ -108,7 +123,30 @@ export class SynchronizationLock {
     }
   }
 
+  public renew(): void {
+    if (!this.acquired) return;
+    const result = this.database
+      .prepare(
+        `UPDATE application_locks SET acquired_at = ?
+         WHERE name = 'synchronization' AND owner = ?`
+      )
+      .run(new Date().toISOString(), this.owner);
+    if (result.changes !== 1) {
+      this.acquired = false;
+      throw new Error("The synchronization lock lease was lost.");
+    }
+  }
+
+  public assertActive(): void {
+    if (this.renewalError) throw this.renewalError;
+    if (!this.acquired) {
+      throw new Error("The synchronization lock lease is no longer active.");
+    }
+  }
+
   public release(): void {
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.heartbeat = undefined;
     if (!this.acquired) return;
     this.database
       .prepare(
@@ -212,6 +250,7 @@ export class SyncRunner {
       });
       progress("run-started", "Synchronization started.");
       for (const step of steps) {
+        lock.assertActive();
         progress("step-started", `Running ${step}.`, step);
         let reauthorizationAttempts = 0;
         for (;;) {
@@ -223,6 +262,7 @@ export class SyncRunner {
               desktopRunId,
               context
             );
+            lock.assertActive();
             break;
           } catch (error) {
             if (
@@ -241,6 +281,7 @@ export class SyncRunner {
                 step
               );
               await options.onReauthorization(connectionIds);
+              lock.assertActive();
               reauthorizationAttempts += 1;
               continue;
             }

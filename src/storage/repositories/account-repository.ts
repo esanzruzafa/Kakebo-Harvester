@@ -2,6 +2,7 @@ import type { SqliteDatabase } from "../database.js";
 import type { AccountResource } from "../../enable-banking/schemas.js";
 import { createId } from "../../utils/crypto.js";
 import { maskIdentifier } from "../../utils/text.js";
+import { TransactionRepository } from "../../transactions/deduplication.js";
 
 export interface StoredAccount {
   id: string;
@@ -228,6 +229,9 @@ export class AccountRepository {
       )
       .run(canonicalId, duplicateId);
     this.database.prepare("DELETE FROM accounts WHERE id = ?").run(duplicateId);
+    new TransactionRepository(this.database).consolidateAccountTransactions(
+      canonicalId
+    );
   }
 
   private registerIdentificationHashes(

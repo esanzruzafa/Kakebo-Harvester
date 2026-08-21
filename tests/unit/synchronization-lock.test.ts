@@ -92,6 +92,26 @@ describe("synchronization lock", () => {
     database.close();
   });
 
+  it("renews an active lease before stale-lock cleanup", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-sync-lock-renewal-"));
+    const database = createDatabase(testConfig(root).databasePath);
+    const active = new SynchronizationLock(database);
+    active.acquire();
+    database
+      .prepare(
+        `UPDATE application_locks SET acquired_at = ?
+         WHERE name = 'synchronization'`
+      )
+      .run(new Date(Date.now() - 7 * 60 * 60 * 1_000).toISOString());
+
+    active.renew();
+    const contender = new SynchronizationLock(database);
+    expect(() => contender.acquire()).toThrow(SyncAlreadyRunningError);
+
+    active.release();
+    database.close();
+  });
+
   it("releases the lock when audit initialization fails", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-sync-lock-audit-"));
     const config = testConfig(root);

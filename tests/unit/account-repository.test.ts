@@ -120,6 +120,31 @@ describe("account synchronization eligibility", () => {
          WHERE id = ?`
       )
       .run(canonicalId);
+    const transactionRepository = new TransactionRepository(database);
+    const providerTransaction = {
+      status: "BOOK",
+      booking_date: "2026-08-20",
+      transaction_amount: { amount: "-25.00", currency: "EUR" },
+      remittance_information: "Recurring purchase"
+    };
+    const originalCanonicalAccount = repository.findByProviderAccountId(
+      "connection",
+      "old-provider-id"
+    );
+    expect(originalCanonicalAccount).toBeDefined();
+    if (!originalCanonicalAccount) {
+      throw new Error("Expected original canonical account fixture.");
+    }
+    expect(
+      transactionRepository.upsert(
+        mapTransaction({
+          transaction: providerTransaction,
+          account: originalCanonicalAccount,
+          environment: "sandbox",
+          rawPath: null
+        })
+      )
+    ).toBe("inserted");
     database
       .prepare(
         `INSERT INTO accounts (
@@ -136,13 +161,6 @@ describe("account synchronization eligibility", () => {
          ) VALUES ('balance', 'duplicate', '100', 'EUR', ?)`
       )
       .run(now);
-    const transactionRepository = new TransactionRepository(database);
-    const providerTransaction = {
-      status: "BOOK",
-      booking_date: "2026-08-20",
-      transaction_amount: { amount: "-25.00", currency: "EUR" },
-      remittance_information: "Recurring purchase"
-    };
     const duplicateAccount = repository.findByProviderAccountId(
       "connection",
       "new-provider-id"
@@ -159,6 +177,9 @@ describe("account synchronization eligibility", () => {
         })
       )
     ).toBe("inserted");
+    expect(database.prepare("SELECT COUNT(*) AS count FROM transactions").get()).toEqual({
+      count: 2
+    });
 
     expect(
       repository.upsert(
@@ -194,6 +215,9 @@ describe("account synchronization eligibility", () => {
     expect(
       database.prepare("SELECT account_id FROM balances WHERE id = 'balance'").get()
     ).toEqual({ account_id: canonicalId });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM transactions").get()).toEqual({
+      count: 1
+    });
     const canonicalAccount = repository.findByProviderAccountId(
       "connection",
       "new-provider-id"

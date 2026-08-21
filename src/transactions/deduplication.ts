@@ -145,6 +145,30 @@ export class TransactionRepository {
     };
   }
 
+  public consolidateAccountTransactions(accountId: string): number {
+    return this.database.transaction(() => {
+      const rows = this.database
+        .prepare(
+          `SELECT * FROM transactions
+           WHERE account_id = ?
+           ORDER BY first_seen_at, id`
+        )
+        .all(accountId) as NormalizedTransaction[];
+      let removed = 0;
+      for (const row of rows) {
+        const stillPresent = this.database
+          .prepare("SELECT 1 FROM transactions WHERE movement_key = ?")
+          .get(row.movement_key);
+        if (!stillPresent) continue;
+        const matches = this.findIdentityMatches(row);
+        if (matches.length < 2) continue;
+        this.consolidateIdentityMatches(matches);
+        removed += matches.length - 1;
+      }
+      return removed;
+    })();
+  }
+
   public upsert(transaction: NormalizedTransaction): UpsertOutcome {
     return this.database.transaction(() =>
       this.upsertWithinTransaction(transaction)
