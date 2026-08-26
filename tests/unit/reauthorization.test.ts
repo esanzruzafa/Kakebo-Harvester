@@ -18,6 +18,103 @@ afterEach(async () => {
 });
 
 describe("bank reauthorization", () => {
+  it("removes an abandoned new connection without touching established sessions", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-abandoned-connection-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const client = {
+      listBanks: vi.fn().mockResolvedValue([
+        {
+          name: "Demo Bank",
+          country: "ES",
+          psu_types: ["personal"],
+          auth_methods: [],
+          maximum_consent_validity: 7_776_000
+        }
+      ]),
+      startAuthorization: vi
+        .fn()
+        .mockResolvedValue({ url: "https://bank.example/authorize" })
+    } as unknown as EnableBankingClient;
+    const service = new AuthorizationService(config, database, client);
+    const started = await service.connect({
+      bankSearch: "Demo Bank",
+      country: "ES",
+      psuType: "personal"
+    });
+
+    expect(service.abandonConnection(started.connectionId)).toBe(true);
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM bank_connections").get()
+    ).toEqual({ count: 0 });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM pending_authorizations").get()
+    ).toEqual({ count: 0 });
+
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('established', 'enable-banking', 'sandbox', 'Demo Bank', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('session', 'established', ?, ?, 'AUTHORIZED')`
+      )
+      .run(encryptSecret("provider-session", config.sessionEncryptionKey), now);
+
+    expect(service.abandonConnection("established")).toBe(false);
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM bank_connections").get()
+    ).toEqual({ count: 1 });
+    database.close();
+  });
+
+  it("cleans up an expired pending connection when the service restarts", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-expired-connection-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const client = {
+      listBanks: vi.fn().mockResolvedValue([
+        {
+          name: "Demo Bank",
+          country: "ES",
+          psu_types: ["personal"],
+          auth_methods: [],
+          maximum_consent_validity: 7_776_000
+        }
+      ]),
+      startAuthorization: vi
+        .fn()
+        .mockResolvedValue({ url: "https://bank.example/authorize" })
+    } as unknown as EnableBankingClient;
+    const service = new AuthorizationService(config, database, client);
+    await service.connect({
+      bankSearch: "Demo Bank",
+      country: "ES",
+      psuType: "personal"
+    });
+    database
+      .prepare("UPDATE pending_authorizations SET expires_at = ?")
+      .run("2000-01-01T00:00:00.000Z");
+
+    new AuthorizationService(config, database, client);
+
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM bank_connections").get()
+    ).toEqual({ count: 0 });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM pending_authorizations").get()
+    ).toEqual({ count: 0 });
+    database.close();
+  });
+
   it("removes a new pending connection when authorization start fails", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-authorization-start-failure-"));
     const config = testConfig(root);

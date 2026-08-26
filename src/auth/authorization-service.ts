@@ -89,6 +89,56 @@ export class AuthorizationService {
     this.states = new StateStore(database);
     this.accounts = new AccountRepository(database);
     this.rawStore = new RawStore(config);
+    this.cleanupExpiredPendingConnections();
+  }
+
+  private cleanupExpiredPendingConnections(): void {
+    const now = new Date().toISOString();
+    const rows = this.database
+      .prepare(
+        `SELECT c.id
+         FROM bank_connections c
+         WHERE c.status = 'PENDING_AUTHORIZATION'
+           AND NOT EXISTS (
+             SELECT 1 FROM provider_sessions s
+             WHERE s.bank_connection_id = c.id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM pending_authorizations p
+             WHERE p.bank_connection_id = c.id
+               AND p.consumed_at IS NULL
+               AND p.expires_at > ?
+           )`
+      )
+      .all(now) as Array<{ id: string }>;
+    for (const row of rows) this.abandonConnection(row.id);
+  }
+
+  public abandonConnection(connectionId: string): boolean {
+    return this.database.transaction(() => {
+      const removable = this.database
+        .prepare(
+          `SELECT 1 FROM bank_connections c
+           WHERE c.id = ?
+             AND c.status IN (
+               'PENDING_AUTHORIZATION', 'DENIED', 'AUTHORIZATION_FAILED'
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM provider_sessions s
+               WHERE s.bank_connection_id = c.id
+             )`
+        )
+        .get(connectionId);
+      if (!removable) return false;
+      this.database
+        .prepare("DELETE FROM pending_authorizations WHERE bank_connection_id = ?")
+        .run(connectionId);
+      return (
+        this.database
+          .prepare("DELETE FROM bank_connections WHERE id = ?")
+          .run(connectionId).changes === 1
+      );
+    })();
   }
 
   private async findBank(

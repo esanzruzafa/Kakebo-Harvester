@@ -288,6 +288,11 @@ class AuthorizationCoordinator {
     try {
       if (this.cancelledReason) throw new Error(this.cancelledReason);
       await this.openAndWait(authorization);
+    } catch (error) {
+      this.application.authorization.abandonConnection(
+        authorization.connectionId
+      );
+      throw error;
     } finally {
       this.inProgress.delete(authorization.connectionId);
     }
