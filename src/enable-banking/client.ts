@@ -100,7 +100,15 @@ function retryAtFrom(response: Response, providerCode: string | undefined): stri
   const retryAfter = response.headers.get("retry-after")?.trim();
   let retryAtMs: number | undefined;
   if (retryAfter && /^\d+$/u.test(retryAfter)) {
-    retryAtMs = now + Number(retryAfter) * 1_000;
+    const seconds = Number(retryAfter);
+    const candidate = now + seconds * 1_000;
+    if (
+      Number.isSafeInteger(seconds) &&
+      Number.isFinite(candidate) &&
+      candidate <= 8_640_000_000_000_000
+    ) {
+      retryAtMs = candidate;
+    }
   } else if (retryAfter) {
     const parsed = Date.parse(retryAfter);
     if (Number.isFinite(parsed) && parsed > now) retryAtMs = parsed;
@@ -215,6 +223,13 @@ export class EnableBankingClient {
           httpStatus: response.status,
           ...(failure.message ? { providerMessage: failure.message } : {})
         };
+        if (
+          method === "DELETE" &&
+          (response.status === 404 ||
+            (providerCode !== undefined && sessionErrorCodes.has(providerCode)))
+        ) {
+          return undefined;
+        }
         if (providerCode && sessionErrorCodes.has(providerCode)) {
           throw new ReauthorizationRequiredError(
             "La sesión bancaria ha caducado, ha sido cerrada o ya no está disponible.",

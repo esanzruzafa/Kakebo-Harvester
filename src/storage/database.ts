@@ -23,14 +23,16 @@ function applyMigrations(database: SqliteDatabase): void {
 }
 
 export function createDatabase(databasePath: string): SqliteDatabase {
+  let database: SqliteDatabase | undefined;
   try {
     mkdirSync(dirname(databasePath), { recursive: true });
-    const database = new Database(databasePath);
+    database = new Database(databasePath);
     database.pragma("journal_mode = WAL");
     database.pragma("foreign_keys = ON");
     applyMigrations(database);
     return database;
   } catch (error) {
+    database?.close();
     throw new DatabaseError(`No se ha podido abrir o migrar SQLite en ${databasePath}.`, {
       cause: error
     });

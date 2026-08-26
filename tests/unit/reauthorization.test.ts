@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthorizationService } from "../../src/auth/authorization-service.js";
 import type { EnableBankingClient } from "../../src/enable-banking/client.js";
+import { InvalidStateError } from "../../src/errors.js";
 import { createDatabase } from "../../src/storage/database.js";
 import { RawStore } from "../../src/storage/raw-store.js";
 import { encryptSecret } from "../../src/utils/crypto.js";
@@ -18,6 +19,51 @@ afterEach(async () => {
 });
 
 describe("bank reauthorization", () => {
+  it("rejects a callback created for a different runtime environment", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-callback-environment-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    let authorizationState = "";
+    const authorizeSession = vi.fn();
+    const client = {
+      listBanks: vi.fn().mockResolvedValue([
+        {
+          name: "Demo Bank",
+          country: "ES",
+          psu_types: ["personal"],
+          auth_methods: [],
+          maximum_consent_validity: 7_776_000
+        }
+      ]),
+      startAuthorization: vi.fn((input: { state: string }) => {
+        authorizationState = input.state;
+        return { url: "https://bank.example/authorize" };
+      }),
+      authorizeSession
+    } as unknown as EnableBankingClient;
+    const sandboxService = new AuthorizationService(config, database, client);
+    await sandboxService.connect({
+      bankSearch: "Demo Bank",
+      country: "ES",
+      psuType: "personal"
+    });
+    const productionService = new AuthorizationService(
+      {
+        ...config,
+        appEnv: "production",
+        redirectUrl: "https://localhost:8000/callback"
+      },
+      database,
+      client
+    );
+
+    await expect(
+      productionService.complete({ state: authorizationState, code: "code" })
+    ).rejects.toBeInstanceOf(InvalidStateError);
+    expect(authorizeSession).not.toHaveBeenCalled();
+    database.close();
+  });
+
   it("removes an abandoned new connection without touching established sessions", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-abandoned-connection-"));
     const config = testConfig(root);
@@ -103,12 +149,22 @@ describe("bank reauthorization", () => {
     database
       .prepare("UPDATE pending_authorizations SET expires_at = ?")
       .run("2000-01-01T00:00:00.000Z");
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('other-environment', 'enable-banking', 'production',
+                   'Production Bank', 'ES', 'personal', 'Production personal',
+                   'PENDING_AUTHORIZATION', ?)`
+      )
+      .run(new Date().toISOString());
 
     new AuthorizationService(config, database, client);
 
     expect(
-      database.prepare("SELECT COUNT(*) AS count FROM bank_connections").get()
-    ).toEqual({ count: 0 });
+      database.prepare("SELECT id FROM bank_connections").all()
+    ).toEqual([{ id: "other-environment" }]);
     expect(
       database.prepare("SELECT COUNT(*) AS count FROM pending_authorizations").get()
     ).toEqual({ count: 0 });

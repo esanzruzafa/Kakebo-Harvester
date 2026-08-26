@@ -54,6 +54,7 @@ import {
   type AppLanguage
 } from "../settings/localization-store.js";
 import { startCallbackServer } from "../server.js";
+import { completeDesktopAuthorization } from "./authorization-callback.js";
 import { AccountRepository } from "../storage/repositories/account-repository.js";
 import { resetLocalData } from "../storage/local-data-reset.js";
 import { DesktopRunRepository } from "../storage/repositories/desktop-run-repository.js";
@@ -181,6 +182,10 @@ class AuthorizationCoordinator {
     private readonly application: KakeboApplication,
     private readonly publish: (result: AuthorizationUiResult) => void
   ) {}
+
+  public isInProgress(connectionId: string): boolean {
+    return this.inProgress.has(connectionId);
+  }
 
   public complete(result: AuthorizationCompletionResult): void {
     this.publish({
@@ -440,7 +445,16 @@ async function listenForCallbacks(
 ): Promise<Awaited<ReturnType<typeof startCallbackServer>>> {
   return await startCallbackServer(
     application.config,
-    application.authorization,
+    {
+      complete: async (callback) =>
+        await completeDesktopAuthorization({
+          database: application.database,
+          authorization: application.authorization,
+          isConnectionInProgress: (connectionId) =>
+            coordinator?.isInProgress(connectionId) === true,
+          callback
+        })
+    },
     {
       onAuthorizationResult: (result) => coordinator?.complete(result),
       getLanguage: () => localization?.getLanguage() ?? "en",
@@ -867,7 +881,11 @@ function registerIpc(application: KakeboApplication): void {
   ipcMain.handle("categorization:save", async (event, input: unknown) => {
     assertTrustedSender(event);
     try {
-      return await saveCategorizationSettings(categoriesStore, rulesStore, input);
+      return await trackOperation(
+        withSynchronizationLock(application, async () =>
+          await saveCategorizationSettings(categoriesStore, rulesStore, input)
+        )
+      );
     } catch (error) {
       if (error instanceof CategorizationReferenceError) {
         throw new Error(
@@ -897,8 +915,12 @@ function registerIpc(application: KakeboApplication): void {
   });
   ipcMain.handle("cards:profiles:save", async (event, input: unknown) => {
     assertTrustedSender(event);
-    return await cardProfilesStore.save(
-      z.array(cardImportProfileSchema).parse(input)
+    return await trackOperation(
+      withSynchronizationLock(application, async () =>
+        await cardProfilesStore.save(
+          z.array(cardImportProfileSchema).parse(input)
+        )
+      )
     );
   });
   ipcMain.handle("cards:files:select", async (event) => {
@@ -989,7 +1011,11 @@ function registerIpc(application: KakeboApplication): void {
       );
     }
     const { country } = listBanksSchema.parse(input);
-    const banks = await application.client.listBanks(country);
+    const banks = await trackOperation(
+      withSynchronizationLock(application, async () =>
+        await application.client.listBanks(country)
+      )
+    );
     return banks
       .map<BankOption>((bank) => ({
         name: bank.name,
@@ -1092,7 +1118,11 @@ function registerIpc(application: KakeboApplication): void {
   });
   ipcMain.handle("doctor:run", async (event) => {
     assertTrustedSender(event);
-    return await runDoctor(application.config, application.client);
+    return await trackOperation(
+      withSynchronizationLock(application, async () =>
+        await runDoctor(application.config, application.client)
+      )
+    );
   });
   ipcMain.handle("audit:open", async (event) => {
     assertTrustedSender(event);

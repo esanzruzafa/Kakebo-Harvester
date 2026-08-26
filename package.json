@@ -35,6 +35,7 @@
     "lint": "eslint .",
     "test": "vitest run --maxWorkers=4 --testTimeout=15000 --hookTimeout=15000",
     "audit:production": "npm audit --omit=dev --audit-level=high",
+    "audit:all": "npm audit --audit-level=high",
     "test:watch": "vitest",
     "setup:https": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-local-https.ps1",
     "check": "npm run lint && npm run typecheck && npm test"
@@ -61,6 +62,9 @@
     "typescript-eslint": "^8.38.0",
     "vitest": "^3.2.4"
   },
+  "overrides": {
+    "js-yaml": "4.3.1"
+  },
   "build": {
     "appId": "com.kakeboharvester.desktop",
     "productName": "Kakebo Harvester",
@@ -71,6 +75,7 @@
     "files": [
       "dist/src/**/*",
       "package.json",
+      "LICENSE",
       "!**/*.map"
     ],
     "extraResources": [

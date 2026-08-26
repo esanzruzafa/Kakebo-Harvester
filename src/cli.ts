@@ -204,9 +204,11 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
                   status, valid_until, last_sync_at, reauthorization_required,
                   retry_after_at, online_retry_used,
                   required_psu_headers_json, error_code, error_message_safe
-           FROM bank_connections ORDER BY created_at`
+           FROM bank_connections
+           WHERE environment = ?
+           ORDER BY created_at`
         )
-        .all();
+        .all(config.appEnv);
       console.table(rows);
       return;
     }

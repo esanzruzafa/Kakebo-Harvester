@@ -149,6 +149,26 @@ describe("Enable Banking client", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("treats deletion of an already absent session as idempotent", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: "SESSION_DOES_NOT_EXIST" }), {
+        status: 404
+      })
+    );
+    const client = new EnableBankingClient(config, fetchMock);
+
+    await expect(client.deleteSession("missing-session")).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("classifies EXPIRED_SESSION on HTTP 401 as reauthorization", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-client-"));
     const config = testConfig(root);
@@ -339,6 +359,35 @@ describe("Enable Banking client", () => {
     });
     expect((failure as Error).message).toContain("No es necesario reconectar");
     expect((failure as Error).message).toContain("al menos un minuto");
+  });
+
+  it("ignores an overflowing Retry-After value and keeps a safe fallback", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T10:00:00.000Z"));
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    const client = new EnableBankingClient(
+      config,
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ error: "RATE_LIMIT_EXCEEDED" }), {
+          status: 429,
+          headers: { "retry-after": "9000000000000" }
+        })
+      )
+    );
+
+    const failure = await client
+      .getSession("limited")
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(RateLimitError);
+    expect(failure).toMatchObject({ retryAt: "2026-07-28T10:15:00.000Z" });
   });
 
   it("does not retry a non-idempotent authorization POST after a network failure", async () => {

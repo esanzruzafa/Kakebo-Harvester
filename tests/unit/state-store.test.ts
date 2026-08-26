@@ -26,7 +26,9 @@ describe("authorization state", () => {
       purpose: "connect"
     });
 
+    expect(store.activeConnectionId("secret-state")).toBe(connectionId);
     expect(store.consume("secret-state").bankConnectionId).toBe(connectionId);
+    expect(store.activeConnectionId("secret-state")).toBeUndefined();
     expect(() => store.consume("secret-state")).toThrow(InvalidStateError);
     database.close();
   });

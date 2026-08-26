@@ -8,6 +8,12 @@ const booleanString = z
   .enum(["true", "false"])
   .transform((value) => value === "true");
 
+export function isValidSessionEncryptionKey(value: string): boolean {
+  if (!/^[A-Za-z0-9+/]{43}=$/u.test(value)) return false;
+  const decoded = Buffer.from(value, "base64");
+  return decoded.length === 32 && decoded.toString("base64") === value;
+}
+
 const envSchema = z.object({
   APP_ENV: z.enum(["sandbox", "production"]),
   APP_PORT: z.coerce.number().int().min(1).max(65_535),
@@ -47,13 +53,10 @@ const envSchema = z.object({
   SESSION_ENCRYPTION_KEY: z
     .string()
     .min(1)
-    .refine((value) => {
-      try {
-        return Buffer.from(value, "base64").length === 32;
-      } catch {
-        return false;
-      }
-    }, "debe contener exactamente 32 bytes codificados en base64")
+    .refine(
+      isValidSessionEncryptionKey,
+      "debe contener exactamente 32 bytes codificados en base64 canónico"
+    )
 });
 
 export type AppEnvironment = "sandbox" | "production";
@@ -142,6 +145,21 @@ export function isAppBaseUrlAllowed(
   }
 }
 
+export function isApiBaseUrlAllowed(apiBaseUrl: string): boolean {
+  try {
+    const url = new URL(apiBaseUrl);
+    return (
+      url.protocol === "https:" &&
+      url.username === "" &&
+      url.password === "" &&
+      url.search === "" &&
+      url.hash === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
 function absolutePath(path: string, baseDirectory = process.cwd()): string {
   return isAbsolute(path) ? path : resolve(baseDirectory, path);
 }
@@ -178,6 +196,12 @@ function assertEnvironmentIsolation(config: AppConfig): void {
   if (!isRedirectUrlAllowed(config.appEnv, config.redirectUrl, config.appPort)) {
     throw new ConfigurationError(
       `ENABLE_BANKING_REDIRECT_URL debe ser ${config.appEnv === "production" ? "https" : "http"}://localhost:${config.appPort}/callback.`
+    );
+  }
+
+  if (!isApiBaseUrlAllowed(config.apiBaseUrl)) {
+    throw new ConfigurationError(
+      "ENABLE_BANKING_API_BASE_URL debe usar HTTPS y no puede incluir credenciales, parámetros ni fragmentos."
     );
   }
 
@@ -271,7 +295,7 @@ export function loadConfig(
     appEnv: env.APP_ENV,
     appPort: env.APP_PORT,
     appBaseUrl: env.APP_BASE_URL,
-    apiBaseUrl: env.ENABLE_BANKING_API_BASE_URL.replace(/\/$/, ""),
+    apiBaseUrl: env.ENABLE_BANKING_API_BASE_URL.replace(/\/+$/u, ""),
     applicationId: env.ENABLE_BANKING_APPLICATION_ID,
     privateKeyPath: absolutePath(env.ENABLE_BANKING_PRIVATE_KEY_PATH, baseDirectory),
     redirectUrl: env.ENABLE_BANKING_REDIRECT_URL,

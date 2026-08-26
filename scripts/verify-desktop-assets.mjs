@@ -44,6 +44,10 @@ for (const [source, destination] of desktopAssetDirectories) {
 const packageConfig = JSON.parse(
   await readFile(resolve(projectRoot, "package.json"), "utf8")
 );
+if (!packageConfig.build?.files?.includes("LICENSE")) {
+  throw new Error("The packaged application must include the MIT license text.");
+}
+await access(resolve(projectRoot, "LICENSE"));
 const packagingInputs = [
   packageConfig.main,
   packageConfig.build?.portable?.splashImage,

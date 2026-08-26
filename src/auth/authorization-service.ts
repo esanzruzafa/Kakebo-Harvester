@@ -12,6 +12,7 @@ import {
 } from "../utils/crypto.js";
 import {
   AuthorizationDeniedError,
+  InvalidStateError,
   KakeboError,
   providerErrorCode
 } from "../errors.js";
@@ -29,6 +30,13 @@ export interface AuthorizationCompletionResult {
   bankName: string;
   status: "authorized" | "denied" | "failed";
   message?: string;
+}
+
+export interface AuthorizationCompletionInput {
+  state?: string;
+  code?: string;
+  error?: string;
+  errorDescription?: string;
 }
 
 interface ConnectionRow {
@@ -99,6 +107,7 @@ export class AuthorizationService {
         `SELECT c.id
          FROM bank_connections c
          WHERE c.status = 'PENDING_AUTHORIZATION'
+           AND c.environment = ?
            AND NOT EXISTS (
              SELECT 1 FROM provider_sessions s
              WHERE s.bank_connection_id = c.id
@@ -110,7 +119,7 @@ export class AuthorizationService {
                AND p.expires_at > ?
            )`
       )
-      .all(now) as Array<{ id: string }>;
+      .all(this.config.appEnv, now) as Array<{ id: string }>;
     for (const row of rows) this.abandonConnection(row.id);
   }
 
@@ -139,6 +148,10 @@ export class AuthorizationService {
           .run(connectionId).changes === 1
       );
     })();
+  }
+
+  public pendingConnectionId(state: string | undefined): string | undefined {
+    return state ? this.states.activeConnectionId(state) : undefined;
   }
 
   private async findBank(
@@ -273,14 +286,17 @@ export class AuthorizationService {
     return await this.start(connection, bank, "reauthorize");
   }
 
-  public async complete(input: {
-    state?: string;
-    code?: string;
-    error?: string;
-    errorDescription?: string;
-  }): Promise<AuthorizationCompletionResult> {
+  public async complete(
+    input: AuthorizationCompletionInput
+  ): Promise<AuthorizationCompletionResult> {
     if (!input.state) throw new AuthorizationDeniedError("El callback no contiene state.");
     const pending = this.states.consume(input.state);
+    if (
+      pending.environment !== this.config.appEnv ||
+      pending.redirectUrl !== this.config.redirectUrl
+    ) {
+      throw new InvalidStateError();
+    }
     if (input.error || !input.code) {
       const message = (
         input.errorDescription ??

@@ -96,9 +96,18 @@ export class LocalizationStore {
   }
 
   public async setLanguage(language: AppLanguage): Promise<void> {
+    const previousLanguage = this.language;
+    const previousTranslations = this.translations;
+    const translations = await this.loadLanguageFile(language);
     this.language = language;
-    this.translations = await this.loadLanguageFile(language);
-    await this.writeSettings();
+    this.translations = translations;
+    try {
+      await this.writeSettings();
+    } catch (error) {
+      this.language = previousLanguage;
+      this.translations = previousTranslations;
+      throw error;
+    }
   }
 
   public getLanguage(): AppLanguage {
@@ -106,8 +115,14 @@ export class LocalizationStore {
   }
 
   public async setAuditHistoryLimit(limit: AuditHistoryLimit): Promise<void> {
+    const previous = this.auditHistoryLimit;
     this.auditHistoryLimit = limit;
-    await this.writeSettings();
+    try {
+      await this.writeSettings();
+    } catch (error) {
+      this.auditHistoryLimit = previous;
+      throw error;
+    }
   }
 
   public getAuditHistoryLimit(): AuditHistoryLimit {

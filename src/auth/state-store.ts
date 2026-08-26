@@ -23,6 +23,21 @@ interface PendingRow {
 export class StateStore {
   public constructor(private readonly database: SqliteDatabase) {}
 
+  public activeConnectionId(state: string): string | undefined {
+    const row = this.database
+      .prepare(
+        `SELECT bank_connection_id
+         FROM pending_authorizations
+         WHERE state_hash = ?
+           AND consumed_at IS NULL
+           AND expires_at > ?`
+      )
+      .get(sha256(state), new Date().toISOString()) as
+      | { bank_connection_id: string }
+      | undefined;
+    return row?.bank_connection_id;
+  }
+
   public save(
     state: string,
     pending: PendingAuthorization,

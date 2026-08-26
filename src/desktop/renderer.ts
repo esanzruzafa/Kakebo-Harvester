@@ -1401,7 +1401,7 @@ function renderExclusions(): void {
     valueCell.append(value);
 
     const deleteCell = row.insertCell();
-    const remove = button("Ã—", "icon-button");
+    const remove = button("\u00d7", "icon-button");
     remove.setAttribute(
       "aria-label",
       tf("exclusions.deleteAria", "Delete exclusion {number}", {

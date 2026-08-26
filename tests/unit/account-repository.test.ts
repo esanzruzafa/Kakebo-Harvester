@@ -167,6 +167,24 @@ describe("account synchronization eligibility", () => {
          ) VALUES ('balance', 'duplicate', '100', 'EUR', ?)`
       )
       .run(now);
+    database
+      .prepare(
+        `INSERT INTO desktop_runs (
+           id, started_at, finished_at, status, date_from, date_to, steps_json
+         ) VALUES ('run', ?, ?, 'SUCCESS', '2026-08-01', '2026-08-20', '[]')`
+      )
+      .run(now, now);
+    database
+      .prepare(
+        `INSERT INTO desktop_run_accounts (
+           run_id, account_id, bank_name, account_name, amount, currency,
+           balance_type, balance_reference_date, balance_extracted_at
+         ) VALUES
+           ('run', ?, 'Demo Bank', 'Household', NULL, NULL, NULL, NULL, NULL),
+           ('run', 'duplicate', 'Demo Bank', 'Duplicate', '100', 'EUR',
+            'CLBD', '2026-08-20', ?)`
+      )
+      .run(canonicalId, now);
     const duplicateAccount = repository.findByProviderAccountId(
       "connection",
       "new-provider-id"
@@ -223,6 +241,23 @@ describe("account synchronization eligibility", () => {
     ).toEqual({ account_id: canonicalId });
     expect(database.prepare("SELECT COUNT(*) AS count FROM transactions").get()).toEqual({
       count: 1
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT account_id, account_name, amount, currency, balance_type,
+                  balance_reference_date, balance_extracted_at
+           FROM desktop_run_accounts`
+        )
+        .get()
+    ).toEqual({
+      account_id: canonicalId,
+      account_name: "Household",
+      amount: "100",
+      currency: "EUR",
+      balance_type: "CLBD",
+      balance_reference_date: "2026-08-20",
+      balance_extracted_at: now
     });
     const canonicalAccount = repository.findByProviderAccountId(
       "connection",

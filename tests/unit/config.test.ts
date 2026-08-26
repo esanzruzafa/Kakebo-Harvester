@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  isApiBaseUrlAllowed,
   isAppBaseUrlAllowed,
   isRedirectUrlAllowed,
+  isValidSessionEncryptionKey,
   resolveEnvironmentFile
 } from "../../src/config.js";
 import { ConfigurationError } from "../../src/errors.js";
@@ -54,6 +56,28 @@ describe("environment file selection", () => {
     expect(() => resolveEnvironmentFile("private/.env.production", root)).toThrow(
       ConfigurationError
     );
+  });
+});
+
+describe("security-sensitive environment values", () => {
+  it("accepts only canonical 32-byte base64 encryption keys", () => {
+    const valid = Buffer.alloc(32, 7).toString("base64");
+    expect(isValidSessionEncryptionKey(valid)).toBe(true);
+    expect(isValidSessionEncryptionKey(`${valid}\n`)).toBe(false);
+    expect(isValidSessionEncryptionKey(valid.replace(/=$/u, ""))).toBe(false);
+    expect(isValidSessionEncryptionKey(Buffer.alloc(31, 7).toString("base64"))).toBe(
+      false
+    );
+    expect(isValidSessionEncryptionKey("!".repeat(44))).toBe(false);
+  });
+
+  it("requires a credential-free HTTPS provider base URL", () => {
+    expect(isApiBaseUrlAllowed("https://api.enablebanking.com")).toBe(true);
+    expect(isApiBaseUrlAllowed("https://api.example.com/v1/")).toBe(true);
+    expect(isApiBaseUrlAllowed("http://api.enablebanking.com")).toBe(false);
+    expect(isApiBaseUrlAllowed("https://user:secret@example.com")).toBe(false);
+    expect(isApiBaseUrlAllowed("https://example.com?token=secret")).toBe(false);
+    expect(isApiBaseUrlAllowed("https://example.com/#fragment")).toBe(false);
   });
 });
 

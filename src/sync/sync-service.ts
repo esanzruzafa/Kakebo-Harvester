@@ -218,9 +218,12 @@ export class SyncService {
       .prepare(
         `UPDATE bank_connections
          SET retry_after_at = NULL
-         WHERE retry_after_at IS NOT NULL AND retry_after_at <= ?`
+         WHERE provider = 'enable-banking'
+           AND environment = ?
+           AND retry_after_at IS NOT NULL
+           AND retry_after_at <= ?`
       )
-      .run(now);
+      .run(this.config.appEnv, now);
     const limited = this.database
       .prepare(
         `SELECT id, retry_after_at, error_code, online_retry_used
@@ -296,13 +299,14 @@ export class SyncService {
          FROM bank_connections c
          JOIN provider_sessions s ON s.bank_connection_id = c.id
          WHERE c.provider = 'enable-banking'
+         AND c.environment = ?
          AND c.status = 'AUTHORIZED' AND s.status = 'AUTHORIZED'
          AND s.created_at = (
            SELECT MAX(s2.created_at) FROM provider_sessions s2
            WHERE s2.bank_connection_id = c.id AND s2.status = 'AUTHORIZED'
          )`
       )
-      .all() as ActiveSession[];
+      .all(this.config.appEnv) as ActiveSession[];
     return sessions.filter(
       (session) => !skippedConnectionIds?.has(session.connection_id)
     );
@@ -814,9 +818,11 @@ export class SyncService {
     this.database
       .prepare(
         `UPDATE bank_connections SET last_sync_at = ?
-         WHERE status = 'AUTHORIZED' ${excluded}`
+         WHERE provider = 'enable-banking'
+           AND environment = ?
+           AND status = 'AUTHORIZED' ${excluded}`
       )
-      .run(new Date().toISOString(), ...skippedConnectionIds);
+      .run(new Date().toISOString(), this.config.appEnv, ...skippedConnectionIds);
     return total;
   }
 

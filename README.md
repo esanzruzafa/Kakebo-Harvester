@@ -370,7 +370,7 @@ From a clean checkout:
 
 ```powershell
 npm ci
-npm run audit:production
+npm run audit:all
 npm run check
 npm run build
 npm run desktop:dist

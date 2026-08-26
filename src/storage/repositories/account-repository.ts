@@ -218,6 +218,62 @@ export class AccountRepository {
     }
     this.database
       .prepare(
+        `UPDATE desktop_run_accounts AS canonical
+         SET amount = (
+               SELECT duplicate.amount
+               FROM desktop_run_accounts duplicate
+               WHERE duplicate.run_id = canonical.run_id
+                 AND duplicate.account_id = ?
+             ),
+             currency = (
+               SELECT duplicate.currency
+               FROM desktop_run_accounts duplicate
+               WHERE duplicate.run_id = canonical.run_id
+                 AND duplicate.account_id = ?
+             ),
+             balance_type = (
+               SELECT duplicate.balance_type
+               FROM desktop_run_accounts duplicate
+               WHERE duplicate.run_id = canonical.run_id
+                 AND duplicate.account_id = ?
+             ),
+             balance_reference_date = (
+               SELECT duplicate.balance_reference_date
+               FROM desktop_run_accounts duplicate
+               WHERE duplicate.run_id = canonical.run_id
+                 AND duplicate.account_id = ?
+             ),
+             balance_extracted_at = (
+               SELECT duplicate.balance_extracted_at
+               FROM desktop_run_accounts duplicate
+               WHERE duplicate.run_id = canonical.run_id
+                 AND duplicate.account_id = ?
+             )
+         WHERE canonical.account_id = ?
+           AND EXISTS (
+             SELECT 1
+             FROM desktop_run_accounts duplicate
+             WHERE duplicate.run_id = canonical.run_id
+               AND duplicate.account_id = ?
+               AND duplicate.amount IS NOT NULL
+               AND (
+                 canonical.amount IS NULL
+                 OR COALESCE(duplicate.balance_extracted_at, '') >
+                    COALESCE(canonical.balance_extracted_at, '')
+               )
+           )`
+      )
+      .run(
+        duplicateId,
+        duplicateId,
+        duplicateId,
+        duplicateId,
+        duplicateId,
+        canonicalId,
+        duplicateId
+      );
+    this.database
+      .prepare(
         `INSERT OR IGNORE INTO desktop_run_accounts (
            run_id, account_id, bank_name, account_name, amount, currency,
            balance_type, balance_reference_date, balance_extracted_at

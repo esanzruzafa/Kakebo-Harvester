@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type {
-  AuthorizationCompletionResult,
-  AuthorizationService
+  AuthorizationCompletionInput,
+  AuthorizationCompletionResult
 } from "./authorization-service.js";
 import { safeMessage } from "../utils/text.js";
 
@@ -35,7 +35,9 @@ export interface CallbackControllerEvents {
   translate?: (key: string, fallback: string) => string;
 }
 
-export type AuthorizationCompleter = Pick<AuthorizationService, "complete">;
+export type AuthorizationCompleter = {
+  complete(input: AuthorizationCompletionInput): Promise<AuthorizationCompletionResult>;
+};
 
 export function registerCallback(
   server: FastifyInstance,

@@ -20,6 +20,52 @@ afterEach(async () => {
 });
 
 describe("account detail synchronization selection", () => {
+  it("does not read or mutate sessions from another environment", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-sync-environment-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    const expiredRetry = "2026-01-01T00:00:00.000Z";
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at, retry_after_at
+         ) VALUES ('production-connection', 'enable-banking', 'production',
+                   'Production Bank', 'ES', 'personal', 'Production personal',
+                   'AUTHORIZED', ?, ?)`
+      )
+      .run(now, expiredRetry);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('production-session', 'production-connection', ?, ?, 'AUTHORIZED')`
+      )
+      .run(encryptSecret("production-provider-session", config.sessionEncryptionKey), now);
+    const getSession = vi.fn();
+    const client = { getSession } as unknown as EnableBankingClient;
+
+    await expect(new SyncService(config, database, client).syncAccounts()).resolves.toBe(0);
+    await expect(
+      new SyncService(config, database, client).syncTransactions(
+        "2026-08-01",
+        "2026-08-20"
+      )
+    ).resolves.toMatchObject({ received: 0, inserted: 0 });
+
+    expect(getSession).not.toHaveBeenCalled();
+    expect(
+      database
+        .prepare(
+          `SELECT retry_after_at, last_sync_at
+           FROM bank_connections WHERE id = 'production-connection'`
+        )
+        .get()
+    ).toEqual({ retry_after_at: expiredRetry, last_sync_at: null });
+    database.close();
+  });
+
   it("skips known disabled accounts but still discovers new accounts", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-sync-accounts-"));
     const config = testConfig(root);

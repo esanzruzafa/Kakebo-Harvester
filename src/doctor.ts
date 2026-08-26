@@ -15,6 +15,14 @@ export interface DoctorCheck {
   detail: string;
 }
 
+export function isSupportedNodeVersion(version: string): boolean {
+  const match = /^(\d+)\.(\d+)\.(\d+)/u.exec(version);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 22 || (major === 22 && minor >= 19);
+}
+
 function errorCode(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   if ("code" in error && typeof error.code === "string") return error.code;
@@ -36,10 +44,9 @@ export async function runDoctor(
   client: EnableBankingClient
 ): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
-  const nodeMajor = Number(process.versions.node.split(".")[0]);
   checks.push({
     check: "Node.js",
-    ok: nodeMajor >= 20,
+    ok: isSupportedNodeVersion(process.versions.node),
     detail: process.versions.node
   });
 
