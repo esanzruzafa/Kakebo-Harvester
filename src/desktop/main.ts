@@ -1078,6 +1078,14 @@ function registerIpc(application: KakeboApplication): void {
   });
   ipcMain.handle("connection:reauthorize", async (event, input: unknown) => {
     assertTrustedSender(event);
+    if (activeSync) {
+      throw new Error(
+        tr(
+          "error.reauthorizeDuringSync",
+          "Wait for the synchronization to finish before renewing a bank connection."
+        )
+      );
+    }
     const connectionId = z.string().min(1).parse(input);
     if (!callbackServer) {
       throw new Error("Prepare local HTTPS before renewing a bank connection.");
@@ -1181,23 +1189,45 @@ function registerIpc(application: KakeboApplication): void {
     assertTrustedSender(event);
     const target: OpenPathTarget = openPathTargetSchema.parse(input);
     const data = await bootstrap(application);
-    if (target === "accounts-config") {
-      await accountsStore.save(accountRepository.listEditable());
-    }
-    if (target === "categorization-rules" && !existsSync(data.paths.categorizationRules)) {
-      await rulesStore.saveConfiguration({ exclusions: [], rules: [] });
-    }
-    if (target === "categories-config" && !existsSync(data.paths.categoriesConfig)) {
-      await categoriesStore.save([]);
-    }
-    if (target === "export-settings" && !existsSync(data.paths.exportSettings)) {
-      await exportStore.save(data.exportSettings);
-    }
-    if (
-      target === "card-import-profiles" &&
-      !existsSync(data.paths.cardImportProfiles)
-    ) {
-      await cardProfilesStore.save(data.cardImportProfiles);
+    const requiresPreparation = [
+      "accounts-config",
+      "categorization-rules",
+      "categories-config",
+      "export-settings",
+      "card-import-profiles"
+    ].includes(target);
+    if (requiresPreparation) {
+      await trackOperation(
+        withSynchronizationLock(application, async () => {
+          if (target === "accounts-config") {
+            await accountsStore.save(accountRepository.listEditable());
+          }
+          if (
+            target === "categorization-rules" &&
+            !existsSync(data.paths.categorizationRules)
+          ) {
+            await rulesStore.saveConfiguration({ exclusions: [], rules: [] });
+          }
+          if (
+            target === "categories-config" &&
+            !existsSync(data.paths.categoriesConfig)
+          ) {
+            await categoriesStore.save([]);
+          }
+          if (
+            target === "export-settings" &&
+            !existsSync(data.paths.exportSettings)
+          ) {
+            await exportStore.save(data.exportSettings);
+          }
+          if (
+            target === "card-import-profiles" &&
+            !existsSync(data.paths.cardImportProfiles)
+          ) {
+            await cardProfilesStore.save(data.cardImportProfiles);
+          }
+        })
+      );
     }
     const paths: Record<OpenPathTarget, string> = {
       root: data.paths.root,

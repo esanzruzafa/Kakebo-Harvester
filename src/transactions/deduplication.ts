@@ -4,9 +4,15 @@ import type { NormalizedTransaction } from "./transaction-mapper.js";
 
 export type UpsertOutcome = "inserted" | "updated" | "duplicate" | "reconciled";
 
+export interface FallbackIdentityResolution {
+  occurrence: number;
+  matchExistingFallback: boolean;
+}
+
 interface ExistingTransaction {
   id: string;
   movement_key: string;
+  fallback_occurrence: number | null;
   raw_fingerprint: string;
   reviewed: number;
   category_auto: string | null;
@@ -19,7 +25,10 @@ export const DEFAULT_PENDING_RECONCILIATION_WINDOW_DAYS = 14;
 
 const updateSql = `
   UPDATE transactions SET
-    movement_key = @movement_key,
+    movement_key = CASE
+      WHEN @preserve_movement_key = 1 THEN movement_key
+      ELSE @movement_key
+    END,
     reconciliation_key = @reconciliation_key,
     provider_transaction_id = @provider_transaction_id,
     entry_reference = @entry_reference,
@@ -65,11 +74,12 @@ export class TransactionRepository {
   }
 
   private findIdentityMatches(
-    transaction: NormalizedTransaction
+    transaction: NormalizedTransaction,
+    matchExistingFallback = false
   ): ExistingTransaction[] {
     return this.database
       .prepare(
-        `SELECT id, movement_key, raw_fingerprint, reviewed, category_auto,
+        `SELECT id, movement_key, fallback_occurrence, raw_fingerprint, reviewed, category_auto,
                 subcategory_auto, first_seen_at, last_seen_at
          FROM transactions
          WHERE account_id = @account_id
@@ -103,10 +113,125 @@ export class TransactionRepository {
                AND debtor_name IS @debtor_name
                AND counterparty_iban_masked IS @counterparty_iban_masked
              )
+             OR (
+               @match_existing_fallback = 1
+               AND (@entry_reference IS NOT NULL OR @provider_transaction_id IS NOT NULL)
+               AND entry_reference IS NULL
+               AND provider_transaction_id IS NULL
+               AND fallback_occurrence IS @fallback_occurrence
+               AND status = @status
+               AND booking_date IS @booking_date
+               AND value_date IS @value_date
+               AND transaction_datetime IS @transaction_datetime
+               AND amount = @amount
+               AND currency = @currency
+               AND description_normalized IS @description_normalized
+               AND merchant_name IS @merchant_name
+               AND creditor_name IS @creditor_name
+               AND debtor_name IS @debtor_name
+               AND counterparty_iban_masked IS @counterparty_iban_masked
+             )
            )
          ORDER BY reviewed DESC, first_seen_at, id`
       )
-      .all(transaction) as ExistingTransaction[];
+      .all({ ...transaction, match_existing_fallback: matchExistingFallback ? 1 : 0 }) as ExistingTransaction[];
+  }
+
+  public resolveFallbackIdentity(
+    transaction: NormalizedTransaction,
+    fallbackIdentity: NormalizedTransaction,
+    claimedOccurrences: ReadonlySet<number>
+  ): FallbackIdentityResolution {
+    const exactIdentity =
+      transaction.entry_reference || transaction.provider_transaction_id
+        ? (this.database
+            .prepare(
+              `SELECT fallback_occurrence
+               FROM transactions
+               WHERE account_id = @account_id
+                 AND provider = @provider
+                 AND environment = @environment
+                 AND bank_connection_id = @bank_connection_id
+                 AND (
+                   (@entry_reference IS NOT NULL AND entry_reference = @entry_reference)
+                   OR (
+                     @provider_transaction_id IS NOT NULL
+                     AND provider_transaction_id = @provider_transaction_id
+                   )
+                 )
+               ORDER BY first_seen_at, id
+               LIMIT 1`
+            )
+            .get(transaction) as { fallback_occurrence: number | null } | undefined)
+        : undefined;
+    if (exactIdentity?.fallback_occurrence !== null && exactIdentity !== undefined) {
+      return {
+        occurrence: exactIdentity.fallback_occurrence,
+        matchExistingFallback: false
+      };
+    }
+
+    const stableMatches = this.database
+      .prepare(
+        `SELECT entry_reference, provider_transaction_id, fallback_occurrence
+         FROM transactions
+         WHERE account_id = @account_id
+           AND provider = @provider
+           AND environment = @environment
+           AND bank_connection_id = @bank_connection_id
+           AND status = @status
+           AND booking_date IS @booking_date
+           AND value_date IS @value_date
+           AND transaction_datetime IS @transaction_datetime
+           AND amount = @amount
+           AND currency = @currency
+           AND description_normalized IS @description_normalized
+           AND merchant_name IS @merchant_name
+           AND creditor_name IS @creditor_name
+           AND debtor_name IS @debtor_name
+           AND counterparty_iban_masked IS @counterparty_iban_masked
+         ORDER BY COALESCE(fallback_occurrence, 1), first_seen_at, id`
+      )
+      .all(fallbackIdentity) as Array<{
+        entry_reference: string | null;
+        provider_transaction_id: string | null;
+        fallback_occurrence: number | null;
+      }>;
+    if (exactIdentity) {
+      const unavailable = new Set(claimedOccurrences);
+      for (const match of stableMatches) {
+        if (match.fallback_occurrence !== null) {
+          unavailable.add(match.fallback_occurrence);
+        }
+      }
+      let occurrence = 1;
+      while (unavailable.has(occurrence)) occurrence += 1;
+      return { occurrence, matchExistingFallback: false };
+    }
+    const unclaimedFallback = stableMatches.find(
+      (match) =>
+        match.entry_reference === null &&
+        match.provider_transaction_id === null &&
+        !claimedOccurrences.has(match.fallback_occurrence ?? 1)
+    );
+    if (unclaimedFallback) {
+      return {
+        occurrence: unclaimedFallback.fallback_occurrence ?? 1,
+        matchExistingFallback:
+          transaction.entry_reference !== null ||
+          transaction.provider_transaction_id !== null
+      };
+    }
+
+    const unavailable = new Set(claimedOccurrences);
+    for (const match of stableMatches) {
+      if (match.fallback_occurrence !== null) {
+        unavailable.add(match.fallback_occurrence);
+      }
+    }
+    let occurrence = 1;
+    while (unavailable.has(occurrence)) occurrence += 1;
+    return { occurrence, matchExistingFallback: false };
   }
 
   private consolidateIdentityMatches(
@@ -174,24 +299,33 @@ export class TransactionRepository {
     })();
   }
 
-  public upsert(transaction: NormalizedTransaction): UpsertOutcome {
+  public upsert(
+    transaction: NormalizedTransaction,
+    options: { matchExistingFallback?: boolean } = {}
+  ): UpsertOutcome {
     return this.database.transaction(() =>
-      this.upsertWithinTransaction(transaction)
+      this.upsertWithinTransaction(transaction, options)
     )();
   }
 
   private upsertWithinTransaction(
-    transaction: NormalizedTransaction
+    transaction: NormalizedTransaction,
+    options: { matchExistingFallback?: boolean }
   ): UpsertOutcome {
     const now = new Date().toISOString();
     const existing = this.consolidateIdentityMatches(
-      this.findIdentityMatches(transaction)
+      this.findIdentityMatches(transaction, options.matchExistingFallback)
     );
 
     if (existing) {
       this.database.prepare(updateSql).run({
         ...transaction,
         id: existing.id,
+        preserve_movement_key:
+          existing.fallback_occurrence !== null &&
+          existing.movement_key !== transaction.movement_key
+            ? 1
+            : 0,
         last_seen_at: now,
         imported_at: now
       });
@@ -215,6 +349,7 @@ export class TransactionRepository {
       this.database.prepare(updateSql).run({
         ...transaction,
         id: movementMatch.id,
+        preserve_movement_key: 0,
         last_seen_at: now,
         imported_at: now
       });
@@ -267,6 +402,7 @@ export class TransactionRepository {
         this.database.prepare(updateSql).run({
           ...transaction,
           id: pending.id,
+          preserve_movement_key: 1,
           last_seen_at: now,
           imported_at: now
         });

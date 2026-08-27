@@ -175,7 +175,9 @@ data/production/exports/kakebo_movements.xlsx
 data/production/exports/kakebo_movements.csv
 ```
 
-The **Reset local data** action permanently removes Kakebo Harvester's current and archived XLSX/CSV results, imported bank and card movements, balances, raw provider responses, and execution history after an in-app confirmation. It preserves bank connections and sessions, account preferences, and every configuration file. The next synchronization therefore starts with empty local financial history without requiring bank reconnection.
+The **Reset local data** action permanently removes Kakebo Harvester's current and archived XLSX/CSV results, imported bank and card movements, balances, raw provider responses, and execution history after an in-app confirmation. It preserves bank connections and sessions, account preferences, and every configuration file. The database reset is atomic; result and raw-file cleanup is reported separately so a Windows file lock cannot hide that the financial history was already cleared. If a locked file remains, the application refreshes its empty history, shows a warning, and lets you retry after closing the program that holds the file. The next synchronization therefore starts with empty local financial history without requiring bank reconnection.
+
+For deletion safety, `DATABASE_PATH`, `RAW_DATA_DIRECTORY`, and `EXPORT_DIRECTORY` must use one environment folder: the SQLite file and the distinct `raw` and `exports` directories are siblings. Startup rejects broader or nested layouts before any cleanup can run.
 
 Tabs with edited configuration show an in-app choice to save, discard, or cancel
 before navigation. Closing applies the same choice across every edited section.

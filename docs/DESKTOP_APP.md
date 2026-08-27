@@ -108,6 +108,8 @@ replaces it only after its renderer has loaded.
 
 Transaction retrieval starts with the exact selected `date_from` and `date_to`. If an ASPSP rejects that interval with `WRONG_TRANSACTIONS_PERIOD`, the same account is retried with `strategy=longest`, preserving that strategy across continuation pages. Because this strategy may return a wider interval, normalized movements outside the user-selected dates are discarded before SQLite persistence and export.
 
+Repeated transactions without provider identifiers receive deterministic fallback occurrences across continuation pages. If the provider later adds an entry reference or transaction ID, the repository reconciles it with the matching fallback occurrence instead of inserting a third row. The original movement key remains stable so enrichment is not presented as a newly imported Excel row; subsequent response reordering continues to resolve the same two stored movements.
+
 Enable Banking failures are parsed as the documented `ErrorResponse` shape.
 The HTTP status, textual provider code, and bounded safe message are retained;
 `detail` is never displayed or persisted because it may contain provider
@@ -189,6 +191,8 @@ The current-year count is calculated with local start-of-year and next-start-of-
 
 Failed runs expose their error code and safe message in both audit views.
 Clearing audit history deletes `desktop_run_accounts` and `desktop_runs` in one transaction. It deliberately preserves operational balances, transactions, configuration, raw data, and exports.
+
+The broader **Reset local data** operation commits the SQLite deletion first and treats export/raw-file removal as separate cleanup. Its result distinguishes deleted database rows from `exports` or `raw-data` cleanup warnings. This guarantees that a locked Windows file cannot turn a completed database reset into an apparent total failure; the renderer refreshes immediately and explains which filesystem cleanup must be retried.
 
 ## Account settings
 

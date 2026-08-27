@@ -19,6 +19,13 @@ export function safeMessage(value: unknown): string {
   return message
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
     .replace(/\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/g, "[MASKED_ACCOUNT]")
-    .replace(/\b(code|session_id|token)=([^&\s]+)/gi, "$1=[REDACTED]")
+    .replace(
+      /\b(code|state|session_id|token|access_token|refresh_token)=([^&\s]+)/gi,
+      "$1=[REDACTED]"
+    )
+    .replace(
+      /(["'](?:code|state|session_id|token|access_token|refresh_token)["']\s*:\s*["'])[^"']+/gi,
+      "$1[REDACTED]"
+    )
     .slice(0, 500);
 }

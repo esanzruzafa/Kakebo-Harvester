@@ -6,6 +6,7 @@ import {
   isApiBaseUrlAllowed,
   isAppBaseUrlAllowed,
   isRedirectUrlAllowed,
+  isSafeDataLayout,
   isValidSessionEncryptionKey,
   resolveEnvironmentFile
 } from "../../src/config.js";
@@ -78,6 +79,38 @@ describe("security-sensitive environment values", () => {
     expect(isApiBaseUrlAllowed("https://user:secret@example.com")).toBe(false);
     expect(isApiBaseUrlAllowed("https://example.com?token=secret")).toBe(false);
     expect(isApiBaseUrlAllowed("https://example.com/#fragment")).toBe(false);
+  });
+
+  it("requires raw data and exports to be safe siblings of the database", () => {
+    const dataRoot = join("C:\\", "Kakebo", "data", "production");
+    expect(
+      isSafeDataLayout(
+        join(dataRoot, "kakebo-production.sqlite"),
+        join(dataRoot, "raw"),
+        join(dataRoot, "exports")
+      )
+    ).toBe(true);
+    expect(
+      isSafeDataLayout(
+        join(dataRoot, "kakebo-production.sqlite"),
+        dataRoot,
+        join(dataRoot, "exports")
+      )
+    ).toBe(false);
+    expect(
+      isSafeDataLayout(
+        join(dataRoot, "kakebo-production.sqlite"),
+        join(dataRoot, "raw"),
+        join(dataRoot, "raw")
+      )
+    ).toBe(false);
+    expect(
+      isSafeDataLayout(
+        join(dataRoot, "kakebo-production.sqlite"),
+        join(dataRoot, "raw"),
+        join(dataRoot, "nested", "exports")
+      )
+    ).toBe(false);
   });
 });
 

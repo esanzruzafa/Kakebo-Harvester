@@ -12,20 +12,53 @@ interface CallbackQuery {
   error_description?: string;
 }
 
+const callbackContentSecurityPolicy =
+  "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+
+function callbackInput(query: CallbackQuery): AuthorizationCompletionInput {
+  const state = query.state?.trim();
+  const code = query.code?.trim();
+  const error = query.error?.trim();
+  return {
+    ...(state && /^[A-Za-z0-9_-]{43}$/u.test(state) ? { state } : {}),
+    ...(code && code.length <= 4_096 ? { code } : {}),
+    ...(error && /^[A-Za-z0-9_.-]{1,80}$/u.test(error) ? { error } : {}),
+    ...(query.error_description
+      ? { errorDescription: query.error_description.slice(0, 300) }
+      : {})
+  };
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/gu, (character) => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    };
+    return entities[character] ?? character;
+  });
+}
+
 function page(
   language: "en" | "es",
   title: string,
   message: string,
   closeMessage: string
 ): string {
+  const safeTitle = escapeHtml(title);
+  const safeMessage = escapeHtml(message);
+  const safeCloseMessage = escapeHtml(closeMessage);
   return `<!doctype html>
-<html lang="${language}"><head><meta charset="utf-8"><title>${title}</title></head>
+<html lang="${language}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${callbackContentSecurityPolicy}"><title>${safeTitle}</title></head>
 <body style="margin:0;color:#17251f;background:#f4f0e7;font-family:Arial,Helvetica,sans-serif">
 <main style="max-width:42rem;margin:10vh auto;padding:3rem;border:1px solid #d9d2c3;background:#fffdf8;box-shadow:0 24px 70px rgba(32,45,38,.11)">
 <p style="color:#b8792a;font-size:.78rem;font-weight:700;letter-spacing:.16em;text-transform:uppercase">Kakebo Harvester</p>
-<h1 style="font-family:Georgia,'Times New Roman',serif;font-size:2.4rem">${title}</h1>
-<p style="color:#53635b;line-height:1.65">${message}</p>
-<p style="color:#53635b;line-height:1.65">${closeMessage}</p>
+<h1 style="font-family:Georgia,'Times New Roman',serif;font-size:2.4rem">${safeTitle}</h1>
+<p style="color:#53635b;line-height:1.65">${safeMessage}</p>
+<p style="color:#53635b;line-height:1.65">${safeCloseMessage}</p>
 </main></body></html>`;
 }
 
@@ -45,6 +78,13 @@ export function registerCallback(
   events: CallbackControllerEvents = {}
 ): void {
   server.get<{ Querystring: CallbackQuery }>("/callback", async (request, reply) => {
+    reply.headers({
+      "cache-control": "no-store",
+      "content-security-policy": callbackContentSecurityPolicy,
+      "referrer-policy": "no-referrer",
+      "x-frame-options": "DENY",
+      "x-content-type-options": "nosniff"
+    });
     const language =
       events.getLanguage?.() ??
       (request.headers["accept-language"]?.toLowerCase().startsWith("es")
@@ -59,14 +99,7 @@ export function registerCallback(
       "Ya puedes cerrar esta ventana."
     );
     try {
-      const result = await authorizationService.complete({
-        ...(request.query.state ? { state: request.query.state } : {}),
-        ...(request.query.code ? { code: request.query.code } : {}),
-        ...(request.query.error ? { error: request.query.error } : {}),
-        ...(request.query.error_description
-          ? { errorDescription: request.query.error_description }
-          : {})
-      });
+      const result = await authorizationService.complete(callbackInput(request.query));
       events.onAuthorizationResult?.(result);
       if (result.status === "authorized") {
         return await reply

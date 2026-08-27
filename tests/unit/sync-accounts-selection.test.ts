@@ -20,6 +20,48 @@ afterEach(async () => {
 });
 
 describe("account detail synchronization selection", () => {
+  it("selects exactly one authorized session when timestamps collide", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-session-tie-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', ?, 'BBVA', 'ES', 'personal',
+                   'BBVA personal', 'AUTHORIZED', ?)`
+      )
+      .run(config.appEnv, now);
+    const insertSession = database.prepare(
+      `INSERT INTO provider_sessions (
+         id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+       ) VALUES (?, 'connection', ?, ?, 'AUTHORIZED')`
+    );
+    insertSession.run(
+      "session-z-old",
+      encryptSecret("provider-session-old", config.sessionEncryptionKey),
+      now
+    );
+    insertSession.run(
+      "session-a-new",
+      encryptSecret("provider-session-new", config.sessionEncryptionKey),
+      now
+    );
+    const getSession = vi.fn().mockResolvedValue({
+      status: "AUTHORIZED",
+      accounts: []
+    });
+    const client = { getSession } as unknown as EnableBankingClient;
+
+    await expect(new SyncService(config, database, client).syncAccounts()).resolves.toBe(0);
+
+    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(getSession).toHaveBeenCalledWith("provider-session-new");
+    database.close();
+  });
+
   it("does not read or mutate sessions from another environment", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-sync-environment-"));
     const config = testConfig(root);
@@ -105,7 +147,11 @@ describe("account detail synchronization selection", () => {
     const client = {
       getSession: vi.fn().mockResolvedValue({
         status: "AUTHORIZED",
-        accounts: ["closed-provider-account", "new-provider-account"]
+        accounts: [
+          "closed-provider-account",
+          "new-provider-account",
+          "new-provider-account"
+        ]
       }),
       getAccount
     } as unknown as EnableBankingClient;

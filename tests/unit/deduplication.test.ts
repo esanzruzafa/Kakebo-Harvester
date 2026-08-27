@@ -76,7 +76,7 @@ describe("transaction idempotency", () => {
     const rows = database
       .prepare("SELECT movement_key, status FROM transactions")
       .all();
-    expect(rows).toEqual([{ movement_key: "booked-key", status: "booked" }]);
+    expect(rows).toEqual([{ movement_key: "pending-key", status: "booked" }]);
     database.close();
   });
 

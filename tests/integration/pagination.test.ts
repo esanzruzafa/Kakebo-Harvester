@@ -179,12 +179,16 @@ describe("paginated transaction synchronization", () => {
     expect(
       database
         .prepare(
-          `SELECT entry_reference, booking_date
+          `SELECT entry_reference, booking_date, fallback_occurrence
            FROM transactions`
         )
         .all()
     ).toEqual([
-      { entry_reference: "inside-range", booking_date: "2026-04-15" }
+      {
+        entry_reference: "inside-range",
+        booking_date: "2026-04-15",
+        fallback_occurrence: 1
+      }
     ]);
     database.close();
   });
@@ -255,6 +259,100 @@ describe("paginated transaction synchronization", () => {
         )
         .all()
     ).toEqual([{ fallback_occurrence: 1 }, { fallback_occurrence: 2 }]);
+    database.close();
+  });
+
+  it("reconciles repeated ID-less movements when one later gains a provider ID", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-enriched-idless-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Banco Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('session', 'connection', 'encrypted-session', ?, 'AUTHORIZED')`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, identification_hash,
+           name, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider-account', 'stable-account',
+                   'Cuenta Demo', 1, ?, ?)`
+      )
+      .run(now, now);
+    const idlessMovement = {
+      transaction_amount: { currency: "EUR", amount: "2.50" },
+      credit_debit_indicator: "DBIT" as const,
+      status: "BOOK",
+      booking_date: "2026-07-24",
+      remittance_information: "Identical transit fare"
+    };
+    const identifiedMovement = {
+      ...idlessMovement,
+      transaction_id: "provider-enriched-id"
+    };
+    const responses = [
+      transactionsResponseSchema.parse({
+        transactions: [idlessMovement, idlessMovement],
+        continuation_key: null
+      }),
+      transactionsResponseSchema.parse({
+        transactions: [idlessMovement, identifiedMovement],
+        continuation_key: null
+      }),
+      transactionsResponseSchema.parse({
+        transactions: [identifiedMovement, idlessMovement],
+        continuation_key: null
+      })
+    ];
+    const client = {
+      getTransactions: vi
+        .fn()
+        .mockResolvedValueOnce(responses[0])
+        .mockResolvedValueOnce(responses[1])
+        .mockResolvedValueOnce(responses[2])
+    } as unknown as EnableBankingClient;
+    const service = new SyncService(config, database, client);
+
+    const first = await service.syncTransactions("2026-07-01", "2026-07-31");
+    const initialMovementKeys = database
+      .prepare("SELECT movement_key FROM transactions ORDER BY fallback_occurrence")
+      .all();
+    const enriched = await service.syncTransactions("2026-07-01", "2026-07-31");
+    const reordered = await service.syncTransactions("2026-07-01", "2026-07-31");
+
+    expect(first).toMatchObject({ received: 2, inserted: 2 });
+    expect(enriched).toMatchObject({ received: 2, updated: 1, duplicates: 1 });
+    expect(reordered).toMatchObject({ received: 2, duplicates: 2 });
+    expect(
+      database
+        .prepare("SELECT movement_key FROM transactions ORDER BY fallback_occurrence")
+        .all()
+    ).toEqual(initialMovementKeys);
+    expect(
+      database
+        .prepare(
+          `SELECT provider_transaction_id, fallback_occurrence
+           FROM transactions
+           ORDER BY fallback_occurrence`
+        )
+        .all()
+    ).toEqual([
+      { provider_transaction_id: null, fallback_occurrence: 1 },
+      { provider_transaction_id: "provider-enriched-id", fallback_occurrence: 2 }
+    ]);
     database.close();
   });
 });

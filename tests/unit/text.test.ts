@@ -13,8 +13,8 @@ describe("text utilities", () => {
   it("redacts tokens and IBANs from user-facing errors", () => {
     expect(
       safeMessage(
-        "Authorization: Bearer abc.def.ghi iban ES1212345678901234567890 code=secret"
+        'Authorization: Bearer abc.def.ghi iban ES1212345678901234567890 code=secret&state=csrf-secret {"session_id":"session-secret","refresh_token":"refresh-secret"}'
       )
-    ).not.toMatch(/abc|ES1212|secret/);
+    ).not.toMatch(/abc|ES1212|csrf-secret|session-secret|refresh-secret|code=secret/);
   });
 });

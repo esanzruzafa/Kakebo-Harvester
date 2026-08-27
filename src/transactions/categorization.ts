@@ -5,6 +5,8 @@ import {
 } from "../settings/categorization-rules-store.js";
 import { normalizeText } from "../utils/text.js";
 
+const compiledRegexes = new WeakMap<object, RegExp>();
+
 export class Categorizer {
   private rules: CategorizationRule[] = [];
   private exclusions: CategorizationExclusion[] = [];
@@ -52,5 +54,15 @@ function matches(
       ? descriptionNormalized === value
       : rule.operator === "startsWith"
         ? descriptionNormalized.startsWith(value)
-        : new RegExp(rule.value, "iu").test(descriptionNormalized);
+        : regexFor(rule).test(descriptionNormalized);
+}
+
+function regexFor(
+  rule: CategorizationRule | CategorizationExclusion
+): RegExp {
+  const cached = compiledRegexes.get(rule);
+  if (cached) return cached;
+  const compiled = new RegExp(rule.value, "iu");
+  compiledRegexes.set(rule, compiled);
+  return compiled;
 }

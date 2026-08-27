@@ -2370,13 +2370,18 @@ function setupActions(): void {
     try {
       if (!(await confirmInApp(t("dialog.clearExports.message", "Reset all locally collected financial data?"), t("dialog.clearExports.detail", "This permanently removes exports, movements, balances, raw responses, and execution history. Bank connections, account preferences, and all configuration files are preserved."), t("dialog.clearExports.confirm", "Reset local data")))) return;
       const reset = await window.kakebo.clearExportFiles();
-      showToast(
-        reset.exportFiles + reset.transactions + reset.balances + reset.synchronizationRuns > 0
+      const resetMessage =
+        reset.exportFiles + reset.transactions + reset.balances + reset.synchronizationRuns + reset.desktopRuns > 0
           ? tf("toast.localDataReset", "Local data reset: {transactions} movements and {balances} balances removed.", {
               transactions: reset.transactions,
               balances: reset.balances
             })
-          : t("toast.noLocalDataReset", "There was no local financial history to remove.")
+          : t("toast.noLocalDataReset", "There was no local financial history to remove.");
+      showToast(
+        reset.cleanupWarnings.length > 0
+          ? `${resetMessage} ${t("toast.localDataResetPartial", "Some locked result or raw-response files could not be removed. Close any program using them and reset local data again.")}`
+          : resetMessage,
+        reset.cleanupWarnings.length > 0
       );
       await refresh();
     } catch (error) {

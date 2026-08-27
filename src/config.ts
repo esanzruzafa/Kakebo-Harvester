@@ -164,6 +164,28 @@ function absolutePath(path: string, baseDirectory = process.cwd()): string {
   return isAbsolute(path) ? path : resolve(baseDirectory, path);
 }
 
+function comparablePath(path: string): string {
+  const normalized = resolve(path);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+export function isSafeDataLayout(
+  databasePath: string,
+  rawDataDirectory: string,
+  exportDirectory: string
+): boolean {
+  const dataRoot = comparablePath(dirname(databasePath));
+  const raw = comparablePath(rawDataDirectory);
+  const exports = comparablePath(exportDirectory);
+  return (
+    comparablePath(dirname(raw)) === dataRoot &&
+    comparablePath(dirname(exports)) === dataRoot &&
+    raw !== exports &&
+    raw !== dataRoot &&
+    exports !== dataRoot
+  );
+}
+
 function assertEnvironmentIsolation(config: AppConfig): void {
   const expected = config.appEnv;
   const paths = [
@@ -190,6 +212,18 @@ function assertEnvironmentIsolation(config: AppConfig): void {
   if (!isAppBaseUrlAllowed(config.appEnv, config.appBaseUrl, config.appPort)) {
     throw new ConfigurationError(
       `APP_BASE_URL debe ser ${config.appEnv === "production" ? "https" : "http"}://localhost:${config.appPort}.`
+    );
+  }
+
+  if (
+    !isSafeDataLayout(
+      config.databasePath,
+      config.rawDataDirectory,
+      config.exportDirectory
+    )
+  ) {
+    throw new ConfigurationError(
+      "DATABASE_PATH, RAW_DATA_DIRECTORY y EXPORT_DIRECTORY deben compartir la misma carpeta de entorno; raw y exports deben ser subcarpetas hermanas distintas."
     );
   }
 

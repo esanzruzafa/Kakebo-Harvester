@@ -145,7 +145,7 @@ export function mapTransaction(input: {
     provider_transaction_id: providerTransactionId,
     entry_reference: entryReference,
     fallback_occurrence:
-      entryReference || providerTransactionId ? null : (input.fallbackOccurrence ?? 1),
+      input.fallbackOccurrence ?? (entryReference || providerTransactionId ? null : 1),
     status,
     booking_date: transaction.booking_date ?? null,
     value_date: transaction.value_date ?? null,

@@ -301,10 +301,12 @@ export class SyncService {
          WHERE c.provider = 'enable-banking'
          AND c.environment = ?
          AND c.status = 'AUTHORIZED' AND s.status = 'AUTHORIZED'
-         AND s.created_at = (
-           SELECT MAX(s2.created_at) FROM provider_sessions s2
-           WHERE s2.bank_connection_id = c.id AND s2.status = 'AUTHORIZED'
-         )`
+          AND s.id = (
+            SELECT s2.id FROM provider_sessions s2
+            WHERE s2.bank_connection_id = c.id AND s2.status = 'AUTHORIZED'
+            ORDER BY s2.created_at DESC, s2.rowid DESC
+            LIMIT 1
+          )`
       )
       .all(this.config.appEnv) as ActiveSession[];
     return sessions.filter(
@@ -455,11 +457,12 @@ export class SyncService {
         if (session.status !== "AUTHORIZED") {
           throw new ReauthorizationRequiredError(`La sesión está en estado ${session.status}.`);
         }
+        const sessionAccountIds = [...new Set(session.accounts)];
         this.accounts.reconcileProviderActiveSet(
           stored.connection_id,
-          session.accounts
+          sessionAccountIds
         );
-        for (const accountId of session.accounts) {
+        for (const accountId of sessionAccountIds) {
           if (!this.accounts.shouldRefreshDetails(stored.connection_id, accountId)) {
             continue;
           }
@@ -619,7 +622,7 @@ export class SyncService {
   ): Promise<SyncSummary> {
     const summary = emptySummary();
     const seenKeys = new Set<string>();
-    const fallbackOccurrences = new Map<string, number>();
+    const fallbackOccurrences = new Map<string, Set<number>>();
     let continuationKey: string | undefined;
     let page = 1;
     let strategy: "longest" | undefined;
@@ -665,23 +668,6 @@ export class SyncService {
             rawPath: raw.path,
             fallbackOccurrence: 1
           });
-          if (
-            normalized.entry_reference === null &&
-            normalized.provider_transaction_id === null
-          ) {
-            const fallbackIdentity = normalized.movement_key;
-            const occurrence = (fallbackOccurrences.get(fallbackIdentity) ?? 0) + 1;
-            fallbackOccurrences.set(fallbackIdentity, occurrence);
-            if (occurrence > 1) {
-              normalized = mapTransaction({
-                transaction: providerTransaction,
-                account,
-                environment: this.config.appEnv,
-                rawPath: raw.path,
-                fallbackOccurrence: occurrence
-              });
-            }
-          }
           const movementDate =
             normalized.booking_date ??
             normalized.transaction_datetime?.slice(0, 10) ??
@@ -692,11 +678,38 @@ export class SyncService {
           ) {
             continue;
           }
+          const fallbackTransaction = { ...providerTransaction };
+          delete fallbackTransaction.entry_reference;
+          delete fallbackTransaction.transaction_id;
+          const fallbackIdentity = mapTransaction({
+            transaction: fallbackTransaction,
+            account,
+            environment: this.config.appEnv,
+            rawPath: raw.path,
+            fallbackOccurrence: 1
+          });
+          const claimed = fallbackOccurrences.get(fallbackIdentity.movement_key) ?? new Set<number>();
+          const resolution = this.transactions.resolveFallbackIdentity(
+            normalized,
+            fallbackIdentity,
+            claimed
+          );
+          claimed.add(resolution.occurrence);
+          fallbackOccurrences.set(fallbackIdentity.movement_key, claimed);
+          normalized = mapTransaction({
+            transaction: providerTransaction,
+            account,
+            environment: this.config.appEnv,
+            rawPath: raw.path,
+            fallbackOccurrence: resolution.occurrence
+          });
           summary.received += 1;
           const category = this.categorizer.categorize(normalized.description_normalized);
           normalized.category_auto = category.category;
           normalized.subcategory_auto = category.subcategory;
-          const outcome = this.transactions.upsert(normalized);
+          const outcome = this.transactions.upsert(normalized, {
+            matchExistingFallback: resolution.matchExistingFallback
+          });
           if (outcome === "inserted") summary.inserted += 1;
           if (outcome === "updated") summary.updated += 1;
           if (outcome === "duplicate") summary.duplicates += 1;
