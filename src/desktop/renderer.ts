@@ -24,6 +24,7 @@ import type {
   SyncProgressEvent,
   SyncStep
 } from "../sync/sync-runner.js";
+import type { FollowUpWarning } from "./committed-operations.js";
 
 interface ProgressEntry {
   key: string;
@@ -76,6 +77,22 @@ function tf(
     result = result.replaceAll(`{${name}}`, String(value));
   }
   return result;
+}
+
+function followUpWarningMessage(warnings: FollowUpWarning[]): string {
+  return warnings
+    .map((warning) =>
+      warning.step === "export"
+        ? tf("warning.export", "Export: {message}", {
+            message: warning.message
+          })
+        : tf(
+            "warning.accountsConfig",
+            "Account configuration: {message}",
+            { message: warning.message }
+          )
+    )
+    .join(" · ");
 }
 
 function applyTranslations(): void {
@@ -201,10 +218,11 @@ function errorMessage(error: unknown): string {
   return message;
 }
 
-function showToast(message: string, isError = false): void {
+function showToast(message: string, tone: boolean | "warning" = false): void {
   const toast = element<HTMLDivElement>("toast");
   toast.textContent = message;
-  toast.classList.toggle("is-error", isError);
+  toast.classList.toggle("is-error", tone === true);
+  toast.classList.toggle("is-warning", tone === "warning");
   toast.hidden = false;
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
@@ -620,9 +638,12 @@ async function startBankConnection(): Promise<void> {
         "Waiting for the bank authorization. Complete it in your browser, then return here."
       )
     );
-    await connection;
+    const result = await connection;
     element<HTMLElement>("connection-wizard").hidden = true;
     await refresh();
+    if (result.warnings.length > 0) {
+      showToast(followUpWarningMessage(result.warnings), "warning");
+    }
   } catch (error) {
     const message = errorMessage(error);
     setConnectionWizardStatus(message, true);
@@ -735,8 +756,17 @@ function renderConnections(): void {
         reconnect.disabled = true;
         reconnect.textContent = t("connections.waiting", "Waiting for the bank…");
         try {
-          await window.kakebo.reauthorize(connection.id);
-          showToast(t("toast.connectionRenewed", "The bank connection was renewed."));
+          const result = await window.kakebo.reauthorize(connection.id);
+          const renewed = t(
+            "toast.connectionRenewed",
+            "The bank connection was renewed."
+          );
+          showToast(
+            result.warnings.length > 0
+              ? `${renewed} ${followUpWarningMessage(result.warnings)}`
+              : renewed,
+            result.warnings.length > 0 ? "warning" : false
+          );
           await refresh();
         } catch (error) {
           showToast(errorMessage(error), true);
@@ -765,7 +795,7 @@ function renderConnections(): void {
         revoke.textContent = t("connections.revoking", "Revoking…");
         try {
           const result = await window.kakebo.disconnectBank(connection.id);
-          showToast(
+          const revoked =
             result.remoteRevocationAttempted && result.remoteRevoked
               ? t(
                   "toast.connectionRevoked",
@@ -774,7 +804,12 @@ function renderConnections(): void {
               : t(
                   "toast.connectionRevokedLocalOnly",
                   "Local connection revoked. Historical movements were preserved; also revoke the consent from the bank or Enable Banking."
-                )
+                );
+          showToast(
+            result.warnings.length > 0
+              ? `${revoked} ${followUpWarningMessage(result.warnings)}`
+              : revoked,
+            result.warnings.length > 0 ? "warning" : false
           );
           await refresh();
         } catch (error) {
@@ -2532,10 +2567,16 @@ function setupActions(): void {
       );
       summary.hidden = false;
       showToast(
-        t(
-          "toast.cardsImported",
-          "Card movements were merged, categorized, and exported."
-        )
+        result.warnings.length > 0
+          ? `${t(
+              "toast.cardsImportedWithWarnings",
+              "Card movements were merged and categorized, but follow-up tasks need attention."
+            )} ${followUpWarningMessage(result.warnings)}`
+          : t(
+              "toast.cardsImported",
+              "Card movements were merged, categorized, and exported."
+            ),
+        result.warnings.length > 0 ? "warning" : false
       );
       await refresh();
     } catch (error) {
@@ -2654,11 +2695,18 @@ function setupActions(): void {
     try {
       const result = await window.kakebo.reapplyRules();
       showToast(
-        tf(
-          "toast.rulesReapplied",
-          "{count} movements reviewed and the export was updated.",
-          { count: result.updated }
-        )
+        result.warnings.length > 0
+          ? `${tf(
+              "toast.rulesReappliedWithWarnings",
+              "{count} movements were reviewed, but the export needs attention.",
+              { count: result.updated }
+            )} ${followUpWarningMessage(result.warnings)}`
+          : tf(
+              "toast.rulesReapplied",
+              "{count} movements reviewed and the export was updated.",
+              { count: result.updated }
+            ),
+        result.warnings.length > 0 ? "warning" : false
       );
     } catch (error) {
       showToast(errorMessage(error), true);

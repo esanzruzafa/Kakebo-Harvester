@@ -379,6 +379,7 @@
   "toast.cardProfilesSaved": "Perfiles de importación de tarjetas guardados.",
   "toast.changesSaved": "Cambios guardados.",
   "toast.cardsImported": "Los movimientos de tarjetas se han unificado, categorizado y exportado.",
+  "toast.cardsImportedWithWarnings": "Los movimientos de tarjetas se han unificado y categorizado, pero hay tareas posteriores que requieren atención.",
   "toast.categoriesSaved": "Dependencias de categorías guardadas.",
   "toast.commandCopied": "Comando copiado.",
   "toast.connectionCompleted": "{bank}: conexión completada.",
@@ -394,7 +395,10 @@
   "toast.languageChanged": "Idioma cambiado.",
   "toast.noLocalDataReset": "No había historial financiero local que eliminar.",
   "toast.rulesReapplied": "{count} movimientos revisados y exportación actualizada.",
+  "toast.rulesReappliedWithWarnings": "Se han revisado {count} movimientos, pero la exportación requiere atención.",
   "toast.rulesSaved": "Reglas guardadas.",
   "toast.syncCompleted": "Sincronización completada correctamente.",
-  "toast.syncCompletedWithWarnings": "La sincronización se ha completado con incidencias en cuentas."
+  "toast.syncCompletedWithWarnings": "La sincronización se ha completado con incidencias en cuentas.",
+  "warning.accountsConfig": "Configuración de cuentas: {message}",
+  "warning.export": "Exportación: {message}"
 }

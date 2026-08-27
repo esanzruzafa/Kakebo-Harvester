@@ -89,6 +89,12 @@ import type {
   DesktopBootstrap,
   OpenPathTarget
 } from "./contracts.js";
+import {
+  runCardImportOperation,
+  runConnectionOperation,
+  runDisconnectOperation,
+  runRecategorizationOperation
+} from "./committed-operations.js";
 
 const UI_ZOOM_FACTOR = 0.945;
 
@@ -963,13 +969,16 @@ function registerIpc(application: KakeboApplication): void {
     const request = cardImportRequestSchema.parse(input);
     return await trackOperation(
       withSynchronizationLock(application, async () => {
-        const imported = await cardImport.import(request);
-        const exported = await new CsvExporter(
-          application.config,
-          application.database
-        ).export({ highlightSource: "cards" });
-        await accountsStore.save(accountRepository.listEditable());
-        return { ...imported, exportPath: exported.path };
+        return await runCardImportOperation({
+          importCards: async () => await cardImport.import(request),
+          exportCards: async () =>
+            await new CsvExporter(
+              application.config,
+              application.database
+            ).export({ highlightSource: "cards" }),
+          saveAccounts: async () =>
+            await accountsStore.save(accountRepository.listEditable())
+        });
       })
     );
   });
@@ -991,12 +1000,14 @@ function registerIpc(application: KakeboApplication): void {
     assertTrustedSender(event);
     return await trackOperation(
       withSynchronizationLock(application, async () => {
-        const updated = application.sync.recategorizeTransactions();
-        const exported = await new CsvExporter(
-          application.config,
-          application.database
-        ).export();
-        return { updated, exportPath: exported.path };
+        return await runRecategorizationOperation({
+          recategorize: () => application.sync.recategorizeTransactions(),
+          exportTransactions: async () =>
+            await new CsvExporter(
+              application.config,
+              application.database
+            ).export()
+        });
       })
     );
   });
@@ -1069,10 +1080,13 @@ function registerIpc(application: KakeboApplication): void {
       );
     }
     const request = connectBankSchema.parse(input);
-    await trackOperation(
+    return await trackOperation(
       withSynchronizationLock(application, async () => {
-        await authorizationCoordinator.connect(request);
-        await accountsStore.save(accountRepository.listEditable());
+        return await runConnectionOperation({
+          connect: async () => await authorizationCoordinator.connect(request),
+          saveAccounts: async () =>
+            await accountsStore.save(accountRepository.listEditable())
+        });
       })
     );
   });
@@ -1094,9 +1108,14 @@ function registerIpc(application: KakeboApplication): void {
     if (!authorizationCoordinator) {
       throw new Error("Authorization coordinator is unavailable.");
     }
-    await trackOperation(
+    return await trackOperation(
       withSynchronizationLock(application, async () => {
-        await authorizationCoordinator.reauthorize([connectionId]);
+        return await runConnectionOperation({
+          connect: async () =>
+            await authorizationCoordinator.reauthorize([connectionId]),
+          saveAccounts: async () =>
+            await accountsStore.save(accountRepository.listEditable())
+        });
       })
     );
   });
@@ -1113,14 +1132,17 @@ function registerIpc(application: KakeboApplication): void {
     const connectionId = z.string().min(1).parse(input);
     return await trackOperation(
       withSynchronizationLock(application, async () => {
-        const result = await disconnectBankConnection({
-          config: application.config,
-          database: application.database,
-          client: application.client,
-          connectionId
+        return await runDisconnectOperation({
+          disconnect: async () =>
+            await disconnectBankConnection({
+              config: application.config,
+              database: application.database,
+              client: application.client,
+              connectionId
+            }),
+          saveAccounts: async () =>
+            await accountsStore.save(accountRepository.listEditable())
         });
-        await accountsStore.save(accountRepository.listEditable());
-        return result;
       })
     );
   });

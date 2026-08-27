@@ -1300,6 +1300,12 @@ body[data-export-format="xlsx"] .csv-option {
   background: var(--danger-soft);
 }
 
+.toast.is-warning {
+  border-color: #dfc99f;
+  color: #765116;
+  background: #faf1e2;
+}
+
 @media (max-width: 1120px) {
   .main-content {
     padding-right: 28px;

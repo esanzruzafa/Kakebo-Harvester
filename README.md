@@ -219,10 +219,13 @@ recognized without treating one coincidental movement from a different statement
 as overlap. The **Reset local data** action clears this operational identity
 together with the imported movements.
 
-Importing selected files is atomic. Valid rows are deduplicated, categorized with
-the current rules, and followed by a normal configured XLSX/CSV export. Manual
-card accounts appear in the aliases table and can be excluded from exports, but
-they are never sent to Enable Banking.
+Importing selected files is atomic. Valid rows are deduplicated and categorized
+before the database transaction commits. Export generation and the readable
+account-configuration snapshot are independent follow-up tasks: if either fails,
+the application keeps and displays the committed import counts, refreshes the
+interface, and reports a specific warning instead of claiming that the import
+failed. Manual card accounts appear in the aliases table and can be excluded
+from exports, but they are never sent to Enable Banking.
 
 ## Local execution audit
 

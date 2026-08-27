@@ -1,10 +1,6 @@
 import type { DoctorCheck } from "../doctor.js";
 import type { PsuType } from "../config.js";
-import type { DisconnectResult } from "../auth/disconnect-service.js";
-import type {
-  CardImportRequest,
-  CardImportResult
-} from "../cards/card-import-service.js";
+import type { CardImportRequest } from "../cards/card-import-service.js";
 import type { CardImportProfile } from "../settings/card-import-profiles-store.js";
 import type { CategoryDefinition } from "../settings/categories-store.js";
 import type {
@@ -27,6 +23,12 @@ import type {
   SyncRequest,
   SyncRunResult
 } from "../sync/sync-runner.js";
+import type {
+  CardImportOperationResult,
+  ConnectionOperationResult,
+  DisconnectOperationResult,
+  RecategorizationOperationResult
+} from "./committed-operations.js";
 
 export interface ConnectionView {
   id: string;
@@ -122,10 +124,6 @@ export interface SelectedCardFile {
   name: string;
 }
 
-export interface CardImportUiResult extends CardImportResult {
-  exportPath: string;
-}
-
 export interface KakeboDesktopApi {
   bootstrap: () => Promise<DesktopBootstrap>;
   startSync: (request: SyncRequest) => Promise<SyncRunResult>;
@@ -148,16 +146,22 @@ export interface KakeboDesktopApi {
     profiles: CardImportProfile[]
   ) => Promise<CardImportProfile[]>;
   selectCardFiles: () => Promise<SelectedCardFile[]>;
-  importCardFiles: (request: CardImportRequest) => Promise<CardImportUiResult>;
+  importCardFiles: (
+    request: CardImportRequest
+  ) => Promise<CardImportOperationResult>;
   setLanguage: (language: AppLanguage) => Promise<DesktopBootstrap>;
   setAuditHistoryLimit: (
     limit: AuditHistoryLimit
   ) => Promise<AuditRunView[]>;
-  reapplyRules: () => Promise<{ updated: number; exportPath: string }>;
+  reapplyRules: () => Promise<RecategorizationOperationResult>;
   listBanks: (country: string) => Promise<BankOption[]>;
-  connectBank: (request: ConnectBankRequest) => Promise<void>;
-  reauthorize: (connectionId: string) => Promise<void>;
-  disconnectBank: (connectionId: string) => Promise<DisconnectResult>;
+  connectBank: (
+    request: ConnectBankRequest
+  ) => Promise<ConnectionOperationResult>;
+  reauthorize: (connectionId: string) => Promise<ConnectionOperationResult>;
+  disconnectBank: (
+    connectionId: string
+  ) => Promise<DisconnectOperationResult>;
   runDoctor: () => Promise<DoctorCheck[]>;
   openAuditHistory: () => Promise<void>;
   clearAuditHistory: () => Promise<number>;

@@ -379,6 +379,7 @@
   "toast.cardProfilesSaved": "Card import profiles saved.",
   "toast.changesSaved": "Changes saved.",
   "toast.cardsImported": "Card movements were merged, categorized, and exported.",
+  "toast.cardsImportedWithWarnings": "Card movements were merged and categorized, but follow-up tasks need attention.",
   "toast.categoriesSaved": "Category dependencies saved.",
   "toast.commandCopied": "Command copied.",
   "toast.connectionCompleted": "{bank}: connection completed.",
@@ -394,7 +395,10 @@
   "toast.languageChanged": "Language changed.",
   "toast.noLocalDataReset": "There was no local financial history to remove.",
   "toast.rulesReapplied": "{count} movements reviewed and the export was updated.",
+  "toast.rulesReappliedWithWarnings": "{count} movements were reviewed, but the export needs attention.",
   "toast.rulesSaved": "Rules saved.",
   "toast.syncCompleted": "Synchronization completed successfully.",
-  "toast.syncCompletedWithWarnings": "Synchronization completed with account issues."
+  "toast.syncCompletedWithWarnings": "Synchronization completed with account issues.",
+  "warning.accountsConfig": "Account configuration: {message}",
+  "warning.export": "Export: {message}"
 }

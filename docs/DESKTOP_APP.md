@@ -328,10 +328,16 @@ semantic matches before they are treated as overlapping, preserving genuinely
 distinct identical purchases from separate statements. Legacy rows without a
 mapping use the stored source path once and populate the mapping on reimport.
 
-After commit, the desktop handler regenerates the configured export and account
-settings snapshot. Local card connections are excluded explicitly from
-authorization checks, Enable Banking sessions, balance calls, and transaction
-requests. Their accounts remain available for aliases and export inclusion.
+After commit, the desktop handler independently regenerates the configured export
+and account-settings snapshot. Failures in either follow-up are converted to safe,
+step-specific warnings while the committed import result and row counts are
+returned to the renderer. Both tasks are attempted, so one failure cannot suppress
+the other or turn persisted financial data into an apparent total import failure.
+The same committed-operation boundary protects history recategorization and the
+account snapshot written after connect, renew, or revoke operations. Local card
+connections are excluded explicitly from authorization checks, Enable Banking
+sessions, balance calls, and transaction requests. Their accounts remain
+available for aliases and export inclusion.
 
 There is no mathematically perfect identity when a source statement omits ids
 and contains two indistinguishable rows. The ordinal distinguishes such rows
