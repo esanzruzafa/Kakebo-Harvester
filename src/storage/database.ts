@@ -3,23 +3,38 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { DatabaseError } from "../errors.js";
-import { migrations } from "./migration-manifest.js";
+import { latestDatabaseVersion, migrations } from "./migration-manifest.js";
 
 export type SqliteDatabase = Database.Database;
 
 function applyMigrations(database: SqliteDatabase): void {
-  let currentVersion = database.pragma("user_version", { simple: true }) as number;
-  for (const migration of migrations) {
-    if (migration.version <= currentVersion) continue;
-    const path = fileURLToPath(new URL(`migrations/${migration.filename}`, import.meta.url));
-    const sql = readFileSync(path, "utf8");
-    const migrate = database.transaction(() => {
+  const observedVersion = database.pragma("user_version", { simple: true }) as number;
+  if (observedVersion > latestDatabaseVersion) {
+    throw new Error(
+      `SQLite schema version ${observedVersion} is newer than supported version ${latestDatabaseVersion}.`
+    );
+  }
+  if (observedVersion === latestDatabaseVersion) return;
+
+  const migrate = database.transaction(() => {
+    let currentVersion = database.pragma("user_version", { simple: true }) as number;
+    if (currentVersion > latestDatabaseVersion) {
+      throw new Error(
+        `SQLite schema version ${currentVersion} is newer than supported version ${latestDatabaseVersion}.`
+      );
+    }
+    for (const migration of migrations) {
+      if (migration.version <= currentVersion) continue;
+      const path = fileURLToPath(
+        new URL(`migrations/${migration.filename}`, import.meta.url)
+      );
+      const sql = readFileSync(path, "utf8");
       database.exec(sql);
       database.pragma(`user_version = ${migration.version}`);
-    });
-    migrate();
-    currentVersion = migration.version;
-  }
+      currentVersion = migration.version;
+    }
+  });
+  migrate.immediate();
 }
 
 export function createDatabase(databasePath: string): SqliteDatabase {
@@ -27,6 +42,7 @@ export function createDatabase(databasePath: string): SqliteDatabase {
   try {
     mkdirSync(dirname(databasePath), { recursive: true });
     database = new Database(databasePath);
+    database.pragma("busy_timeout = 30000");
     database.pragma("journal_mode = WAL");
     database.pragma("foreign_keys = ON");
     applyMigrations(database);

@@ -34,6 +34,7 @@ export async function resetLocalData(
   const cleanupWarnings: LocalDataResetResult["cleanupWarnings"] = [];
   const result = database.transaction(() => {
     const transactions = database.prepare("DELETE FROM transactions").run().changes;
+    database.prepare("DELETE FROM card_import_source_rows").run();
     database.prepare("DELETE FROM transactions_raw").run();
     const balances = database.prepare("DELETE FROM balances").run().changes;
     const synchronizationRuns = database.prepare("DELETE FROM sync_runs").run().changes;

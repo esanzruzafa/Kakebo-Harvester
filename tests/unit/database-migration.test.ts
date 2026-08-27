@@ -2,9 +2,11 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Worker } from "node:worker_threads";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDatabase } from "../../src/storage/database.js";
+import { latestDatabaseVersion } from "../../src/storage/migration-manifest.js";
 import { testConfig } from "../helpers.js";
 
 let root: string | undefined;
@@ -15,6 +17,109 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it(
+    "waits for a competing migration and rechecks the schema version",
+    async () => {
+      root = await mkdtemp(join(tmpdir(), "kakebo-concurrent-migration-"));
+      const config = testConfig(root);
+      const legacy = new Database(config.databasePath);
+      for (const filename of [
+        "001_initial.sql",
+        "002_desktop.sql",
+        "003_audit_and_exports.sql",
+        "004_provider_errors.sql",
+        "005_psu_context.sql",
+        "006_account_sync_errors.sql",
+        "007_correct_legacy_rate_limit_backfill.sql",
+        "008_account_identification_hashes.sql"
+      ]) {
+        legacy.exec(
+          readFileSync(
+            resolve("src", "storage", "migrations", filename),
+            "utf8"
+          )
+        );
+      }
+      legacy.pragma("user_version = 8");
+      legacy.close();
+
+      const worker = new Worker(
+        `
+          const { parentPort, workerData } = require("node:worker_threads");
+          const { readFileSync } = require("node:fs");
+          const Database = require(workerData.modulePath);
+          const database = new Database(workerData.databasePath);
+          database.pragma("busy_timeout = 30000");
+          database.pragma("journal_mode = WAL");
+          database.exec("BEGIN IMMEDIATE");
+          database.exec(readFileSync(workerData.migrationPath, "utf8"));
+          database.pragma("user_version = 9");
+          parentPort.postMessage("locked");
+          setTimeout(() => {
+            database.exec("COMMIT");
+            database.close();
+          }, 150);
+        `,
+        {
+          eval: true,
+          workerData: {
+            databasePath: config.databasePath,
+            migrationPath: resolve(
+              "src",
+              "storage",
+              "migrations",
+              "009_transaction_fallback_occurrence.sql"
+            ),
+            modulePath: resolve("node_modules", "better-sqlite3")
+          }
+        }
+      );
+      await new Promise<void>((resolveLock, reject) => {
+        worker.once("message", (message) => {
+          if (message === "locked") resolveLock();
+          else reject(new Error(`Unexpected worker message: ${String(message)}`));
+        });
+        worker.once("error", reject);
+      });
+
+      try {
+        const migrated = createDatabase(config.databasePath);
+        expect(migrated.pragma("user_version", { simple: true })).toBe(
+          latestDatabaseVersion
+        );
+        expect(
+          migrated
+            .prepare(
+              `SELECT name FROM sqlite_master
+               WHERE type = 'table' AND name = 'card_import_source_rows'`
+            )
+            .get()
+        ).toEqual({ name: "card_import_source_rows" });
+        migrated.close();
+      } finally {
+        await worker.terminate();
+      }
+    },
+    15_000
+  );
+
+  it("rejects a database created by a newer application version", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-newer-schema-"));
+    const config = testConfig(root);
+    const current = createDatabase(config.databasePath);
+    current.pragma(`user_version = ${latestDatabaseVersion + 1}`);
+    current.close();
+
+    expect(() => createDatabase(config.databasePath)).toThrow(
+      "No se ha podido abrir o migrar SQLite"
+    );
+    const unchanged = new Database(config.databasePath);
+    expect(unchanged.pragma("user_version", { simple: true })).toBe(
+      latestDatabaseVersion + 1
+    );
+    unchanged.close();
+  });
+
   it("upgrades a version-one database without losing existing account data", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-database-migration-"));
     const config = testConfig(root);
@@ -53,7 +158,9 @@ describe("database migrations", () => {
     legacy.close();
 
     const migrated = createDatabase(config.databasePath);
-    expect(migrated.pragma("user_version", { simple: true })).toBe(9);
+    expect(migrated.pragma("user_version", { simple: true })).toBe(
+      latestDatabaseVersion
+    );
     expect(
       migrated
         .prepare(
@@ -202,7 +309,9 @@ describe("database migrations", () => {
       legacy.close();
 
       const migrated = createDatabase(config.databasePath);
-      expect(migrated.pragma("user_version", { simple: true })).toBe(9);
+      expect(migrated.pragma("user_version", { simple: true })).toBe(
+        latestDatabaseVersion
+      );
       expect(
         migrated
           .prepare(

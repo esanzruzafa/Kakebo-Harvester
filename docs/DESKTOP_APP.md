@@ -74,6 +74,14 @@ Runtime configuration is divided by responsibility:
 
 JSON writes use a temporary file and atomic rename. Existing configuration receives a local `.backup` copy before replacement.
 
+SQLite startup configures a bounded busy timeout before enabling WAL. When an
+older schema needs migration, all pending migrations run under one
+`BEGIN IMMEDIATE` transaction and reread `user_version` after acquiring the
+write reservation. Concurrent desktop and scheduled processes therefore wait
+for the first migrator and then skip its completed work instead of repeating an
+`ALTER TABLE`. A schema newer than the bundled manifest is rejected rather than
+being opened by incompatible application code.
+
 ## Localization
 
 The main process loads the selected translation JSON during startup and passes its dictionary to the renderer. New installations select Spanish when the Windows locale starts with `es`; all other locales select English. The choice is persisted in `ui-settings.json`.
@@ -311,7 +319,14 @@ All files are parsed before SQLite changes begin. A database transaction then:
 3. hashes profile id, normalized dates, amount, currency, description, and an
    occurrence ordinal into a deterministic provider id;
 4. uses the existing transaction repository for insert/update/duplicate handling;
-5. applies the current categorization rules.
+5. records a hashed source-path, semantic-row, and occurrence mapping;
+6. applies the current categorization rules.
+
+The source-row mapping recognizes a workbook updated in place even when only
+one old row overlaps. Cross-path statements still require two independent
+semantic matches before they are treated as overlapping, preserving genuinely
+distinct identical purchases from separate statements. Legacy rows without a
+mapping use the stored source path once and populate the mapping on reimport.
 
 After commit, the desktop handler regenerates the configured export and account
 settings snapshot. Local card connections are excluded explicitly from

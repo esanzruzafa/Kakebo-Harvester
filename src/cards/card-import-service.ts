@@ -1,5 +1,5 @@
 import { stat } from "node:fs/promises";
-import { extname } from "node:path";
+import { extname, resolve } from "node:path";
 import { readSheet } from "read-excel-file/node";
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
@@ -65,6 +65,11 @@ interface ParsedCardRow {
   statementKey: string;
 }
 
+interface ExistingCardTransaction {
+  providerTransactionId: string;
+  sourcePath: string | null;
+}
+
 function cardSemanticKey(row: ParsedCardRow): string {
   return stableJson({
     profileId: row.profile.id,
@@ -74,6 +79,23 @@ function cardSemanticKey(row: ParsedCardRow): string {
     amount: row.amount,
     currency: row.profile.currency
   });
+}
+
+function cardSemanticKeyHash(row: ParsedCardRow): string {
+  return sha256(cardSemanticKey(row));
+}
+
+function comparableSourcePath(path: string): string {
+  const normalized = resolve(path);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function sourcePathHash(path: string): string {
+  return sha256(comparableSourcePath(path));
+}
+
+function sourceMappingKey(row: ParsedCardRow): string {
+  return `${cardSemanticKeyHash(row)}:${row.occurrence}`;
 }
 
 function columnIndex(reference: string): number {
@@ -419,14 +441,14 @@ function ensureLocalAccount(
     );
 }
 
-function existingCardTransactionIds(
+function existingCardTransactions(
   database: SqliteDatabase,
   row: ParsedCardRow
-): string[] {
+): ExistingCardTransaction[] {
   const ids = localIds(row.profile);
   const rows = database
     .prepare(
-      `SELECT provider_transaction_id
+      `SELECT provider_transaction_id, source_raw_file
        FROM transactions
        WHERE provider = 'manual-card'
          AND account_id = ?
@@ -445,8 +467,66 @@ function existingCardTransactionIds(
       row.amount,
       row.profile.currency,
       normalizeText(row.description)
-    ) as Array<{ provider_transaction_id: string }>;
-  return rows.map((item) => item.provider_transaction_id);
+    ) as Array<{
+      provider_transaction_id: string;
+      source_raw_file: string | null;
+    }>;
+  return rows.map((item) => ({
+    providerTransactionId: item.provider_transaction_id,
+    sourcePath: item.source_raw_file
+  }));
+}
+
+function existingSourceMappings(
+  database: SqliteDatabase,
+  profileId: string,
+  sourcePath: string
+): Map<string, string> {
+  const rows = database
+    .prepare(
+      `SELECT semantic_key_hash, occurrence, provider_transaction_id
+       FROM card_import_source_rows
+       WHERE profile_id = ? AND source_path_hash = ?`
+    )
+    .all(profileId, sourcePathHash(sourcePath)) as Array<{
+      semantic_key_hash: string;
+      occurrence: number;
+      provider_transaction_id: string;
+    }>;
+  return new Map(
+    rows.map((row) => [
+      `${row.semantic_key_hash}:${row.occurrence}`,
+      row.provider_transaction_id
+    ])
+  );
+}
+
+function saveSourceMapping(
+  database: SqliteDatabase,
+  row: ParsedCardRow,
+  providerTransactionId: string
+): void {
+  const now = new Date().toISOString();
+  database
+    .prepare(
+      `INSERT INTO card_import_source_rows (
+         profile_id, source_path_hash, semantic_key_hash, occurrence,
+         provider_transaction_id, first_seen_at, last_seen_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(profile_id, source_path_hash, semantic_key_hash, occurrence)
+       DO UPDATE SET
+         provider_transaction_id = excluded.provider_transaction_id,
+         last_seen_at = excluded.last_seen_at`
+    )
+    .run(
+      row.profile.id,
+      sourcePathHash(row.sourcePath),
+      cardSemanticKeyHash(row),
+      row.occurrence,
+      providerTransactionId,
+      now,
+      now
+    );
 }
 
 export class CardImportService {
@@ -496,22 +576,33 @@ export class CardImportService {
     this.database.transaction(() => {
       for (const file of parsedFiles) {
         ensureLocalAccount(this.database, this.config, file.profile);
-        const existingBySemanticKey = new Map<string, string[]>();
+        const existingBySemanticKey = new Map<
+          string,
+          ExistingCardTransaction[]
+        >();
         for (const row of file.rows) {
           const semanticKey = cardSemanticKey(row);
           if (!existingBySemanticKey.has(semanticKey)) {
             existingBySemanticKey.set(
               semanticKey,
-              existingCardTransactionIds(this.database, row)
+              existingCardTransactions(this.database, row)
             );
           }
         }
+        const sourceMappings = existingSourceMappings(
+          this.database,
+          file.profile.id,
+          file.path
+        );
+        const comparableFilePath = comparableSourcePath(file.path);
         // Two independent matching movements are strong evidence that this is
-        // an overlapping export. A single ambiguous match is kept distinct so
-        // two genuine same-day purchases from separate statements are not lost.
+        // an overlapping export from another source. A persisted source-row
+        // mapping or legacy same-path match is sufficient for an updated file,
+        // while one ambiguous match from a different statement stays distinct.
         const overlapsExistingStatement =
-          [...existingBySemanticKey.values()].filter((ids) => ids.length > 0)
-            .length >= 2;
+          [...existingBySemanticKey.values()].filter(
+            (transactions) => transactions.length > 0
+          ).length >= 2;
         const fileResult: CardImportFileResult = {
           path: file.path,
           profileId: file.profile.id,
@@ -522,11 +613,19 @@ export class CardImportService {
           reconciled: 0
         };
         for (const row of file.rows) {
-          const existingProviderTransactionId = overlapsExistingStatement
-            ? existingBySemanticKey.get(cardSemanticKey(row))?.[
-                row.occurrence - 1
-              ]
-            : undefined;
+          const candidates =
+            existingBySemanticKey.get(cardSemanticKey(row)) ?? [];
+          const sameSourceCandidates = candidates.filter(
+            (candidate) =>
+              candidate.sourcePath !== null &&
+              comparableSourcePath(candidate.sourcePath) === comparableFilePath
+          );
+          const existingProviderTransactionId =
+            sourceMappings.get(sourceMappingKey(row)) ??
+            sameSourceCandidates[row.occurrence - 1]?.providerTransactionId ??
+            (overlapsExistingStatement
+              ? candidates[row.occurrence - 1]?.providerTransactionId
+              : undefined);
           const transaction = normalizedTransaction(
             this.config,
             row,
@@ -538,6 +637,13 @@ export class CardImportService {
           transaction.category_auto = category.category;
           transaction.subcategory_auto = category.subcategory;
           const outcome = repository.upsert(transaction);
+          if (transaction.provider_transaction_id) {
+            saveSourceMapping(
+              this.database,
+              row,
+              transaction.provider_transaction_id
+            );
+          }
           const resultField =
             outcome === "duplicate"
               ? "duplicates"

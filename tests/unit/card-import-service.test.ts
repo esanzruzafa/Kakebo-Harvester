@@ -47,6 +47,52 @@ function workbookRows(
 }
 
 describe("CardImportService", () => {
+  it("recognizes a one-row statement updated in place", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-updated-source-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const profiles = createDefaultCardImportProfiles();
+    const profile = profiles[0];
+    if (!profile) throw new Error("The default card profile is missing.");
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save(profiles);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const statementPath = join(root, "card-latest.xlsx");
+    const original: [string, string, string, string] = [
+      "20/06/2026",
+      "Coffee shop",
+      "20/06/2026",
+      "-4,50"
+    ];
+    await writeXlsxFile(workbookRows([original])).toFile(statementPath);
+    const importer = new CardImportService(config, database);
+
+    const first = await importer.import({
+      files: [{ path: statementPath, profileId: profile.id }]
+    });
+    await writeXlsxFile(workbookRows([original, original])).toFile(statementPath);
+    const updated = await importer.import({
+      files: [{ path: statementPath, profileId: profile.id }]
+    });
+    const repeated = await importer.import({
+      files: [{ path: statementPath, profileId: profile.id }]
+    });
+
+    expect(first).toMatchObject({ rows: 1, inserted: 1, duplicates: 0 });
+    expect(updated).toMatchObject({ rows: 2, inserted: 1, duplicates: 1 });
+    expect(repeated).toMatchObject({ rows: 2, inserted: 0, duplicates: 2 });
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) AS total FROM transactions WHERE provider = 'manual-card'"
+        )
+        .get()
+    ).toEqual({ total: 2 });
+    expect(
+      database.prepare("SELECT COUNT(*) AS total FROM card_import_source_rows").get()
+    ).toEqual({ total: 2 });
+    database.close();
+  });
+
   it("deduplicates overlapping Kutxabank workbooks and categorizes new rows", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-card-import-"));
     const config = testConfig(root);
@@ -129,6 +175,26 @@ describe("CardImportService", () => {
       export_enabled: 1
     });
     expect(new AccountRepository(database).listActive()).toEqual([]);
+
+    await writeXlsxFile(
+      workbookRows([
+        ["20/06/2026", "Supermarket", "21/06/2026", "-12,34"],
+        ["22/06/2026", "Book shop", "23/06/2026", "-8,50"],
+        ["04/07/2026", "Bus", "04/07/2026", "-1,80"]
+      ])
+    ).toFile(firstPath);
+    await expect(
+      importer.import({ files: [{ path: firstPath, profileId: profile.id }] })
+    ).resolves.toMatchObject({ rows: 3, inserted: 1, duplicates: 2 });
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS total
+           FROM transactions
+           WHERE provider = 'manual-card'`
+        )
+        .get()
+    ).toEqual({ total: 4 });
     database.close();
   });
 

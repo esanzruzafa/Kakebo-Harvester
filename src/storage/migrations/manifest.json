@@ -16,5 +16,9 @@
   {
     "version": 9,
     "filename": "009_transaction_fallback_occurrence.sql"
+  },
+  {
+    "version": 10,
+    "filename": "010_card_import_source_rows.sql"
   }
 ]

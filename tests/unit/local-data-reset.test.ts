@@ -45,6 +45,12 @@ describe("resetLocalData", () => {
         'connection', 'account', 'booked', '1.00', 'EUR', 'income', 'TEST', ?, ?, ?, 'fingerprint')`)
       .run(now, now, now);
     database
+      .prepare(`INSERT INTO card_import_source_rows (
+        profile_id, source_path_hash, semantic_key_hash, occurrence,
+        provider_transaction_id, first_seen_at, last_seen_at
+      ) VALUES ('profile', 'path-hash', 'semantic-hash', 1, 'provider-id', ?, ?)`)
+      .run(now, now);
+    database
       .prepare(`INSERT INTO balances (id, account_id, amount, currency, extracted_at)
         VALUES ('balance', 'account', '1.00', 'EUR', ?)`)
       .run(now);
@@ -77,7 +83,14 @@ describe("resetLocalData", () => {
       expect(database.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get()).toEqual({ total: 1 });
     }
     expect(database.prepare("SELECT last_sync_at FROM bank_connections").get()).toEqual({ last_sync_at: null });
-    for (const table of ["transactions", "transactions_raw", "balances", "sync_runs", "desktop_runs"]) {
+    for (const table of [
+      "transactions",
+      "card_import_source_rows",
+      "transactions_raw",
+      "balances",
+      "sync_runs",
+      "desktop_runs"
+    ]) {
       expect(database.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get()).toEqual({ total: 0 });
     }
     await expect(access(config.rawDataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
@@ -162,6 +175,12 @@ describe("resetLocalData", () => {
         id, started_at, status, date_from, date_to, steps_json
       ) VALUES ('desktop-run', ?, 'SUCCESS', '2026-01-01', '2026-01-01', '[]')`)
       .run(now);
+    database
+      .prepare(`INSERT INTO card_import_source_rows (
+        profile_id, source_path_hash, semantic_key_hash, occurrence,
+        provider_transaction_id, first_seen_at, last_seen_at
+      ) VALUES ('profile', 'path-hash', 'semantic-hash', 1, 'provider-id', ?, ?)`)
+      .run(now, now);
     database.exec(`CREATE TRIGGER prevent_desktop_run_delete
       BEFORE DELETE ON desktop_runs
       BEGIN
@@ -182,6 +201,9 @@ describe("resetLocalData", () => {
     expect(database.prepare("SELECT COUNT(*) AS total FROM desktop_runs").get()).toEqual({
       total: 1
     });
+    expect(
+      database.prepare("SELECT COUNT(*) AS total FROM card_import_source_rows").get()
+    ).toEqual({ total: 1 });
     expect(database.prepare("SELECT last_sync_at FROM bank_connections").get()).toEqual({
       last_sync_at: now
     });

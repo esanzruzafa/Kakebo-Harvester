@@ -213,6 +213,12 @@ card profile, normalized dates, amount, currency, description, and an occurrence
 number for otherwise identical rows. Reuse the same profile for the same physical
 card; changing its id creates a different card identity.
 
+Kakebo Harvester also stores a hashed source-row identity for each imported file.
+When an existing workbook is updated in place, even a single prior movement is
+recognized without treating one coincidental movement from a different statement
+as overlap. The **Reset local data** action clears this operational identity
+together with the imported movements.
+
 Importing selected files is atomic. Valid rows are deduplicated, categorized with
 the current rules, and followed by a normal configured XLSX/CSV export. Manual
 card accounts appear in the aliases table and can be excluded from exports, but
