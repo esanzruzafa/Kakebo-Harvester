@@ -12,3 +12,13 @@ export function rowDropInsertionIndex(
     ? insertionBeforeRemoval - 1
     : insertionBeforeRemoval;
 }
+
+export function adjacentMovableIndex(
+  current: number,
+  direction: -1 | 1,
+  movableIndices: readonly number[]
+): number | undefined {
+  const position = movableIndices.indexOf(current);
+  if (position < 0) return undefined;
+  return movableIndices[position + direction];
+}

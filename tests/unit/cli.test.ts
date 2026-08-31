@@ -9,7 +9,10 @@ import {
 import { SyncAlreadyRunningError } from "../../src/errors.js";
 import { createDatabase } from "../../src/storage/database.js";
 import { SynchronizationLock } from "../../src/sync/sync-runner.js";
-import type { SyncService } from "../../src/sync/sync-service.js";
+import type {
+  SyncExecutionContext,
+  SyncService
+} from "../../src/sync/sync-service.js";
 import { testConfig } from "../helpers.js";
 
 let root: string | undefined;
@@ -41,6 +44,39 @@ describe("CLI synchronization commands", () => {
 
     expect(syncAccounts).not.toHaveBeenCalled();
     lock.release();
+    database.close();
+  });
+
+  it("reports skipped bank connections for standalone synchronization commands", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-cli-warnings-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const syncAccounts = vi.fn().mockImplementation((context: SyncExecutionContext) => {
+      context.skippedAuthorizationConnectionIds = new Set(["authorization"]);
+      context.skippedRateLimitConnectionIds = new Set(["limited"]);
+      context.skippedUnavailableConnectionIds = new Set(["unavailable"]);
+      return Promise.resolve(2);
+    });
+
+    await runCli(["sync-accounts"], {
+      config,
+      database,
+      client: {} as never,
+      authorization: {} as never,
+      sync: { syncAccounts } as unknown as SyncService,
+      logger: { info: vi.fn() } as never
+    });
+
+    expect(warning).toHaveBeenCalledWith(
+      "Warning: 1 bank connection(s) were skipped pending authorization."
+    );
+    expect(warning).toHaveBeenCalledWith(
+      "Warning: 1 bank connection(s) were skipped because a request limit is active."
+    );
+    expect(warning).toHaveBeenCalledWith(
+      "Warning: 1 bank connection(s) were skipped because the bank is temporarily unavailable."
+    );
     database.close();
   });
 

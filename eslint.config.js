@@ -4,10 +4,15 @@ import tseslint from "typescript-eslint";
 export default tseslint.config(
   {
     ignores: [
+      ".agents/**",
+      ".cache/**",
+      ".codex/**",
       "dist/**",
       "data/**",
       "coverage/**",
       "legal/**",
+      "private/**",
+      "release/**",
       "eslint.config.js"
     ]
   },
@@ -35,6 +40,7 @@ export default tseslint.config(
   {
     files: [
       "scripts/**/*.{mjs,cjs}",
+      "tests/**/*.mjs",
       "src/desktop/preload.cjs",
       "src/desktop/audit-preload.cjs"
     ],

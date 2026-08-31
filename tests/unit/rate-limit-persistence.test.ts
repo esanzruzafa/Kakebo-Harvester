@@ -5,9 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EnableBankingClient } from "../../src/enable-banking/client.js";
 import {
   PsuHeadersUnavailableError,
-  RateLimitError
+  RateLimitError,
+  ReauthorizationRequiredError
 } from "../../src/errors.js";
 import { createDatabase } from "../../src/storage/database.js";
+import { SyncRunner } from "../../src/sync/sync-runner.js";
 import { SyncService } from "../../src/sync/sync-service.js";
 import { encryptSecret } from "../../src/utils/crypto.js";
 import { testConfig } from "../helpers.js";
@@ -238,7 +240,16 @@ describe("bank rate-limit persistence", () => {
       { getSession, getAccount } as unknown as EnableBankingClient
     );
 
-    await expect(service.syncAccounts()).resolves.toBe(1);
+    await expect(
+      new SyncRunner(config, database, service).run({
+        steps: ["accounts"],
+        dateFrom: "2026-07-01",
+        dateTo: "2026-07-28"
+      })
+    ).resolves.toMatchObject({
+      accounts: 1,
+      skippedRateLimitedConnections: 1
+    });
     expect(getSession).toHaveBeenCalledExactlyOnceWith("ready-provider-session");
     expect(getAccount).toHaveBeenCalledExactlyOnceWith("ready-account", undefined);
     expect(
@@ -246,6 +257,67 @@ describe("bank rate-limit persistence", () => {
         .prepare("SELECT COUNT(*) AS count FROM accounts WHERE bank_connection_id = 'limited'")
         .get()
     ).toEqual({ count: 0 });
+    database.close();
+  });
+
+  it("offers renewal of another bank instead of letting a cooldown block it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T10:00:00.000Z"));
+    root = await mkdtemp(join(tmpdir(), "kakebo-rate-limit-renewal-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    const insertConnection = database.prepare(
+      `INSERT INTO bank_connections (
+         id, provider, environment, bank_name, bank_country, psu_type,
+         alias, status, created_at, required_psu_headers_json, retry_after_at,
+         error_code, reauthorization_required
+       ) VALUES (?, 'enable-banking', ?, ?, 'ES', 'personal', ?, ?, ?, '[]',
+                 ?, ?, ?)`
+    );
+    insertConnection.run(
+      "limited",
+      config.appEnv,
+      "Limited Bank",
+      "Limited personal",
+      "AUTHORIZED",
+      now,
+      "2026-07-28T16:00:00.000Z",
+      "ASPSP_RATE_LIMIT_EXCEEDED",
+      0
+    );
+    insertConnection.run(
+      "renewable",
+      config.appEnv,
+      "Renewable Bank",
+      "Renewable personal",
+      "REAUTHORIZATION_REQUIRED",
+      now,
+      null,
+      null,
+      1
+    );
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext,
+           created_at, status
+         ) VALUES ('limited-session', 'limited', ?, ?, 'AUTHORIZED')`
+      )
+      .run(
+        encryptSecret("limited-provider-session", config.sessionEncryptionKey),
+        now
+      );
+    const service = new SyncService(
+      config,
+      database,
+      { getSession: vi.fn() } as unknown as EnableBankingClient
+    );
+
+    await expect(service.syncAccounts()).rejects.toMatchObject({
+      name: ReauthorizationRequiredError.name,
+      connectionIds: ["renewable"]
+    });
     database.close();
   });
 
@@ -413,8 +485,17 @@ describe("bank rate-limit persistence", () => {
       { getBalances } as unknown as EnableBankingClient
     );
 
-    await expect(service.syncBalances()).resolves.toBe(2);
+    await expect(service.syncBalances()).resolves.toBe(1);
     expect(getBalances).toHaveBeenCalledTimes(3);
+    expect(
+      database
+        .prepare(
+          `SELECT a.id AS account_id
+           FROM balances b
+           JOIN accounts a ON a.id = b.account_id`
+        )
+        .all()
+    ).toEqual([{ account_id: "ready-a" }]);
     expect(
       database
         .prepare(

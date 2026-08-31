@@ -7,6 +7,7 @@ export interface MovementKeyInput {
   providerTransactionId?: string | null | undefined;
   bookingDate?: string | null | undefined;
   valueDate?: string | null | undefined;
+  transactionDate?: string | null | undefined;
   amount: string;
   currency: string;
   descriptionNormalized: string;
@@ -32,6 +33,9 @@ export function createMovementKey(input: MovementKeyInput): string {
     input.descriptionNormalized,
     input.counterparty
   ];
+  if (input.transactionDate) {
+    parts.push("transaction-date", input.transactionDate);
+  }
   if ((input.fallbackOccurrence ?? 1) > 1) {
     parts.push("occurrence", input.fallbackOccurrence ?? 1);
   }

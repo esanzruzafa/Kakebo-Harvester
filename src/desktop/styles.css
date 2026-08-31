@@ -122,6 +122,11 @@ button:disabled {
   opacity: 0.58;
 }
 
+button:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
 code,
 .mono {
   font-family: "Cascadia Mono", Consolas, monospace;
@@ -1239,8 +1244,12 @@ body[data-export-format="xlsx"] .csv-option {
 .connection-bank-option:hover,
 .connection-bank-option:focus-visible,
 .connection-bank-option.is-selected {
-  outline: none;
   background: var(--green-soft);
+}
+
+.connection-bank-option:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
 }
 
 .connection-bank-option strong,
@@ -1332,5 +1341,16 @@ body[data-export-format="xlsx"] .csv-option {
   .audit-heading-actions {
     align-items: flex-end;
     flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-spinner {
+    animation: none;
+  }
+
+  .progress-track span,
+  .audit-run-toggle {
+    transition: none;
   }
 }

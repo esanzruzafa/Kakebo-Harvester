@@ -271,6 +271,78 @@ describe("CardImportService", () => {
     database.close();
   });
 
+  it("keeps native Excel dates on the workbook calendar day", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-native-date-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const profiles = createDefaultCardImportProfiles();
+    const profile = profiles[0];
+    if (!profile) throw new Error("The default card profile is missing.");
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save(profiles);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const statementPath = join(root, "native-dates.xlsx");
+    const rows = workbookRows([]);
+    rows.push([
+      { value: new Date(2026, 6, 20), type: Date, format: "yyyy-mm-dd" },
+      { value: "Native date purchase", type: String },
+      { value: new Date(2026, 6, 21), type: Date, format: "yyyy-mm-dd" },
+      { value: -4.5, type: Number }
+    ]);
+    await writeXlsxFile(rows).toFile(statementPath);
+
+    await new CardImportService(config, database).import({
+      files: [{ path: statementPath, profileId: profile.id }]
+    });
+
+    expect(
+      database
+        .prepare(
+          `SELECT booking_date, value_date FROM transactions
+           WHERE provider = 'manual-card'`
+        )
+        .get()
+    ).toEqual({ booking_date: "2026-07-20", value_date: "2026-07-21" });
+    database.close();
+  });
+
+  it("parses the configured currency code and symbol without EUR-specific rules", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-currency-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const [defaultProfile] = createDefaultCardImportProfiles();
+    if (!defaultProfile) throw new Error("The default card profile is missing.");
+    const profile = {
+      ...defaultProfile,
+      id: "usd-card-1",
+      currency: "USD",
+      decimalSeparator: "." as const
+    };
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save([
+      profile
+    ]);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const statementPath = join(root, "usd-card.xlsx");
+    await writeXlsxFile(
+      workbookRows([
+        ["20/07/2026", "Hotel", "21/07/2026", "-USD $1,234.56"]
+      ])
+    ).toFile(statementPath);
+
+    await new CardImportService(config, database).import({
+      files: [{ path: statementPath, profileId: profile.id }]
+    });
+
+    expect(
+      database
+        .prepare(
+          `SELECT amount, currency FROM transactions
+           WHERE provider = 'manual-card'`
+        )
+        .get()
+    ).toEqual({ amount: "-1234.56", currency: "USD" });
+    database.close();
+  });
+
   it("keeps an ambiguous identical purchase from a separate statement", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-card-identical-statements-"));
     const config = testConfig(root);

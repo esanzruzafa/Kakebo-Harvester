@@ -83,4 +83,27 @@ describe("categorization rule settings", () => {
       })
     ).rejects.toBeInstanceOf(ConfigurationError);
   });
+
+  it("normalizes a blank optional subcategory to no subcategory", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-rules-"));
+    const store = new CategorizationRulesStore(join(root, "rules.json"));
+
+    const saved = await store.save([
+      {
+        enabled: true,
+        priority: 10,
+        field: "descriptionNormalized",
+        operator: "contains",
+        value: "SALARY",
+        category: "Income",
+        subcategory: "   "
+      }
+    ]);
+
+    expect(saved[0]?.subcategory).toBeUndefined();
+    const persisted = JSON.parse(
+      await readFile(join(root, "rules.json"), "utf8")
+    ) as { rules: Array<Record<string, unknown>> };
+    expect(Object.hasOwn(persisted.rules[0] ?? {}, "subcategory")).toBe(false);
+  });
 });

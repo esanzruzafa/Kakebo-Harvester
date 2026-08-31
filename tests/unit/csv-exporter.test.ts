@@ -1,12 +1,24 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { unzipSync } from "fflate";
 import {
+  clearGeneratedExportFiles,
+  countGeneratedExportFiles,
   CsvExporter,
   exactSpreadsheetNumber,
-  spreadsheetCurrencyFormat
+  spreadsheetCurrencyFormat,
+  spreadsheetDate
 } from "../../src/export/csv-exporter.js";
 import {
   ExportSettingsStore,
@@ -29,9 +41,72 @@ describe("CSV export", () => {
     expect(spreadsheetCurrencyFormat("KWD")).toMatch(/#,##0\.000$/u);
   });
 
+  it("uses a safe neutral symbol for malformed provider currency values", () => {
+    expect(spreadsheetCurrencyFormat('EUR";[Red]')).toBe('"¤" #,##0.00');
+  });
+
   it("does not coerce unsafe decimal amounts into spreadsheet numbers", () => {
     expect(exactSpreadsheetNumber("1234.56")).toBe(1234.56);
     expect(exactSpreadsheetNumber("9007199254740993.00")).toBeNull();
+  });
+
+  it("converts only real ISO calendar dates to spreadsheet dates", () => {
+    expect(spreadsheetDate("2026-02-28")?.getFullYear()).toBe(2026);
+    expect(spreadsheetDate("2026-02-28")?.getMonth()).toBe(1);
+    expect(spreadsheetDate("2026-02-28")?.getDate()).toBe(28);
+    expect(spreadsheetDate("2026-02-31")).toBeNull();
+    expect(spreadsheetDate("not-a-date")).toBeNull();
+  });
+
+  it("clears interrupted export artifacts without counting them as results", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-cleanup-"));
+    const config = testConfig(root);
+    await mkdir(config.exportDirectory, { recursive: true });
+    await writeFile(
+      join(config.exportDirectory, "kakebo_movements.xlsx"),
+      "active"
+    );
+    await Promise.all([
+      writeFile(
+        join(config.exportDirectory, ".kakebo_movements.123.456.tmp"),
+        "temporary"
+      ),
+      writeFile(
+        join(
+          config.exportDirectory,
+          "kakebo_movements.xlsx.123.456.rollback"
+        ),
+        "rollback"
+      ),
+      writeFile(`${config.exportSettingsPath}.state.json`, "{}")
+    ]);
+
+    await expect(countGeneratedExportFiles(config)).resolves.toBe(1);
+    await expect(clearGeneratedExportFiles(config)).resolves.toBe(1);
+    await expect(readdir(config.exportDirectory)).resolves.toEqual([]);
+    await expect(readFile(`${config.exportSettingsPath}.state.json`)).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  it("refuses to delete generated files through a directory link", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-linked-"));
+    const config = testConfig(root);
+    const linkedTarget = join(root, "linked-export-target");
+    await mkdir(linkedTarget, { recursive: true });
+    await writeFile(
+      join(linkedTarget, "kakebo_movements.xlsx"),
+      "must remain"
+    );
+    await mkdir(join(config.exportDirectory, ".."), { recursive: true });
+    await symlink(linkedTarget, config.exportDirectory, "junction");
+
+    await expect(clearGeneratedExportFiles(config)).rejects.toThrow(
+      /symbolic link/u
+    );
+    await expect(
+      access(join(linkedTarget, "kakebo_movements.xlsx"))
+    ).resolves.toBeUndefined();
   });
 
   it("writes an Excel-compatible BOM, semicolon separator and no IBAN", async () => {
@@ -98,7 +173,10 @@ describe("CSV export", () => {
     const database = createDatabase(config.databasePath);
     const settings = createDefaultExportSettings(",", ";");
     settings.format = "csv";
-    settings.columns = settings.columns.slice(0, 2);
+    settings.columns = settings.columns.map((column, index) => ({
+      ...column,
+      enabled: index < 2
+    }));
     const store = new ExportSettingsStore(config.exportSettingsPath, settings);
     await store.save(settings);
     const exporter = new CsvExporter(config, database);
@@ -117,6 +195,121 @@ describe("CSV export", () => {
     expect(content).toContain("Custom key;Date");
     expect(archived).toHaveLength(1);
     expect(archived[0]).toMatch(/^kakebo_movements_.+\.csv$/u);
+    database.close();
+  });
+
+  it("does not use an untrusted state fingerprint in archive paths", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-state-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = "csv";
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(
+      settings
+    );
+    const exporter = new CsvExporter(config, database);
+    await exporter.export();
+    await writeFile(
+      `${config.exportSettingsPath}.state.json`,
+      JSON.stringify({
+        fingerprint: "../../outside",
+        format: "csv",
+        sourceMovementKeys: { banking: [], cards: [] },
+        highlightedMovementKeys: { banking: [], cards: [] }
+      })
+    );
+
+    await exporter.export();
+
+    const archived = await readdir(join(config.exportDirectory, "archive"));
+    expect(archived).toHaveLength(1);
+    expect(archived[0]).toMatch(
+      /^kakebo_movements_\d{14}_legacy\.csv$/u
+    );
+    database.close();
+  });
+
+  it("neutralizes formula-like CSV headers including leading whitespace", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-formula-header-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = "csv";
+    const firstColumn = settings.columns[0];
+    if (!firstColumn) throw new Error("The default export profile has no columns.");
+    settings.columns[0] = {
+      ...firstColumn,
+      header: "  =HYPERLINK(\"https://example.invalid\")"
+    };
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(
+      settings
+    );
+
+    const result = await new CsvExporter(config, database).export();
+    const header = (await readFile(result.path, "utf8"))
+      .replace(/^\uFEFF/u, "")
+      .split(/\r?\n/u)[0];
+
+    expect(header).toContain("'=HYPERLINK");
+    database.close();
+  });
+
+  it("keeps the active result when generation with a changed profile fails", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-rollback-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, name, active,
+           first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider', 'Account', 1, ?, ?)`
+      )
+      .run(now, now);
+    database
+      .prepare(
+        `INSERT INTO transactions (
+           id, movement_key, reconciliation_key, provider, environment,
+           bank_connection_id, account_id, status, booking_date, amount,
+           currency, direction, description_raw, description_normalized,
+           reviewed, first_seen_at, last_seen_at, imported_at, raw_fingerprint
+         ) VALUES ('transaction', 'movement', 'reconcile', 'enable-banking',
+                   'sandbox', 'connection', 'account', 'booked', '2026-08-01',
+                   '-10.00', 'EUR', 'expense', 'Original', 'ORIGINAL', 0,
+                   ?, ?, ?, 'raw')`
+      )
+      .run(now, now, now);
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = "csv";
+    const store = new ExportSettingsStore(config.exportSettingsPath, settings);
+    await store.save(settings);
+    const exporter = new CsvExporter(config, database);
+    const first = await exporter.export();
+    const original = await readFile(first.path, "utf8");
+
+    const firstColumn = settings.columns[0];
+    if (!firstColumn) throw new Error("The default export profile has no columns.");
+    settings.columns[0] = { ...firstColumn, header: "Changed key" };
+    await store.save(settings);
+    await writeFile(join(config.exportDirectory, "archive"), "blocked");
+
+    await expect(exporter.export()).rejects.toThrow(
+      "Kakebo Harvester could not generate the export file."
+    );
+    expect(await readFile(first.path, "utf8")).toBe(original);
+    expect(await readFile(join(config.exportDirectory, "archive"), "utf8")).toBe(
+      "blocked"
+    );
     database.close();
   });
 
@@ -244,6 +437,29 @@ describe("CSV export", () => {
         (column) => (column as { field: string }).field === "currency"
       )
     ).toBe(false);
+  });
+
+  it("restores omitted legacy columns as disabled configuration rows", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-column-migration-"));
+    const config = testConfig(root);
+    const settings = createDefaultExportSettings(",", ";");
+    const store = new ExportSettingsStore(config.exportSettingsPath, settings);
+    await store.save(settings);
+    await writeFile(
+      config.exportSettingsPath,
+      JSON.stringify({
+        ...settings,
+        columns: settings.columns.slice(0, 2)
+      })
+    );
+
+    const loaded = await store.load();
+
+    expect(loaded.columns).toHaveLength(settings.columns.length);
+    expect(loaded.columns.slice(0, 2)).toEqual(settings.columns.slice(0, 2));
+    expect(loaded.columns.slice(2).every((column) => !column.enabled)).toBe(
+      true
+    );
   });
 
   it("keeps bank and card XLSX highlights independent", async () => {

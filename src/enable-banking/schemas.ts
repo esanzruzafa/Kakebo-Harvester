@@ -28,7 +28,14 @@ export const aspspsResponseSchema = z
 
 export const startAuthorizationResponseSchema = z
   .object({
-    url: z.url(),
+    url: z.url().refine((value) => {
+      const parsed = new URL(value);
+      return (
+        parsed.protocol === "https:" &&
+        parsed.username.length === 0 &&
+        parsed.password.length === 0
+      );
+    }, "Authorization URL must use HTTPS and must not contain credentials."),
     authorization_id: z.string().optional()
   })
   .loose();

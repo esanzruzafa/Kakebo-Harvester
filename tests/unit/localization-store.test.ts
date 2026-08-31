@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -35,6 +35,22 @@ async function blockSettingsDirectory(settingsDirectory: string): Promise<void> 
 }
 
 describe("localization settings durability", () => {
+  it("serializes concurrent language and audit-limit changes without losing either value", async () => {
+    const { store, settingsDirectory } = await initializedStore();
+
+    await Promise.all([
+      store.setLanguage("es"),
+      store.setAuditHistoryLimit(50)
+    ]);
+
+    const persisted = JSON.parse(
+      await readFile(join(settingsDirectory, "ui.json"), "utf8")
+    ) as unknown;
+    expect(persisted).toEqual({ language: "es", auditHistoryLimit: 50 });
+    expect(store.getLanguage()).toBe("es");
+    expect(store.getAuditHistoryLimit()).toBe(50);
+  });
+
   it("restores the active language when persistence fails", async () => {
     const { store, settingsDirectory } = await initializedStore();
     await blockSettingsDirectory(settingsDirectory);

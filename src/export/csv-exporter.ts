@@ -1,5 +1,6 @@
 import {
   copyFile,
+  lstat,
   mkdir,
   readFile,
   readdir,
@@ -66,7 +67,7 @@ export interface ExportOptions {
 type ExportValue = string | number | boolean | null;
 
 const exportStateSchema = z.object({
-  fingerprint: z.string().min(1),
+  fingerprint: z.string().regex(/^[a-f0-9]{12}$/u),
   format: z.enum(["csv", "xlsx"]),
   movementKeys: z.array(z.string().min(1)).optional(),
   sourceMovementKeys: z
@@ -127,7 +128,12 @@ export function exportOutputPath(
 }
 
 function safeSpreadsheetText(value: string): string {
-  return /^[=+@]|^-(?!\d+(?:[.,]\d+)?$)/u.test(value) ? `'${value}` : value;
+  const trimmedStart = value.trimStart();
+  const formulaLike =
+    /^[=+@]/u.test(trimmedStart) ||
+    (/^-/u.test(trimmedStart) &&
+      !/^-\d+(?:[.,]\d+)?$/u.test(trimmedStart));
+  return formulaLike ? `'${value}` : value;
 }
 
 function formatDate(value: string | null, format: ExportSettings["csv"]["dateFormat"]): string {
@@ -139,15 +145,25 @@ function formatDate(value: string | null, format: ExportSettings["csv"]["dateFor
 }
 
 function currencySymbol(currency: string): string {
-  return (
-    new Intl.NumberFormat(undefined, {
+  const normalized = currency.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/u.test(normalized)) return "¤";
+  try {
+    const symbol = new Intl.NumberFormat(undefined, {
       style: "currency",
-      currency,
+      currency: normalized,
       currencyDisplay: "narrowSymbol"
     })
       .formatToParts(0)
-      .find((part) => part.type === "currency")?.value ?? currency
-  );
+      .find((part) => part.type === "currency")?.value;
+    return symbol && !/["\r\n]/u.test(symbol) ? symbol : normalized;
+  } catch {
+    return normalized;
+  }
+}
+
+interface ArchivedOutput {
+  originalPath: string;
+  archivePath: string;
 }
 
 export function spreadsheetCurrencyFormat(currency: string): string {
@@ -186,12 +202,18 @@ function formatMoney(
   )}`;
 }
 
-function spreadsheetDate(value: string): Date {
-  const [year = 0, month = 1, day = 1] = value
-    .slice(0, 10)
-    .split("-")
-    .map(Number);
-  return new Date(year, month - 1, day);
+export function spreadsheetDate(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/u.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day
+    ? date
+    : null;
 }
 
 function rowValue(
@@ -260,11 +282,15 @@ async function readExportState(path: string): Promise<ExportState | undefined> {
 async function writeExportState(path: string, state: ExportState): Promise<void> {
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600
-  });
-  await rename(temporary, path);
+  try {
+    await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600
+    });
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true }).catch(() => undefined);
+  }
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -281,8 +307,8 @@ async function archiveOutput(
   config: AppConfig,
   path: string,
   fingerprint: string
-): Promise<void> {
-  if (!(await pathExists(path))) return;
+): Promise<ArchivedOutput | undefined> {
+  if (!(await pathExists(path))) return undefined;
   const archiveDirectory = join(config.exportDirectory, "archive");
   await mkdir(archiveDirectory, { recursive: true });
   const extension = extname(path);
@@ -300,47 +326,66 @@ async function archiveOutput(
     sequence += 1;
   }
   await rename(path, destination);
+  return { originalPath: path, archivePath: destination };
 }
 
 async function rotateIncompatibleOutputs(
   config: AppConfig,
-  settings: ExportSettings
-): Promise<ExportState | undefined> {
-  const statePath = `${config.exportSettingsPath}.state.json`;
-  const previous = await readExportState(statePath);
-  const fingerprint = exportSettingsFingerprint(settings);
-  if (previous?.fingerprint === fingerprint) return previous;
+  previous: ExportState | undefined
+): Promise<ArchivedOutput[]> {
   const priorFingerprint = previous?.fingerprint ?? "legacy";
-  await archiveOutput(
-    config,
-    join(config.exportDirectory, "kakebo_movements.csv"),
-    priorFingerprint
-  );
-  await archiveOutput(
-    config,
-    join(config.exportDirectory, "kakebo_movements.xlsx"),
-    priorFingerprint
-  );
-  return previous;
+  const archived: ArchivedOutput[] = [];
+  try {
+    for (const extension of ["csv", "xlsx"] as const) {
+      const result = await archiveOutput(
+        config,
+        join(config.exportDirectory, `kakebo_movements.${extension}`),
+        priorFingerprint
+      );
+      if (result) archived.push(result);
+    }
+    return archived;
+  } catch (error) {
+    const rollbackFailures: unknown[] = [];
+    for (const output of archived.reverse()) {
+      await rename(output.archivePath, output.originalPath).catch(
+        (rollbackError: unknown) => rollbackFailures.push(rollbackError)
+      );
+    }
+    if (rollbackFailures.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackFailures],
+        "Export rotation failed and one or more previous files could not be restored."
+      );
+    }
+    throw error;
+  }
 }
 
 async function backupCurrentOutput(
   config: AppConfig,
   destination: string,
   fingerprint: string
-): Promise<void> {
-  if (!config.exportKeepBackup || !(await pathExists(destination))) return;
+): Promise<string | undefined> {
+  if (!config.exportKeepBackup || !(await pathExists(destination))) return undefined;
   const archiveDirectory = join(config.exportDirectory, "archive");
   await mkdir(archiveDirectory, { recursive: true });
   const extension = extname(destination);
   const stem = basename(destination, extension);
-  await copyFile(
-    destination,
-    join(
-      archiveDirectory,
-      `${stem}_${timestampForFilename()}_${fingerprint}${extension}`
-    )
+  let backupPath = join(
+    archiveDirectory,
+    `${stem}_${timestampForFilename()}_${fingerprint}${extension}`
   );
+  let sequence = 1;
+  while (await pathExists(backupPath)) {
+    backupPath = join(
+      archiveDirectory,
+      `${stem}_${timestampForFilename()}_${fingerprint}_${sequence}${extension}`
+    );
+    sequence += 1;
+  }
+  await copyFile(destination, backupPath);
+  return backupPath;
 }
 
 export class CsvExporter {
@@ -399,7 +444,11 @@ export class CsvExporter {
     const columns = settings.columns.filter((column) => column.enabled);
     const separator = settings.csv.fieldSeparator;
     const lines = [
-      columns.map((column) => escapeCsv(column.header, separator)).join(separator),
+      columns
+        .map((column) =>
+          escapeCsv(safeSpreadsheetText(column.header), separator)
+        )
+        .join(separator),
       ...rows.map((row) =>
         columns
           .map((column) =>
@@ -415,7 +464,9 @@ export class CsvExporter {
     const validation = await readFile(temporary, "utf8");
     const firstLine = validation.replace(/^\uFEFF/u, "").split(/\r?\n/u, 1)[0];
     const expected = columns
-      .map((column) => escapeCsv(column.header, separator))
+      .map((column) =>
+        escapeCsv(safeSpreadsheetText(column.header), separator)
+      )
       .join(separator);
     if (firstLine !== expected) throw new Error("CSV header validation failed.");
   }
@@ -465,9 +516,16 @@ export class CsvExporter {
           }
           if (column.field === "date" || column.field === "valueDate") {
             const rawDate = column.field === "date" ? row.movement_date : row.value_date;
-            return rawDate
-              ? { value: spreadsheetDate(rawDate), type: Date, format: "yyyy-mm-dd", ...background }
-              : null;
+            if (!rawDate) return null;
+            const date = spreadsheetDate(rawDate);
+            return date
+              ? { value: date, type: Date, format: "yyyy-mm-dd", ...background }
+              : {
+                  value: safeSpreadsheetText(rawDate),
+                  type: String,
+                  format: "@",
+                  ...background
+                };
           }
           const value = rowValue(row, column.field, settings, true);
           if (typeof value === "number") {
@@ -507,9 +565,16 @@ export class CsvExporter {
       this.config.exportDirectory,
       `.kakebo_movements.${process.pid}.${Date.now()}.tmp`
     );
+    const rollback = `${destination}.${process.pid}.${Date.now()}.rollback`;
+    const statePath = `${this.config.exportSettingsPath}.state.json`;
+    let archivedOutputs: ArchivedOutput[] = [];
+    let backupPath: string | undefined;
+    let destinationStaged = false;
+    let destinationInstalled = false;
+    let committed = false;
     try {
       await mkdir(this.config.exportDirectory, { recursive: true });
-      const previous = await rotateIncompatibleOutputs(this.config, settings);
+      const previous = await readExportState(statePath);
       const compatible = previous?.fingerprint === fingerprint && previous.format === settings.format;
       const currentKeys = sourceKeys(rows);
       const knownKeys = compatible && previous.sourceMovementKeys
@@ -531,14 +596,30 @@ export class CsvExporter {
         const current = new Set(currentKeys[source]);
         highlighted[source] = new Set([...highlighted[source]].filter((key) => current.has(key)));
       }
-      await backupCurrentOutput(this.config, destination, fingerprint);
       if (settings.format === "csv") {
         await this.writeCsv(temporary, rows, settings);
       } else {
         await this.writeXlsx(temporary, rows, settings, highlighted);
       }
+      if (compatible) {
+        backupPath = await backupCurrentOutput(
+          this.config,
+          destination,
+          fingerprint
+        );
+        if (await pathExists(destination)) {
+          await rename(destination, rollback);
+          destinationStaged = true;
+        }
+      } else {
+        archivedOutputs = await rotateIncompatibleOutputs(
+          this.config,
+          previous
+        );
+      }
       await rename(temporary, destination);
-      await writeExportState(`${this.config.exportSettingsPath}.state.json`, {
+      destinationInstalled = true;
+      await writeExportState(statePath, {
         fingerprint,
         format: settings.format,
         movementKeys: rows.map((row) => row.movement_key),
@@ -548,11 +629,46 @@ export class CsvExporter {
           cards: [...highlighted.cards]
         }
       });
+      committed = true;
+      if (destinationStaged) {
+        await rm(rollback, { force: true }).catch(() => undefined);
+      }
       return { path: destination, rows: rows.length };
     } catch (error) {
-      await rm(temporary, { force: true }).catch(() => undefined);
+      const rollbackFailures: unknown[] = [];
+      await rm(temporary, { force: true }).catch((cleanupError: unknown) =>
+        rollbackFailures.push(cleanupError)
+      );
+      if (!committed) {
+        if (destinationInstalled) {
+          await rm(destination, { force: true }).catch((cleanupError: unknown) =>
+            rollbackFailures.push(cleanupError)
+          );
+        }
+        if (destinationStaged) {
+          await rename(rollback, destination).catch((cleanupError: unknown) =>
+            rollbackFailures.push(cleanupError)
+          );
+        }
+        for (const output of archivedOutputs.reverse()) {
+          await rename(output.archivePath, output.originalPath).catch(
+            (cleanupError: unknown) => rollbackFailures.push(cleanupError)
+          );
+        }
+        if (backupPath) {
+          await rm(backupPath, { force: true }).catch((cleanupError: unknown) =>
+            rollbackFailures.push(cleanupError)
+          );
+        }
+      }
       throw new ExportError("Kakebo Harvester could not generate the export file.", {
-        cause: error
+        cause:
+          rollbackFailures.length > 0
+            ? new AggregateError(
+                [error, ...rollbackFailures],
+                "Export failed and rollback did not complete cleanly."
+              )
+            : error
       });
     }
   }
@@ -593,7 +709,15 @@ export async function countGeneratedExportFiles(
 export async function clearGeneratedExportFiles(
   config: AppConfig
 ): Promise<number> {
+  try {
+    if ((await lstat(config.exportDirectory)).isSymbolicLink()) {
+      throw new Error("Refusing to clear a symbolic link export directory.");
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   const total = await countGeneratedExportFiles(config);
+  const failures: unknown[] = [];
   try {
     const entries = await readdir(config.exportDirectory, {
       withFileTypes: true
@@ -601,18 +725,32 @@ export async function clearGeneratedExportFiles(
     for (const entry of entries) {
       if (
         entry.isFile() &&
-        /^kakebo_movements(?:_[^.]+)?\.(?:csv|xlsx)$/u.test(entry.name)
+        (/^kakebo_movements(?:_[^.]+)?\.(?:csv|xlsx)$/u.test(entry.name) ||
+          /^\.kakebo_movements\.\d+\.\d+\.tmp$/u.test(entry.name) ||
+          /^kakebo_movements\.(?:csv|xlsx)\.\d+\.\d+\.rollback$/u.test(
+            entry.name
+          ))
       ) {
-        await rm(join(config.exportDirectory, entry.name));
+        await rm(join(config.exportDirectory, entry.name)).catch((error: unknown) => {
+          failures.push(error);
+        });
       }
     }
-    await rm(join(config.exportDirectory, "archive"), {
-      recursive: true,
-      force: true
-    });
-    await rm(`${config.exportSettingsPath}.state.json`, { force: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await rm(join(config.exportDirectory, "archive"), {
+    recursive: true,
+    force: true
+  }).catch((error: unknown) => failures.push(error));
+  await rm(`${config.exportSettingsPath}.state.json`, { force: true }).catch(
+    (error: unknown) => failures.push(error)
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      "One or more generated export files could not be removed."
+    );
   }
   return total;
 }

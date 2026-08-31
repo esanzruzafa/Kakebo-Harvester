@@ -1,37 +1,69 @@
-import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { ConfigurationError } from "../errors.js";
+import { writeJsonAtomically } from "./atomic-json-file.js";
+
+function excelColumnIndex(reference: string): number {
+  let result = 0;
+  for (const character of reference) {
+    result = result * 26 + character.charCodeAt(0) - 64;
+  }
+  return result - 1;
+}
 
 const excelColumnSchema = z
   .string()
   .trim()
   .transform((value) => value.toUpperCase())
-  .pipe(z.string().regex(/^[A-Z]{1,3}$/u));
+  .pipe(
+    z
+      .string()
+      .regex(/^[A-Z]{1,3}$/u)
+      .refine((value) => excelColumnIndex(value) < 16_384, {
+        message: "The column must be between A and XFD."
+      })
+  );
 
-export const cardImportProfileSchema = z.object({
-  id: z.string().regex(/^[a-z0-9][a-z0-9._-]{2,63}$/u),
-  enabled: z.boolean(),
-  name: z.string().trim().min(1).max(120),
-  bankName: z.string().trim().min(1).max(120),
-  cardName: z.string().trim().min(1).max(120),
-  sheet: z.string().trim().max(120),
-  startRow: z.number().int().min(1).max(1_048_576),
-  columns: z.object({
-    date: excelColumnSchema,
-    description: excelColumnSchema,
-    valueDate: excelColumnSchema.nullable(),
-    amount: excelColumnSchema
-  }),
-  dateFormat: z.enum(["auto", "dmy", "ymd", "mdy"]),
-  decimalSeparator: z.enum(["auto", ".", ","]),
-  invertAmountSign: z.boolean(),
-  currency: z
-    .string()
-    .trim()
-    .transform((value) => value.toUpperCase())
-    .pipe(z.string().regex(/^[A-Z]{3}$/u))
-});
+export const cardImportProfileSchema = z
+  .object({
+    id: z.string().regex(/^[a-z0-9][a-z0-9._-]{2,63}$/u),
+    enabled: z.boolean(),
+    name: z.string().trim().min(1).max(120),
+    bankName: z.string().trim().min(1).max(120),
+    cardName: z.string().trim().min(1).max(120),
+    sheet: z.string().trim().max(120),
+    startRow: z.number().int().min(1).max(1_048_576),
+    columns: z.object({
+      date: excelColumnSchema,
+      description: excelColumnSchema,
+      valueDate: excelColumnSchema.nullable(),
+      amount: excelColumnSchema
+    }),
+    dateFormat: z.enum(["auto", "dmy", "ymd", "mdy"]),
+    decimalSeparator: z.enum(["auto", ".", ","]),
+    invertAmountSign: z.boolean(),
+    currency: z
+      .string()
+      .trim()
+      .transform((value) => value.toUpperCase())
+      .pipe(z.string().regex(/^[A-Z]{3}$/u))
+  })
+  .superRefine((profile, context) => {
+    const seen = new Map<string, string>();
+    for (const [field, column] of Object.entries(profile.columns)) {
+      if (column === null) continue;
+      const previous = seen.get(column);
+      if (previous) {
+        context.addIssue({
+          code: "custom",
+          message: `Column ${column} is already mapped to ${previous}.`,
+          path: ["columns", field]
+        });
+      } else {
+        seen.set(column, field);
+      }
+    }
+  });
 
 export type CardImportProfile = z.output<typeof cardImportProfileSchema>;
 
@@ -117,19 +149,7 @@ export class CardImportProfilesStore {
         cause: error
       });
     }
-    await mkdir(dirname(this.path), { recursive: true });
-    const temporary = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    const backup = `${this.path}.backup`;
-    try {
-      await copyFile(this.path, backup);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    await writeFile(temporary, `${JSON.stringify(profiles, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600
-    });
-    await rename(temporary, this.path);
+    await writeJsonAtomically(this.path, profiles, { backup: true });
     return profiles;
   }
 }

@@ -41,4 +41,36 @@ describe("authorization callback page", () => {
       await server.close();
     }
   });
+
+  it("keeps an authorized callback successful when a UI observer fails", async () => {
+    const server = Fastify({ logger: false });
+    registerCallback(
+      server,
+      {
+        complete: () =>
+          Promise.resolve({
+            connectionId: "connection",
+            bankName: "Demo",
+            status: "authorized"
+          })
+      },
+      {
+        onAuthorizationResult: () => {
+          throw new Error("Renderer closed during notification.");
+        }
+      }
+    );
+
+    try {
+      const response = await server.inject({
+        method: "GET",
+        url: `/callback?state=${"a".repeat(43)}&code=code`
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Connection completed");
+    } finally {
+      await server.close();
+    }
+  });
 });

@@ -12,6 +12,12 @@ import { testConfig } from "../helpers.js";
 
 let root: string | undefined;
 
+function ibanIdentificationHash(digest: string): string {
+  return `${Buffer.from(
+    JSON.stringify([["account", "account_id", "iban"]])
+  ).toString("base64")}.${digest}`;
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   if (root) await rm(root, { recursive: true, force: true });
@@ -205,8 +211,8 @@ describe("bank reauthorization", () => {
     database.close();
   });
 
-  it("reuses the connection and preserves the account alias", async () => {
-    root = await mkdtemp(join(tmpdir(), "kakebo-reauthorization-"));
+  it("discards a pending reauthorization state when authorization start fails", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-reauthorization-start-failure-"));
     const config = testConfig(root);
     const database = createDatabase(config.databasePath);
     const now = new Date().toISOString();
@@ -214,13 +220,110 @@ describe("bank reauthorization", () => {
       .prepare(
         `INSERT INTO bank_connections (
            id, provider, environment, bank_name, bank_country, psu_type,
-           alias, status, created_at, reauthorization_required
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', ?, 'Demo Bank', 'ES',
+                   'personal', 'Demo personal', 'AUTHORIZED', ?)`
+      )
+      .run(config.appEnv, now);
+    const client = {
+      listBanks: vi.fn().mockResolvedValue([
+        {
+          name: "Demo Bank",
+          country: "ES",
+          psu_types: ["personal"],
+          auth_methods: [],
+          maximum_consent_validity: 7_776_000
+        }
+      ]),
+      startAuthorization: vi
+        .fn()
+        .mockRejectedValue(new Error("Provider unavailable."))
+    } as unknown as EnableBankingClient;
+
+    await expect(
+      new AuthorizationService(config, database, client).reauthorize(
+        "connection"
+      )
+    ).rejects.toThrow("Provider unavailable.");
+
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM pending_authorizations").get()
+    ).toEqual({ count: 0 });
+    expect(
+      database
+        .prepare("SELECT status FROM bank_connections WHERE id = 'connection'")
+        .get()
+    ).toEqual({ status: "AUTHORIZED" });
+    database.close();
+  });
+
+  it("discards a pending state when persisting a started reauthorization fails", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-reauthorization-persistence-failure-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', ?, 'Demo Bank', 'ES',
+                   'personal', 'Demo personal', 'AUTHORIZED', ?)`
+      )
+      .run(config.appEnv, now);
+    database.exec(
+      `CREATE TRIGGER fail_authorization_start_update
+       BEFORE UPDATE OF required_psu_headers_json ON bank_connections
+       BEGIN
+         SELECT RAISE(ABORT, 'authorization state unavailable');
+       END;`
+    );
+    const client = {
+      listBanks: vi.fn().mockResolvedValue([
+        {
+          name: "Demo Bank",
+          country: "ES",
+          psu_types: ["personal"],
+          auth_methods: [],
+          maximum_consent_validity: 7_776_000
+        }
+      ]),
+      startAuthorization: vi.fn().mockResolvedValue({
+        url: "https://bank.example/authorize"
+      })
+    } as unknown as EnableBankingClient;
+
+    await expect(
+      new AuthorizationService(config, database, client).reauthorize(
+        "connection"
+      )
+    ).rejects.toThrow("authorization state unavailable");
+
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM pending_authorizations").get()
+    ).toEqual({ count: 0 });
+    database.close();
+  });
+
+  it("reuses the connection and preserves the account alias", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-reauthorization-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    const retryAt = new Date(Date.now() + 3_600_000).toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at, reauthorization_required,
+           retry_after_at, error_code, error_message_safe, online_retry_used
          ) VALUES (
            'connection', 'enable-banking', 'sandbox', 'Demo Bank', 'ES',
-           'personal', 'Demo Bank personal', 'REAUTHORIZATION_REQUIRED', ?, 1
+           'personal', 'Demo Bank personal', 'REAUTHORIZATION_REQUIRED', ?, 1,
+           ?, 'ASPSP_RATE_LIMIT_EXCEEDED', 'Wait for the bank.', 1
          )`
       )
-      .run(now);
+      .run(now, retryAt);
     database
       .prepare(
         `INSERT INTO provider_sessions (
@@ -238,17 +341,19 @@ describe("bank reauthorization", () => {
         encryptSecret("recovery-provider-session", config.sessionEncryptionKey),
         now
       );
+    const iban = "ES0100000000000000000001";
+    const stableHash = ibanIdentificationHash("stable-account");
     database
       .prepare(
         `INSERT INTO accounts (
            id, bank_connection_id, provider_account_id, identification_hash,
-           name, account_alias, active, first_seen_at, last_seen_at
+           iban_masked, name, account_alias, active, first_seen_at, last_seen_at
          ) VALUES (
-           'account', 'connection', 'old-account-id', 'stable-hash',
+           'account', 'connection', 'old-account-id', ?, 'ES************01',
            'Current account', 'Household', 1, ?, ?
          )`
       )
-      .run(now, now);
+      .run(stableHash, now, now);
 
     let authorizationState = "";
     const deleteSession = vi.fn().mockResolvedValue(undefined);
@@ -271,7 +376,8 @@ describe("bank reauthorization", () => {
         accounts: [
           {
             uid: "new-account-id",
-            identification_hash: "stable-hash",
+            identification_hash: stableHash,
+            account_id: { iban },
             name: "Current account",
             currency: "EUR"
           }
@@ -280,9 +386,24 @@ describe("bank reauthorization", () => {
       }),
       deleteSession
     } as unknown as EnableBankingClient;
+    const rawWrite = vi.spyOn(RawStore.prototype, "write");
     const service = new AuthorizationService(config, database, client);
 
     const started = await service.reauthorize("connection");
+    expect(
+      database
+        .prepare(
+          `SELECT retry_after_at, error_code, error_message_safe,
+                  online_retry_used
+           FROM bank_connections WHERE id = 'connection'`
+        )
+        .get()
+    ).toEqual({
+      retry_after_at: retryAt,
+      error_code: "ASPSP_RATE_LIMIT_EXCEEDED",
+      error_message_safe: "Wait for the bank.",
+      online_retry_used: 1
+    });
     const completed = await service.complete({
       state: authorizationState,
       code: "authorization-code"
@@ -290,6 +411,25 @@ describe("bank reauthorization", () => {
 
     expect(started.connectionId).toBe("connection");
     expect(completed.status).toBe("authorized");
+    expect(rawWrite).toHaveBeenCalledWith(
+      "session",
+      "connection",
+      expect.objectContaining({ session_id: "[REDACTED]" })
+    );
+    expect(
+      database
+        .prepare(
+          `SELECT retry_after_at, error_code, error_message_safe,
+                  online_retry_used
+           FROM bank_connections WHERE id = 'connection'`
+        )
+        .get()
+    ).toEqual({
+      retry_after_at: retryAt,
+      error_code: "ASPSP_RATE_LIMIT_EXCEEDED",
+      error_message_safe: "Wait for the bank.",
+      online_retry_used: 1
+    });
     expect(deleteSession).toHaveBeenCalledWith("recovery-provider-session");
     expect(deleteSession).toHaveBeenCalledWith("old-provider-session");
     expect(
@@ -469,15 +609,18 @@ describe("bank reauthorization", () => {
     const database = createDatabase(config.databasePath);
     const now = new Date().toISOString();
     const validUntil = new Date(Date.now() + 86_400_000).toISOString();
+    const retryAt = new Date(Date.now() + 3_600_000).toISOString();
     database
       .prepare(
         `INSERT INTO bank_connections (
            id, provider, environment, bank_name, bank_country, psu_type,
-           alias, status, created_at, valid_until
+           alias, status, created_at, valid_until, retry_after_at, error_code,
+           error_message_safe, online_retry_used
          ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo Bank', 'ES',
-                   'personal', 'Demo', 'AUTHORIZED', ?, ?)`
+                   'personal', 'Demo', 'AUTHORIZED', ?, ?, ?,
+                   'ASPSP_RATE_LIMIT_EXCEEDED', 'Wait for the bank.', 1)`
       )
-      .run(now, validUntil);
+      .run(now, validUntil, retryAt);
     database
       .prepare(
         `INSERT INTO provider_sessions (
@@ -515,8 +658,23 @@ describe("bank reauthorization", () => {
       deleteSession
     } as unknown as EnableBankingClient;
     const service = new AuthorizationService(config, database, client);
+    const cooldown = (): unknown =>
+      database
+        .prepare(
+          `SELECT retry_after_at, error_code, error_message_safe,
+                  online_retry_used
+           FROM bank_connections WHERE id = 'connection'`
+        )
+        .get();
+    const expectedCooldown = {
+      retry_after_at: retryAt,
+      error_code: "ASPSP_RATE_LIMIT_EXCEEDED",
+      error_message_safe: "Wait for the bank.",
+      online_retry_used: 1
+    };
 
     await service.reauthorize("connection");
+    expect(cooldown()).toEqual(expectedCooldown);
     expect(
       database
         .prepare(
@@ -528,9 +686,14 @@ describe("bank reauthorization", () => {
 
     const denied = await service.complete({
       state: authorizationState,
-      error: "access_denied"
+      error: "access_denied",
+      errorDescription: "Denied with code=secret-code&state=secret-state"
     });
     expect(denied.status).toBe("denied");
+    expect(denied.message).toContain("code=[REDACTED]");
+    expect(denied.message).not.toContain("secret-code");
+    expect(denied.message).not.toContain("secret-state");
+    expect(cooldown()).toEqual(expectedCooldown);
     expect(
       database
         .prepare(
@@ -548,6 +711,7 @@ describe("bank reauthorization", () => {
     });
 
     expect(failed.status).toBe("failed");
+    expect(cooldown()).toEqual(expectedCooldown);
     expect(deleteSession).toHaveBeenCalledExactlyOnceWith("new-session");
     expect(
       database

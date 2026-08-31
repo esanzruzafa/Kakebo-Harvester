@@ -36,6 +36,37 @@ describe("local HTTPS certificate validation", () => {
     ).toBe(false);
   });
 
+  it("matches the localhost certificate to the configured local CA", () => {
+    const thumbprint = "0123456789ABCDEF0123456789ABCDEF01234567";
+    expect(
+      isCurrentLocalhostCertificate(
+        {
+          ...certificate,
+          issuerCertificate: {
+            fingerprint: thumbprint.match(/.{2}/gu)?.join(":")
+          }
+        },
+        now,
+        thumbprint.toLowerCase()
+      )
+    ).toBe(true);
+    expect(
+      isCurrentLocalhostCertificate(
+        {
+          ...certificate,
+          issuerCertificate: {
+            fingerprint: "89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF"
+          }
+        },
+        now,
+        thumbprint
+      )
+    ).toBe(false);
+    expect(
+      isCurrentLocalhostCertificate(certificate, now, thumbprint)
+    ).toBe(false);
+  });
+
   it("resolves the development HTTPS script from the application root", () => {
     expect(
       tlsSetupScriptPath({

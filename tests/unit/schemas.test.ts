@@ -1,7 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { sessionResponseSchema } from "../../src/enable-banking/schemas.js";
+import {
+  sessionResponseSchema,
+  startAuthorizationResponseSchema
+} from "../../src/enable-banking/schemas.js";
 
 describe("provider response schemas", () => {
+  it("accepts only credential-free HTTPS authorization URLs", () => {
+    expect(
+      startAuthorizationResponseSchema.parse({
+        url: "https://bank.example/authorize?request=123",
+        authorization_id: "authorization"
+      }).url
+    ).toBe("https://bank.example/authorize?request=123");
+
+    expect(() =>
+      startAuthorizationResponseSchema.parse({
+        url: "http://bank.example/authorize"
+      })
+    ).toThrow();
+    expect(() =>
+      startAuthorizationResponseSchema.parse({
+        url: "https://user:password@bank.example/authorize"
+      })
+    ).toThrow();
+  });
+
   it("accepts optional Mock ASPSP account fields with provider-specific shapes", () => {
     const result = sessionResponseSchema.parse({
       session_id: "session",

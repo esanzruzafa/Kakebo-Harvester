@@ -35,6 +35,9 @@ export interface SyncRunResult {
   transactions?: SyncSummary;
   export?: { path: string; rows: number };
   accountFailures?: number;
+  skippedConnections?: number;
+  skippedRateLimitedConnections?: number;
+  skippedUnavailableConnections?: number;
 }
 
 export interface SyncProgressEvent {
@@ -70,8 +73,10 @@ const orderedSteps: SyncStep[] = [
   "export"
 ];
 
+export const SYNCHRONIZATION_LOCK_STALE_AFTER_MS = 6 * 60 * 60 * 1_000;
+
 export class SynchronizationLock {
-  private static readonly staleAfterMs = 6 * 60 * 60 * 1_000;
+  private static readonly staleAfterMs = SYNCHRONIZATION_LOCK_STALE_AFTER_MS;
   private static readonly heartbeatIntervalMs = 5 * 60 * 1_000;
   private readonly owner = createId();
   private acquired = false;
@@ -216,14 +221,18 @@ export class SyncRunner {
       step?: SyncStep,
       accountFailure?: AccountSyncFailure
     ): void => {
-      options.onProgress?.({
-        type,
-        ...(step ? { step } : {}),
-        ...(accountFailure ? { accountFailure } : {}),
-        completedSteps,
-        totalSteps: steps.length,
-        message
-      });
+      try {
+        options.onProgress?.({
+          type,
+          ...(step ? { step } : {}),
+          ...(accountFailure ? { accountFailure } : {}),
+          completedSteps,
+          totalSteps: steps.length,
+          message
+        });
+      } catch {
+        // Progress observers must not change the synchronization outcome.
+      }
     };
     const context: SyncExecutionContext = {
       ...(options.psuHeaders ? { psuHeaders: options.psuHeaders } : {}),
@@ -231,6 +240,9 @@ export class SyncRunner {
         ? { allowRateLimitOverride: true }
         : {}),
       skippedAccountIds: new Set<string>(),
+      skippedAuthorizationConnectionIds: new Set<string>(),
+      skippedRateLimitConnectionIds: new Set<string>(),
+      skippedUnavailableConnectionIds: new Set<string>(),
       onAccountFailure: async (failure) => {
         accountFailures += 1;
         progress("account-failed", failure.message, failure.phase, failure);
@@ -292,18 +304,59 @@ export class SyncRunner {
         progress("step-completed", `${step} completed.`, step);
       }
       if (accountFailures > 0) result.accountFailures = accountFailures;
-      audit.finish(desktopRunId, "SUCCESS");
+      const skippedConnections =
+        context.skippedAuthorizationConnectionIds?.size ?? 0;
+      if (skippedConnections > 0) {
+        result.skippedConnections = skippedConnections;
+      }
+      const skippedRateLimitedConnections =
+        context.skippedRateLimitConnectionIds?.size ?? 0;
+      if (skippedRateLimitedConnections > 0) {
+        result.skippedRateLimitedConnections = skippedRateLimitedConnections;
+      }
+      const skippedUnavailableConnections =
+        context.skippedUnavailableConnectionIds?.size ?? 0;
+      if (skippedUnavailableConnections > 0) {
+        result.skippedUnavailableConnections = skippedUnavailableConnections;
+      }
+      const warningSummary = [
+        accountFailures > 0
+          ? `${accountFailures} account operation(s) failed.`
+          : null,
+        skippedConnections > 0
+          ? `${skippedConnections} connection(s) were skipped pending authorization.`
+          : null,
+        skippedRateLimitedConnections > 0
+          ? `${skippedRateLimitedConnections} connection(s) were skipped due to an active request limit.`
+          : null,
+        skippedUnavailableConnections > 0
+          ? `${skippedUnavailableConnections} connection(s) were skipped because the bank was temporarily unavailable.`
+          : null
+      ].filter((message): message is string => message !== null);
+      audit.finish(
+        desktopRunId,
+        warningSummary.length > 0 ? "SUCCESS_WITH_WARNINGS" : "SUCCESS",
+        warningSummary.length > 0 ? warningSummary.join(" ") : undefined,
+        warningSummary.length > 0 ? "SYNC_WARNINGS" : undefined
+      );
       progress("run-completed", "Synchronization completed.");
       return result;
     } catch (error) {
       if (desktopRunId) {
-        audit.finish(
-          desktopRunId,
-          "FAILED",
-          safeMessage(error),
-          providerErrorCode(error) ??
-            (error instanceof KakeboError ? error.code : "SYNC_ERROR")
-        );
+        try {
+          audit.finish(
+            desktopRunId,
+            "FAILED",
+            safeMessage(error),
+            providerErrorCode(error) ??
+              (error instanceof KakeboError ? error.code : "SYNC_ERROR")
+          );
+        } catch (auditError) {
+          throw new AggregateError(
+            [error, auditError],
+            "Synchronization failed and its audit record could not be finalized."
+          );
+        }
       }
       progress("run-failed", error instanceof Error ? error.message : String(error));
       throw error;

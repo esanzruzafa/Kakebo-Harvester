@@ -56,6 +56,18 @@ async function createConnection(): Promise<{
 describe("bank connection revocation", () => {
   it("revokes the remote session and preserves local history", async () => {
     const { config, database } = await createConnection();
+    const now = new Date();
+    database
+      .prepare(
+        `INSERT INTO pending_authorizations (
+           state_hash, bank_connection_id, bank_name, redirect_url,
+           environment, created_at, expires_at, purpose
+         ) VALUES (
+           'late-state-hash', 'connection', 'Demo Bank',
+           'http://localhost:8000/callback', 'sandbox', ?, ?, 'reauthorize'
+         )`
+      )
+      .run(now.toISOString(), new Date(now.getTime() + 900_000).toISOString());
     database
       .prepare(
         `INSERT INTO provider_sessions (
@@ -92,6 +104,9 @@ describe("bank connection revocation", () => {
     ).toEqual({ status: "REVOKED", reauthorization_required: 1 });
     expect(
       database.prepare("SELECT COUNT(*) AS count FROM provider_sessions").get()
+    ).toEqual({ count: 0 });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM pending_authorizations").get()
     ).toEqual({ count: 0 });
     expect(
       database.prepare("SELECT active FROM accounts WHERE id = 'account'").get()

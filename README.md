@@ -19,7 +19,7 @@ The project website, user guide, FAQ, privacy policy, and terms are available in
 - Exported spreadsheet text is protected against formula injection.
 - There is no telemetry and no payment API usage.
 
-Raw provider responses are optional. They are excluded from Git but are not encrypted, so keep the application directory private or set `RETAIN_RAW_DATA=false`.
+Raw provider responses are optional. They are excluded from Git but are not encrypted and may contain provider-supplied financial or account data, so keep the application directory private or set `RETAIN_RAW_DATA=false`. The provider session identifier is always redacted before a session response is written to raw storage; its usable value exists only in encrypted SQLite storage.
 
 ## Desktop features
 
@@ -35,7 +35,7 @@ The production desktop application provides:
 - live progress showing every execution step, with one mutable line per step;
 - account aliases and separate synchronize/export switches;
 - configurable, deduplicated XLSX imports for card statements;
-- ordered categorization rules with drag-and-drop;
+- ordered categorization rules with drag-and-drop or keyboard arrow controls;
 - configurable dependent category and subcategory picklists;
 - configurable export fields, order, column names, XLSX/CSV format, and CSV regional options;
 - custom save/discard prompts for unsaved tab changes and safe close prompts for active operations;
@@ -84,13 +84,16 @@ In that case the local disconnect still completes and the application clearly
 asks you to revoke the consent from the bank or Enable Banking control panel as
 well.
 
-When an ASPSP returns `WRONG_TRANSACTIONS_PERIOD`, Kakebo Harvester retries that account with Enable Banking's `longest` strategy. Pagination continues with the same request parameters, and only movements inside the date interval selected in the application are added to SQLite and exports.
+When an ASPSP returns `WRONG_TRANSACTIONS_PERIOD`, Kakebo Harvester retries that account with Enable Banking's `longest` strategy. Pagination continues with the same request parameters, and only movements inside the date interval selected in the application are added to SQLite and exports. Movements without any valid booking, transaction, or value date are excluded because they cannot be proven to belong to that interval; the optional raw response remains available for diagnosis.
 
 `ASPSP_ERROR` means the bank temporarily failed while Enable Banking was retrieving
 account information. It does not require revocation or reauthorization. Retry the
 operation after at least one minute; if it persists, use wider intervals of one,
 two, and four hours, then review the request log in the Enable Banking control
-panel.
+panel. When more than one bank is connected, a temporary session failure or a
+connection that requires reauthorization is isolated: Kakebo Harvester continues
+with every usable bank and records a successful run with warnings. The run fails
+only when no usable connection remains.
 
 When an enabled account returns a recoverable bank-side error, the desktop app
 identifies the affected account in progress, records its latest error in the
@@ -142,7 +145,7 @@ The Export tab can change:
 
 - output format: XLSX or CSV;
 - enabled columns;
-- column order through drag-and-drop;
+- column order through drag-and-drop or the Up and Down arrow keys on each move handle;
 - exported column names;
 - CSV field separator, decimal separator, date format, and UTF-8 BOM.
 
@@ -175,9 +178,9 @@ data/production/exports/kakebo_movements.xlsx
 data/production/exports/kakebo_movements.csv
 ```
 
-The **Reset local data** action permanently removes Kakebo Harvester's current and archived XLSX/CSV results, imported bank and card movements, balances, raw provider responses, and execution history after an in-app confirmation. It preserves bank connections and sessions, account preferences, and every configuration file. The database reset is atomic; result and raw-file cleanup is reported separately so a Windows file lock cannot hide that the financial history was already cleared. If a locked file remains, the application refreshes its empty history, shows a warning, and lets you retry after closing the program that holds the file. The next synchronization therefore starts with empty local financial history without requiring bank reconnection.
+The **Reset local data** action permanently removes Kakebo Harvester's current and archived XLSX/CSV results, interrupted-export temporary and rollback files, imported bank and card movements, balances, raw provider responses, execution history, and stale per-account synchronization errors after an in-app confirmation. It preserves bank connections and sessions, account preferences, and every configuration file. The database reset is atomic; result and raw-file cleanup is reported separately so a Windows file lock cannot hide that the financial history was already cleared. If a locked file remains, the application refreshes its empty history, shows a warning, and lets you retry after closing the program that holds the file. The next synchronization therefore starts with empty local financial history without requiring bank reconnection.
 
-For deletion safety, `DATABASE_PATH`, `RAW_DATA_DIRECTORY`, and `EXPORT_DIRECTORY` must use one environment folder: the SQLite file and the distinct `raw` and `exports` directories are siblings. Startup rejects broader or nested layouts before any cleanup can run.
+For deletion safety, `DATABASE_PATH`, `RAW_DATA_DIRECTORY`, and `EXPORT_DIRECTORY` must use one environment folder: the SQLite file and the distinct `raw` and `exports` directories are siblings. Startup rejects broader or nested layouts before any cleanup can run, and reset refuses to delete through symbolic links or Windows directory junctions used as the configured `raw` or `exports` root.
 
 Tabs with edited configuration show an in-app choice to save, discard, or cancel
 before navigation. Closing applies the same choice across every edited section.
@@ -188,7 +191,7 @@ continues in the background; closing explains the safe-shutdown implications.
 
 `config/categories.json` defines categories and their allowed subcategories. Both fields are dependent picklists in the rule editor.
 
-`config/categorization-rules.json` contains two ordered lists: `exclusions` and `rules`. Both support `contains`, `equals`, `startsWith`, and `regex`; exclusions are always evaluated first, so matching movements remain uncategorized. The Categorization tab provides separate drag-and-drop editors for both lists. Rules are evaluated from top to bottom; their internal priority is normalized when the ordered list is saved. Existing reviewed movements are not overwritten. **Apply to history** reprocesses unreviewed movements and rebuilds the current export.
+`config/categorization-rules.json` contains two ordered lists: `exclusions` and `rules`. Both support `contains`, `equals`, `startsWith`, and `regex`; exclusions are always evaluated first, so matching movements remain uncategorized. The Categorization tab provides separate ordered editors for both lists. Rows can be moved by dragging or by focusing their move handle and pressing the Up or Down arrow key. Rules are evaluated from top to bottom; their internal priority is normalized when the ordered list is saved. Existing reviewed movements are not overwritten. **Apply to history** reprocesses unreviewed movements and rebuilds the current export.
 
 Example files are under `config/`.
 
@@ -233,7 +236,7 @@ Every manual or scheduled synchronization creates one persistent audit run. Each
 
 - local start and finish timestamps;
 - selected steps and date interval;
-- completed, running, or failed status;
+- completed, completed-with-warnings, running, or failed status;
 - a snapshot of the selected balance for each active account;
 - the provider/application error code and a safe error message when applicable.
 
@@ -244,6 +247,11 @@ stored in `config/ui-settings.json`. Failed executions show their recorded error
 code and safe message. **Clear history** asks for confirmation and removes only
 audit runs and their stored snapshots; exports and operational balance data
 remain unchanged.
+
+If a process ends before finalizing a run, startup marks the orphaned audit row
+as `INTERRUPTED` once no live synchronization lease remains. A recent lease is
+left untouched so opening the UI cannot mislabel a Task Scheduler run that is
+still active in another process.
 
 The current-year counter uses the Windows clock and timezone.
 
@@ -290,7 +298,7 @@ The executable searches for `private/.env.production` in this order:
 4. the current working directory;
 5. next to the running executable.
 
-The legacy root-level `.env.production` locations remain supported for existing installations, but `private/.env.production` takes precedence. All relative paths are resolved from the directory containing the selected file. The production template is already written for the recommended `private/` location: secrets use paths inside `private/`, while data and configuration use `../data/...` and `../config/...`.
+The legacy root-level `.env.production` locations remain supported for existing installations, but `private/.env.production` takes precedence. All relative environment paths are resolved from the directory containing the selected file. For the recommended layout, the desktop **Application folder** action and scheduled-process working directory use the parent of `private/`, while the configuration resolver continues to use `private/` as the base for environment paths. The production template therefore keeps secrets inside `private/` and uses `../data/...` and `../config/...` for runtime data and editable configuration.
 
 ## Production setup
 
@@ -322,6 +330,10 @@ The local HTTPS certificate is separate from any code-signing certificate.
 Moving to another computer does not require code changes. Kakebo Harvester checks
 that the copied CA thumbprint is trusted by the current Windows user; when it is
 not, startup offers to regenerate local HTTPS before opening the callback server.
+Regeneration keeps the previous TLS files and trusted CA recoverable until the
+new certificate, PFX, passphrase, and thumbprint have all been installed. A
+failed rotation restores the previous local HTTPS setup instead of leaving a
+partially configured machine.
 
 For a fresh computer, copy the executable, the complete `private/` directory,
 and the configuration you want to retain. The application creates missing
@@ -368,7 +380,10 @@ The desktop Settings tab shows the exact non-interactive command:
 Configure the scheduled task to run as the same Windows user who owns the files and prepared local HTTPS.
 
 - Success returns exit code `0`.
-- Reauthorization required returns exit code `10` and never opens a browser.
+- Reauthorization required returns exit code `10` and never opens a browser when
+  no other usable connection can complete the requested work. If at least one bank
+  remains usable, the scheduled run completes with a warning and skips only the
+  affected connection.
 - An overlapping synchronization returns exit code `11`.
 
 The configured export profile and all account/category settings are reused automatically.
@@ -397,12 +412,18 @@ The portable file is created at:
 
 ```text
 release/portable/Kakebo-Harvester-<version>-x64.exe
+release/portable/Kakebo-Harvester-<version>-x64-complete-package.zip
 ```
 
 The release directory can also contain build intermediates:
 
 - `release/portable/Kakebo-Harvester-<version>-x64.exe` is the single-file
-  portable distribution and the only artifact uploaded to GitHub Releases;
+  portable distribution;
+- `release/portable/Kakebo-Harvester-<version>-x64-complete-package.zip`
+  combines that executable with the license, first-run instructions, public
+  environment and configuration examples, and the empty production data
+  structure. It never contains credentials, PEM files, real configuration,
+  SQLite databases, raw responses, or exports;
 - `release/portable/win-unpacked/` contains the same application already
   extracted. It starts faster but the whole directory must stay together and is
   intended for local diagnostics;
@@ -424,8 +445,9 @@ portable build then opens an in-memory database with the packaged module and
 applies every packaged SQL migration to a temporary database. It fails if the
 Electron ABI is incompatible, a migration is missing, or the packaged schema
 cannot reach its latest version. Regular pull-request validation also builds the
-application and checks that all runtime assets and migrations were copied. If
-It also verifies the packaged entry point, splash image, and extra resources
+application from a freshly cleaned `dist/` directory and checks that all runtime
+assets and migrations were copied. It also verifies the packaged entry point,
+splash image, and extra resources
 declared in `package.json`. If CLI development or tests will continue in the
 same checkout after packaging, restore the Node.js binary and rerun validation:
 
@@ -443,7 +465,7 @@ Good practice is to validate every application change in CI but build distributa
 This repository includes:
 
 - `.github/workflows/ci.yml`: validates application changes on `main` and pull requests;
-- `.github/workflows/release.yml`: builds the Windows portable executable for tags matching `v*`, generates a SHA-256 file, and uploads both to GitHub Releases;
+- `.github/workflows/release.yml`: builds the Windows portable executable for tags matching `v*` only when the ref is an existing tag, its version matches `package.json`, it points to the checked-out commit, and that commit belongs to `main`; it then creates the public `complete-package` starter ZIP, generates SHA-256 files for both downloads, and uploads all four files to GitHub Releases;
 - `.github/workflows/pages.yml`: deploys only when files under `legal/` or the Pages workflow change.
 
 Create a release after updating `package.json`:
@@ -483,7 +505,7 @@ Before enabling this workflow on GitHub, configure branch protection as follows:
 1. Enable the `main` ruleset and require the `check` and `legal` status checks.
 2. Enable **Allow auto-merge** in the repository's Pull Requests settings.
 3. Allow squash merges only, if a linear main history is desired.
-4. Do not enable Merge Queue unless CI is extended with the `merge_group` trigger and the auto-merge workflow is authenticated with a token that can add pull requests to that queue.
+4. If Merge Queue is enabled, keep the existing `merge_group` CI trigger and ensure the auto-merge identity is allowed to add pull requests to that queue.
 
 Avoid global branch rules that restrict ordinary branch creation or updates: Dependabot needs to create and update its own branches. Repository write access remains the appropriate control for who may push branches. Public repositories cannot prevent third parties from proposing pull requests from their forks, but they cannot merge or push to this repository without the permissions and protections above.
 

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
 import { ConfigurationError } from "./errors.js";
@@ -180,6 +180,8 @@ export function isSafeDataLayout(
   return (
     comparablePath(dirname(raw)) === dataRoot &&
     comparablePath(dirname(exports)) === dataRoot &&
+    basename(raw).toLowerCase() === "raw" &&
+    basename(exports).toLowerCase() === "exports" &&
     raw !== exports &&
     raw !== dataRoot &&
     exports !== dataRoot

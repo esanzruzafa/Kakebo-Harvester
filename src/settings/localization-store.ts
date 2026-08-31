@@ -1,7 +1,8 @@
-import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { z } from "zod";
 import { ConfigurationError } from "../errors.js";
+import { writeJsonAtomically } from "./atomic-json-file.js";
 
 export type AppLanguage = "en" | "es";
 export type TranslationDictionary = Record<string, string>;
@@ -27,6 +28,7 @@ export class LocalizationStore {
   private language: AppLanguage;
   private auditHistoryLimit: AuditHistoryLimit = 10;
   private translations: TranslationDictionary = {};
+  private mutationQueue: Promise<void> = Promise.resolve();
 
   public constructor(
     private readonly settingsPath: string,
@@ -72,42 +74,37 @@ export class LocalizationStore {
   }
 
   private async writeSettings(): Promise<void> {
-    await mkdir(dirname(this.settingsPath), { recursive: true });
-    const temporary = `${this.settingsPath}.${process.pid}.${Date.now()}.tmp`;
-    const backup = `${this.settingsPath}.backup`;
-    try {
-      await copyFile(this.settingsPath, backup);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    await writeFile(
-      temporary,
-      `${JSON.stringify(
-        {
-          language: this.language,
-          auditHistoryLimit: this.auditHistoryLimit
-        },
-        null,
-        2
-      )}\n`,
-      { encoding: "utf8", mode: 0o600 }
+    await writeJsonAtomically(
+      this.settingsPath,
+      {
+        language: this.language,
+        auditHistoryLimit: this.auditHistoryLimit
+      },
+      { backup: true }
     );
-    await rename(temporary, this.settingsPath);
+  }
+
+  private enqueueMutation(operation: () => Promise<void>): Promise<void> {
+    const pending = this.mutationQueue.then(operation);
+    this.mutationQueue = pending.catch(() => undefined);
+    return pending;
   }
 
   public async setLanguage(language: AppLanguage): Promise<void> {
-    const previousLanguage = this.language;
-    const previousTranslations = this.translations;
-    const translations = await this.loadLanguageFile(language);
-    this.language = language;
-    this.translations = translations;
-    try {
-      await this.writeSettings();
-    } catch (error) {
-      this.language = previousLanguage;
-      this.translations = previousTranslations;
-      throw error;
-    }
+    await this.enqueueMutation(async () => {
+      const previousLanguage = this.language;
+      const previousTranslations = this.translations;
+      const translations = await this.loadLanguageFile(language);
+      this.language = language;
+      this.translations = translations;
+      try {
+        await this.writeSettings();
+      } catch (error) {
+        this.language = previousLanguage;
+        this.translations = previousTranslations;
+        throw error;
+      }
+    });
   }
 
   public getLanguage(): AppLanguage {
@@ -115,14 +112,16 @@ export class LocalizationStore {
   }
 
   public async setAuditHistoryLimit(limit: AuditHistoryLimit): Promise<void> {
-    const previous = this.auditHistoryLimit;
-    this.auditHistoryLimit = limit;
-    try {
-      await this.writeSettings();
-    } catch (error) {
-      this.auditHistoryLimit = previous;
-      throw error;
-    }
+    await this.enqueueMutation(async () => {
+      const previous = this.auditHistoryLimit;
+      this.auditHistoryLimit = limit;
+      try {
+        await this.writeSettings();
+      } catch (error) {
+        this.auditHistoryLimit = previous;
+        throw error;
+      }
+    });
   }
 
   public getAuditHistoryLimit(): AuditHistoryLimit {

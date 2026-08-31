@@ -153,6 +153,21 @@ describe("paginated transaction synchronization", () => {
           status: "BOOK",
           booking_date: "2026-07-28",
           remittance_information: "After range"
+        },
+        {
+          entry_reference: "unknown-date",
+          transaction_amount: { currency: "EUR", amount: "40.00" },
+          credit_debit_indicator: "DBIT",
+          status: "BOOK",
+          remittance_information: "No date supplied"
+        },
+        {
+          entry_reference: "invalid-date",
+          transaction_amount: { currency: "EUR", amount: "50.00" },
+          credit_debit_indicator: "DBIT",
+          status: "BOOK",
+          booking_date: "2026-04-XX",
+          remittance_information: "Invalid date supplied"
         }
       ],
       continuation_key: null

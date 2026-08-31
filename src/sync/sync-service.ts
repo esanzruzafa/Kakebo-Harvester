@@ -23,6 +23,7 @@ import { Categorizer } from "../transactions/categorization.js";
 import { TransactionRepository } from "../transactions/deduplication.js";
 import { mapTransaction } from "../transactions/transaction-mapper.js";
 import { createId, decryptSecret } from "../utils/crypto.js";
+import { assertIsoDate } from "../utils/dates.js";
 import { safeMessage } from "../utils/text.js";
 
 interface ActiveSession {
@@ -50,6 +51,9 @@ export interface SyncExecutionContext {
   allowRateLimitOverride?: boolean;
   skippedAccountIds?: Set<string>;
   skippedConnectionIds?: Set<string>;
+  skippedAuthorizationConnectionIds?: Set<string>;
+  skippedRateLimitConnectionIds?: Set<string>;
+  skippedUnavailableConnectionIds?: Set<string>;
   onAccountFailure?: (
     failure: AccountSyncFailure
   ) => Promise<AccountFailureDecision>;
@@ -83,6 +87,23 @@ function emptySummary(): SyncSummary {
   };
 }
 
+function firstValidMovementDate(
+  ...values: Array<string | null | undefined>
+): string | undefined {
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+    const candidate = value.slice(0, 10);
+    try {
+      return assertIsoDate(candidate, "provider movement date");
+    } catch {
+      // Try the next provider date before treating the movement as undated.
+    }
+  }
+  return undefined;
+}
+
 export class SyncService {
   private readonly accounts: AccountRepository;
   private readonly transactions: TransactionRepository;
@@ -104,30 +125,35 @@ export class SyncService {
   }
 
   public listConnectionsRequiringAuthorization(): string[] {
+    const now = new Date().toISOString();
     const rows = this.database
       .prepare(
         `SELECT c.id
          FROM bank_connections c
-         WHERE c.environment = ?
+         WHERE c.environment = @environment
            AND c.provider = 'enable-banking'
            AND c.status NOT IN ('REVOKED', 'DENIED')
            AND (
              c.status <> 'AUTHORIZED'
              OR c.reauthorization_required = 1
-             OR (c.valid_until IS NOT NULL AND c.valid_until <= ?)
+             OR (c.valid_until IS NOT NULL AND c.valid_until <= @now)
              OR NOT EXISTS (
                SELECT 1 FROM provider_sessions s
-               WHERE s.bank_connection_id = c.id AND s.status = 'AUTHORIZED'
+               WHERE s.bank_connection_id = c.id
+                 AND s.status = 'AUTHORIZED'
+                 AND (s.valid_until IS NULL OR s.valid_until > @now)
              )
            )
          ORDER BY c.created_at`
       )
-      .all(this.config.appEnv, new Date().toISOString()) as Array<{ id: string }>;
+      .all({ environment: this.config.appEnv, now }) as Array<{ id: string }>;
     return rows.map((row) => row.id);
   }
 
-  private async refreshMissingPsuMetadata(): Promise<void> {
-    const rows = this.database
+  private async refreshMissingPsuMetadata(
+    skippedConnectionIds?: Set<string>
+  ): Promise<void> {
+    const rows = (this.database
       .prepare(
         `SELECT id, bank_name, bank_country, psu_type,
                 required_psu_headers_json
@@ -137,7 +163,9 @@ export class SyncService {
            AND status = 'AUTHORIZED'
            AND required_psu_headers_json IS NULL`
       )
-      .all(this.config.appEnv) as ConnectionPsuRow[];
+      .all(this.config.appEnv) as ConnectionPsuRow[]).filter(
+        (row) => !skippedConnectionIds?.has(row.id)
+      );
     const catalogs = new Map<string, Awaited<ReturnType<EnableBankingClient["listBanks"]>>>();
     for (const row of rows) {
       const key = `${row.bank_country}:${row.psu_type}`;
@@ -213,11 +241,17 @@ export class SyncService {
   ): Promise<void> {
     context.skippedConnectionIds ??= new Set<string>();
     context.skippedConnectionIds.clear();
+    for (const connectionId of context.skippedUnavailableConnectionIds ?? []) {
+      context.skippedConnectionIds.add(connectionId);
+    }
     const now = new Date().toISOString();
     this.database
       .prepare(
         `UPDATE bank_connections
-         SET retry_after_at = NULL
+         SET retry_after_at = NULL,
+             online_retry_used = 0,
+             error_code = NULL,
+             error_message_safe = NULL
          WHERE provider = 'enable-banking'
            AND environment = ?
            AND retry_after_at IS NOT NULL
@@ -240,34 +274,61 @@ export class SyncService {
         error_code: string | null;
         online_retry_used: number;
       }>;
+    context.skippedRateLimitConnectionIds ??= new Set<string>();
+    const currentlyLimitedIds = new Set(limited.map((row) => row.id));
+    for (const connectionId of context.skippedRateLimitConnectionIds) {
+      if (!currentlyLimitedIds.has(connectionId)) {
+        context.skippedRateLimitConnectionIds.delete(connectionId);
+      }
+    }
     if (limited.length > 0) {
       for (const row of limited) {
         const canTryOnline =
           context.allowRateLimitOverride === true &&
           context.psuHeaders !== undefined &&
           row.online_retry_used === 0;
-        if (!canTryOnline) context.skippedConnectionIds.add(row.id);
-      }
-      const authorized = this.database
-        .prepare(
-          `SELECT COUNT(*) AS count FROM bank_connections
-           WHERE provider = 'enable-banking'
-             AND environment = ?
-             AND status = 'AUTHORIZED'`
-        )
-        .get(this.config.appEnv) as { count: number };
-      if (context.skippedConnectionIds.size >= authorized.count) {
-        const retryAt = limited[0]?.retry_after_at;
-        throw new RateLimitError(
-          `El banco ha alcanzado su límite de consultas. Próximo intento permitido: ${retryAt}. (${limited[0]?.error_code ?? "ASPSP_RATE_LIMIT_EXCEEDED"})`,
-          retryAt,
-          [...context.skippedConnectionIds],
-          limited[0]?.error_code ?? "ASPSP_RATE_LIMIT_EXCEEDED"
-        );
+        if (!canTryOnline) {
+          context.skippedConnectionIds.add(row.id);
+          context.skippedRateLimitConnectionIds.add(row.id);
+        }
       }
     }
+    const connectionIds = this.listConnectionsRequiringAuthorization();
+    context.skippedAuthorizationConnectionIds ??= new Set<string>();
+    const connectionsRequiringAuthorization = new Set(connectionIds);
+    for (const connectionId of context.skippedAuthorizationConnectionIds) {
+      if (!connectionsRequiringAuthorization.has(connectionId)) {
+        context.skippedAuthorizationConnectionIds.delete(connectionId);
+      }
+    }
+    if (connectionIds.length > 0) {
+      for (const connectionId of connectionIds) {
+        context.skippedConnectionIds.add(connectionId);
+      }
+      if (this.listSessions(context.skippedConnectionIds).length === 0) {
+        throw new ReauthorizationRequiredError(
+          "Una o más conexiones bancarias requieren autorización.",
+          connectionIds
+        );
+      }
+      for (const connectionId of connectionIds) {
+        context.skippedAuthorizationConnectionIds.add(connectionId);
+      }
+    }
+    if (
+      limited.length > 0 &&
+      this.listSessions(context.skippedConnectionIds).length === 0
+    ) {
+      const retryAt = limited[0]?.retry_after_at;
+      throw new RateLimitError(
+        `El banco ha alcanzado su límite de consultas. Próximo intento permitido: ${retryAt}. (${limited[0]?.error_code ?? "ASPSP_RATE_LIMIT_EXCEEDED"})`,
+        retryAt,
+        [...context.skippedConnectionIds],
+        limited[0]?.error_code ?? "ASPSP_RATE_LIMIT_EXCEEDED"
+      );
+    }
     if (context.psuHeaders) {
-      await this.refreshMissingPsuMetadata();
+      await this.refreshMissingPsuMetadata(context.skippedConnectionIds);
       const rows = this.database
         .prepare(
           `SELECT id FROM bank_connections
@@ -282,16 +343,10 @@ export class SyncService {
         }
       }
     }
-    const connectionIds = this.listConnectionsRequiringAuthorization();
-    if (connectionIds.length > 0) {
-      throw new ReauthorizationRequiredError(
-        "Una o más conexiones bancarias requieren autorización.",
-        connectionIds
-      );
-    }
   }
 
   private listSessions(skippedConnectionIds?: Set<string>): ActiveSession[] {
+    const now = new Date().toISOString();
     const sessions = this.database
       .prepare(
         `SELECT c.id AS connection_id,
@@ -300,15 +355,21 @@ export class SyncService {
          JOIN provider_sessions s ON s.bank_connection_id = c.id
          WHERE c.provider = 'enable-banking'
          AND c.environment = ?
-         AND c.status = 'AUTHORIZED' AND s.status = 'AUTHORIZED'
+         AND c.status = 'AUTHORIZED'
+         AND c.reauthorization_required = 0
+         AND (c.valid_until IS NULL OR c.valid_until > ?)
+         AND s.status = 'AUTHORIZED'
+         AND (s.valid_until IS NULL OR s.valid_until > ?)
           AND s.id = (
             SELECT s2.id FROM provider_sessions s2
-            WHERE s2.bank_connection_id = c.id AND s2.status = 'AUTHORIZED'
+            WHERE s2.bank_connection_id = c.id
+              AND s2.status = 'AUTHORIZED'
+              AND (s2.valid_until IS NULL OR s2.valid_until > ?)
             ORDER BY s2.created_at DESC, s2.rowid DESC
             LIMIT 1
           )`
       )
-      .all(this.config.appEnv) as ActiveSession[];
+      .all(this.config.appEnv, now, now, now) as ActiveSession[];
     return sessions.filter(
       (session) => !skippedConnectionIds?.has(session.connection_id)
     );
@@ -323,6 +384,20 @@ export class SyncService {
          WHERE id = ?`
       )
       .run(safeMessage(error), connectionId);
+  }
+
+  private reauthorizationForConnections(
+    error: ReauthorizationRequiredError,
+    connectionIds: ReadonlySet<string>
+  ): ReauthorizationRequiredError {
+    return new ReauthorizationRequiredError(
+      error.message,
+      [...connectionIds],
+      {
+        ...(error.providerCode ? { providerCode: error.providerCode } : {}),
+        ...(error.httpStatus ? { httpStatus: error.httpStatus } : {})
+      }
+    );
   }
 
   private markConnectionError(
@@ -345,6 +420,8 @@ export class SyncService {
       providerErrorCode(error) ??
       (error instanceof KakeboError ? error.code : "SYNC_ERROR");
     if (error instanceof RateLimitError) {
+      context.skippedRateLimitConnectionIds ??= new Set<string>();
+      context.skippedRateLimitConnectionIds.add(connectionId);
       this.database
         .prepare(
           `UPDATE bank_connections SET
@@ -392,6 +469,18 @@ export class SyncService {
       error instanceof BankUnavailableError ||
       error instanceof EnableBankingProviderError
     );
+  }
+
+  private skipUnavailableConnection(
+    connectionId: string,
+    error: unknown,
+    context: SyncExecutionContext
+  ): boolean {
+    if (!this.isRecoverableAccountFailure(error)) return false;
+    context.skippedConnectionIds?.add(connectionId);
+    context.skippedUnavailableConnectionIds ??= new Set<string>();
+    context.skippedUnavailableConnectionIds.add(connectionId);
+    return true;
   }
 
   private async handleAccountFailure(
@@ -446,14 +535,19 @@ export class SyncService {
     await this.assertConnectionsReady(context);
     let count = 0;
     let completedConnections = 0;
+    let deferredAuthorization: ReauthorizationRequiredError | undefined;
+    const deferredAuthorizationConnectionIds = new Set<string>();
     let deferredRateLimit: RateLimitError | undefined;
+    let deferredUnavailable: Error | undefined;
     for (const stored of this.listSessions(context.skippedConnectionIds)) {
+      let sessionResolved = false;
       try {
         const sessionId = decryptSecret(
           stored.session_ciphertext,
           this.config.sessionEncryptionKey
         );
         const session = await this.client.getSession(sessionId);
+        sessionResolved = true;
         if (session.status !== "AUTHORIZED") {
           throw new ReauthorizationRequiredError(`La sesión está en estado ${session.status}.`);
         }
@@ -505,15 +599,48 @@ export class SyncService {
           error,
           context
         );
+        if (reported instanceof ReauthorizationRequiredError) {
+          context.skippedConnectionIds?.add(stored.connection_id);
+          context.skippedAuthorizationConnectionIds ??= new Set<string>();
+          context.skippedAuthorizationConnectionIds.add(stored.connection_id);
+          deferredAuthorization ??= reported;
+          for (const connectionId of reported.connectionIds) {
+            deferredAuthorizationConnectionIds.add(connectionId);
+          }
+          continue;
+        }
         if (reported instanceof RateLimitError) {
           context.skippedConnectionIds?.add(stored.connection_id);
           deferredRateLimit ??= reported;
           continue;
         }
+        if (
+          !sessionResolved &&
+          this.skipUnavailableConnection(
+            stored.connection_id,
+            reported,
+            context
+          )
+        ) {
+          deferredUnavailable ??=
+            reported instanceof Error
+              ? reported
+              : new Error(safeMessage(reported));
+          continue;
+        }
         throw reported;
       }
     }
+    if (deferredAuthorization && completedConnections === 0) {
+      throw this.reauthorizationForConnections(
+        deferredAuthorization,
+        deferredAuthorizationConnectionIds
+      );
+    }
     if (deferredRateLimit && completedConnections === 0) throw deferredRateLimit;
+    if (deferredUnavailable && completedConnections === 0) {
+      throw deferredUnavailable;
+    }
     return count;
   }
 
@@ -522,6 +649,8 @@ export class SyncService {
     context: SyncExecutionContext = {}
   ): Promise<number> {
     await this.assertConnectionsReady(context);
+    let deferredAuthorization: ReauthorizationRequiredError | undefined;
+    const deferredAuthorizationConnectionIds = new Set<string>();
     let deferredRateLimit: RateLimitError | undefined;
     const completedConnectionIds = new Set<string>();
     const snapshots: Array<{
@@ -565,6 +694,19 @@ export class SyncService {
           error,
           context
         );
+        if (reported instanceof ReauthorizationRequiredError) {
+          context.skippedConnectionIds?.add(account.bank_connection_id);
+          context.skippedAuthorizationConnectionIds ??= new Set<string>();
+          context.skippedAuthorizationConnectionIds.add(
+            account.bank_connection_id
+          );
+          completedConnectionIds.delete(account.bank_connection_id);
+          deferredAuthorization ??= reported;
+          for (const connectionId of reported.connectionIds) {
+            deferredAuthorizationConnectionIds.add(connectionId);
+          }
+          continue;
+        }
         if (reported instanceof RateLimitError) {
           context.skippedConnectionIds?.add(account.bank_connection_id);
           completedConnectionIds.delete(account.bank_connection_id);
@@ -573,6 +715,12 @@ export class SyncService {
         }
         throw reported;
       }
+    }
+    if (deferredAuthorization && completedConnectionIds.size === 0) {
+      throw this.reauthorizationForConnections(
+        deferredAuthorization,
+        deferredAuthorizationConnectionIds
+      );
     }
     if (deferredRateLimit && completedConnectionIds.size === 0) {
       throw deferredRateLimit;
@@ -586,6 +734,9 @@ export class SyncService {
     let count = 0;
     const transaction = this.database.transaction(() => {
       for (const snapshot of snapshots) {
+        if (!completedConnectionIds.has(snapshot.account.bank_connection_id)) {
+          continue;
+        }
         for (const balance of snapshot.response.balances) {
           insert.run(
             createId(),
@@ -668,13 +819,15 @@ export class SyncService {
             rawPath: raw.path,
             fallbackOccurrence: 1
           });
-          const movementDate =
-            normalized.booking_date ??
-            normalized.transaction_datetime?.slice(0, 10) ??
-            normalized.value_date;
+          const movementDate = firstValidMovementDate(
+            normalized.booking_date,
+            normalized.transaction_datetime,
+            normalized.value_date
+          );
           if (
-            movementDate &&
-            (movementDate < dateFrom || movementDate > dateTo)
+            !movementDate ||
+            movementDate < dateFrom ||
+            movementDate > dateTo
           ) {
             continue;
           }
@@ -740,6 +893,8 @@ export class SyncService {
     await this.assertConnectionsReady(context);
     this.categorizer.reload();
     const total = emptySummary();
+    let deferredAuthorization: ReauthorizationRequiredError | undefined;
+    const deferredAuthorizationConnectionIds = new Set<string>();
     let deferredRateLimit: RateLimitError | undefined;
     const completedConnectionIds = new Set<string>();
     for (const account of this.accounts.listActive()) {
@@ -808,8 +963,21 @@ export class SyncService {
                 : "SYNC_ERROR"),
             safeMessage(reportedError),
             runId
-          );
+        );
         if (continueWithOtherAccounts) continue;
+        if (reportedError instanceof ReauthorizationRequiredError) {
+          context.skippedConnectionIds?.add(account.bank_connection_id);
+          context.skippedAuthorizationConnectionIds ??= new Set<string>();
+          context.skippedAuthorizationConnectionIds.add(
+            account.bank_connection_id
+          );
+          completedConnectionIds.delete(account.bank_connection_id);
+          deferredAuthorization ??= reportedError;
+          for (const connectionId of reportedError.connectionIds) {
+            deferredAuthorizationConnectionIds.add(connectionId);
+          }
+          continue;
+        }
         if (reportedError instanceof RateLimitError) {
           context.skippedConnectionIds?.add(account.bank_connection_id);
           completedConnectionIds.delete(account.bank_connection_id);
@@ -821,21 +989,31 @@ export class SyncService {
       this.accounts.clearLastSyncError(account.id);
       this.clearConnectionError(account.bank_connection_id);
     }
+    if (deferredAuthorization && completedConnectionIds.size === 0) {
+      throw this.reauthorizationForConnections(
+        deferredAuthorization,
+        deferredAuthorizationConnectionIds
+      );
+    }
     if (deferredRateLimit && completedConnectionIds.size === 0) {
       throw deferredRateLimit;
     }
-    const skippedConnectionIds = [...(context.skippedConnectionIds ?? [])];
-    const excluded = skippedConnectionIds.length
-      ? `AND id NOT IN (${skippedConnectionIds.map(() => "?").join(", ")})`
-      : "";
-    this.database
-      .prepare(
-        `UPDATE bank_connections SET last_sync_at = ?
-         WHERE provider = 'enable-banking'
-           AND environment = ?
-           AND status = 'AUTHORIZED' ${excluded}`
-      )
-      .run(new Date().toISOString(), this.config.appEnv, ...skippedConnectionIds);
+    const successfulConnectionIds = [...completedConnectionIds];
+    if (successfulConnectionIds.length > 0) {
+      this.database
+        .prepare(
+          `UPDATE bank_connections SET last_sync_at = ?
+           WHERE provider = 'enable-banking'
+             AND environment = ?
+             AND status = 'AUTHORIZED'
+             AND id IN (${successfulConnectionIds.map(() => "?").join(", ")})`
+        )
+        .run(
+          new Date().toISOString(),
+          this.config.appEnv,
+          ...successfulConnectionIds
+        );
+    }
     return total;
   }
 

@@ -53,6 +53,9 @@ export async function disconnectBankConnection(input: {
 
   input.database.transaction(() => {
     input.database
+      .prepare("DELETE FROM pending_authorizations WHERE bank_connection_id = ?")
+      .run(connection.id);
+    input.database
       .prepare("DELETE FROM provider_sessions WHERE bank_connection_id = ?")
       .run(connection.id);
     input.database

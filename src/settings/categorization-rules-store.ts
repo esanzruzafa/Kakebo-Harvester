@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
-import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { ConfigurationError } from "../errors.js";
+import { writeJsonAtomically } from "./atomic-json-file.js";
 
 export const categorizationOperatorSchema = z.enum([
   "contains",
@@ -23,7 +23,11 @@ export const categorizationExclusionSchema = baseRuleSchema;
 
 export const categorizationRuleSchema = baseRuleSchema.extend({
   category: z.string().trim().min(1).max(120),
-  subcategory: z.string().trim().max(120).optional()
+  subcategory: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    z.string().trim().min(1).max(120).optional()
+  )
 });
 
 export type CategorizationRule = z.output<typeof categorizationRuleSchema>;
@@ -125,19 +129,7 @@ export class CategorizationRulesStore {
         cause: error
       });
     }
-    await mkdir(dirname(this.path), { recursive: true });
-    const temporary = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    const backup = `${this.path}.backup`;
-    try {
-      await copyFile(this.path, backup);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    await writeFile(temporary, `${JSON.stringify(configuration, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600
-    });
-    await rename(temporary, this.path);
+    await writeJsonAtomically(this.path, configuration, { backup: true });
     return configuration;
   }
 

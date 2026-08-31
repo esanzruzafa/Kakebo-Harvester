@@ -11,6 +11,8 @@ Electron runs two trust levels:
 
 Renderers have context isolation enabled, Node.js disabled, navigation blocked, permission requests denied, and a restrictive content security policy. Preload scripts expose named operations only. Every IPC handler verifies that the sender is the expected live window and validates payloads with Zod.
 
+Optional raw provider files remain local, are mode-restricted where the platform supports it, and are never packaged or committed. They are not encrypted and may contain provider financial data. Authorization-session raw files replace `session_id` with `[REDACTED]`; the usable session identifier is stored only as AES-256-GCM ciphertext in SQLite.
+
 ## New bank connection flow
 
 The **Accounts and aliases** view contains an application-styled connection
@@ -54,7 +56,7 @@ The audit window has a separate preload bridge. It can list audit runs and close
 
 ## Runtime root and configuration
 
-The directory containing the selected `private/.env.production` is the runtime root. All relative environment paths are resolved from it. The production template therefore uses relative paths inside `private/` for secrets and `../data/...` / `../config/...` for runtime data and editable configuration.
+The configuration base is the directory containing the selected environment file, so every relative environment path is resolved from `private/` in the recommended layout. The desktop runtime root exposed as **Application folder**, and used as the scheduled-process working directory, is its parent. Legacy root-level environment files use their own directory for both purposes. The production template therefore uses paths inside `private/` for secrets and `../data/...` / `../config/...` for runtime data and editable configuration.
 
 The desktop application searches for `private/.env.production` in the explicitly configured path, portable-executable directory, application-data directory, current directory, and executable directory. Root-level `.env.production` remains a compatibility fallback. This makes a complete private folder portable without compiling machine-specific paths.
 
@@ -109,12 +111,13 @@ replaces it only after its renderer has loaded.
 2. acquire the cross-process synchronization lock;
 3. create a `desktop_runs` audit record;
 4. execute selected steps in accounts, balances, transactions, export order;
-5. request interactive reauthorization only when a desktop callback is available;
+5. request interactive reauthorization only when no usable connection remains and
+   a desktop callback is available;
 6. capture one selected balance snapshot per active account;
-7. mark the audit run successful or failed;
+7. mark the audit run successful, successful with warnings, or failed;
 8. release the lock in all cases.
 
-Transaction retrieval starts with the exact selected `date_from` and `date_to`. If an ASPSP rejects that interval with `WRONG_TRANSACTIONS_PERIOD`, the same account is retried with `strategy=longest`, preserving that strategy across continuation pages. Because this strategy may return a wider interval, normalized movements outside the user-selected dates are discarded before SQLite persistence and export.
+Transaction retrieval starts with the exact selected `date_from` and `date_to`. If an ASPSP rejects that interval with `WRONG_TRANSACTIONS_PERIOD`, the same account is retried with `strategy=longest`, preserving that strategy across continuation pages. Because this strategy may return a wider interval, normalized movements outside the user-selected dates are discarded before SQLite persistence and export. A movement with no valid booking, transaction, or value date is likewise excluded because its membership in the requested interval cannot be established; optional raw retention still preserves the provider payload for diagnosis.
 
 Repeated transactions without provider identifiers receive deterministic fallback occurrences across continuation pages. If the provider later adds an entry reference or transaction ID, the repository reconciles it with the matching fallback occurrence instead of inserting a third row. The original movement key remains stable so enrichment is not presented as a newly imported Excel row; subsequent response reordering continues to resolve the same two stored movements.
 
@@ -134,8 +137,10 @@ interval. Other 429 responses choose the later of `Retry-After` and a 15-minute
 safety interval. The final timestamp and provider code are stored on the
 affected `bank_connections` row. Every synchronization step checks active
 cooldowns before making a network request, so repeated manual or scheduled
-attempts do not consume additional bank requests. A successful request or
-reauthorization clears stale error state.
+attempts do not consume additional bank requests. A successful account request
+clears its connection error and cooldown. Reauthorization clears stale errors but
+preserves any cooldown whose `retry_after_at` is still in the future, so renewing
+consent cannot bypass an active ASPSP limit.
 
 ### Online and background PSU context
 
@@ -165,7 +170,11 @@ that online context. Task Scheduler commands intentionally omit both flags.
 
 The progress event stream stores a single mutable entry per step. A `step-completed` event replaces its `step-started` entry, so the interface never displays duplicate running and completed lines for the same step. The interface always shows the run boundaries and every step's latest state in execution order.
 
-Scheduled mode never opens a browser. Reauthorization and synchronization contention retain their dedicated exit codes.
+Scheduled mode never opens a browser. A connection discovered to require
+authorization is skipped when another usable bank remains and the audit run is
+marked successful with warnings. Reauthorization retains its dedicated exit code
+when no usable connection can complete the work; synchronization contention also
+retains its dedicated exit code.
 
 ## Audit persistence
 
@@ -195,12 +204,23 @@ default, and constrain the list to a scrollable latest-X region. The allowed
 limits are 5, 10, 20, 50, and 100; changing either window persists the shared
 choice in `ui-settings.json`.
 
+Account-level failures and connections skipped because of authorization,
+cooldown, or temporary provider availability finish as `SUCCESS_WITH_WARNINGS`.
+The audit row retains `SYNC_WARNINGS` plus a bounded summary, while a run that has
+no usable connection remains `FAILED` with the actionable provider/application
+error.
+
 The current-year count is calculated with local start-of-year and next-start-of-year boundaries converted to UTC for the SQLite query.
 
 Failed runs expose their error code and safe message in both audit views.
 Clearing audit history deletes `desktop_run_accounts` and `desktop_runs` in one transaction. It deliberately preserves operational balances, transactions, configuration, raw data, and exports.
 
-The broader **Reset local data** operation commits the SQLite deletion first and treats export/raw-file removal as separate cleanup. Its result distinguishes deleted database rows from `exports` or `raw-data` cleanup warnings. This guarantees that a locked Windows file cannot turn a completed database reset into an apparent total failure; the renderer refreshes immediately and explains which filesystem cleanup must be retried.
+Application initialization recovers orphaned `RUNNING` rows as failed with the
+`INTERRUPTED` code when no current synchronization lease exists. A non-stale
+cross-process lease suppresses recovery, preventing a concurrently running
+scheduled task from being mislabeled by desktop startup.
+
+The broader **Reset local data** operation commits the SQLite deletion first, clears stale account-level synchronization errors, and treats export/raw-file removal as separate cleanup. Export cleanup includes active and archived results, the profile state, and interrupted `.tmp` or `.rollback` artifacts. The cleanup refuses to traverse a symbolic link or Windows directory junction used as the configured `raw` or `exports` root. Its result distinguishes deleted database rows from `exports` or `raw-data` cleanup warnings. This guarantees that a locked or unsafe Windows path cannot turn a completed database reset into an apparent total failure; the renderer refreshes immediately and explains which filesystem cleanup must be retried.
 
 ## Account settings
 
@@ -212,11 +232,13 @@ SQLite is authoritative for aliases and `sync_enabled` / `export_enabled`.
 
 The JSON account file is regenerated as a readable snapshot. Provider account type remains stored but is intentionally hidden from the alias table.
 
+Account identity reconciliation is deliberately conservative. An unchanged provider UID always updates its existing account. A changed UID can reuse an existing account only when the provider supplies that account's previously stored canonical hash, the hash descriptor is based on `account.account_id.iban`, and the masked IBAN also agrees. Name-, bank-, and country-based hashes are never identity evidence, and historical alternate-hash mappings are not authoritative. Ambiguity therefore creates a separate account instead of destructively merging two real accounts.
+
 ## Categorization dependencies and order
 
 Categories contain a unique name and unique subcategory names. The rule editor uses the category list as its first picklist and rebuilds the subcategory picklist when the parent changes.
 
-The rules file stores independent `exclusions` and `rules` lists. Exclusions use the same operators as positive rules and are always evaluated first; a matching movement remains uncategorized. Both lists remain compatible with the persisted `priority` field. The UI displays a one-based row number rather than the priority value. Drag-and-drop changes array order, and saving normalizes priorities to increments of ten. This preserves deterministic evaluation while hiding an implementation detail.
+The rules file stores independent `exclusions` and `rules` lists. Exclusions use the same operators as positive rules and are always evaluated first; a matching movement remains uncategorized. Both lists remain compatible with the persisted `priority` field. The UI displays a one-based row number rather than the priority value. Drag-and-drop or the move handle's Up and Down arrow shortcuts change array order, and saving normalizes priorities to increments of ten. This preserves deterministic evaluation while hiding an implementation detail and gives keyboard users an equivalent ordering control.
 
 The main process rejects a saved rule whose category is unknown or whose subcategory is not a child of its selected category.
 
@@ -265,11 +287,14 @@ Save calls the same validated IPC operations as the visible save buttons; discar
 reloads persisted state.
 
 The main window intercepts close and asks the renderer to resolve active work and
-dirty sections. Multiple edited sections can be saved before close. Synchronization
-and card import set a transient active-operation flag: navigation warns that work
-continues in the background, while close explains that local work is awaited and
-a pending browser authorization may be cancelled. Destructive export and audit
-actions use the same renderer-owned modal instead of Windows message boxes.
+dirty sections. Multiple edited sections can be saved before close.
+Synchronization, authorization, consent, HTTPS, language, and card-import
+operations increment a shared active-operation counter. This prevents a rejected
+overlapping action from incorrectly marking another operation as finished.
+Navigation warns that work continues in the background, while close explains
+that local work is awaited and a pending browser authorization may be cancelled.
+Destructive export and audit actions use the same renderer-owned modal instead
+of Windows message boxes.
 
 The private export state stores independent movement-key baselines and pending
 highlights for bank and manual-card origins. The first state-aware export
@@ -352,6 +377,11 @@ the saved CA thumbprint is present in the current user's Windows Root store.
 Copying TLS files to another computer therefore triggers the preparation prompt
 instead of incorrectly treating the old machine's trust as valid.
 
+Forced regeneration stages the previous PFX, passphrase, and thumbprint while
+the replacement CA and localhost certificate are created. The prior trusted CA
+is removed only after every replacement artifact is installed; any earlier
+failure removes partial new material and restores the previous files.
+
 When a bank session expires during interactive synchronization, the runner pauses the current step, opens the provider HTTPS URL in the system browser, waits for the validated callback, and retries that same step. A new authorization invalidates older pending states for the connection.
 
 Shutdown cancels pending authorization waiters, waits for active operations, closes the callback server, releases locks, and closes SQLite.
@@ -367,11 +397,19 @@ The build sequence is:
 4. package with ASAR and unpack only the native SQLite binary;
 5. embed the bitmap extraction splash and produce the Windows x64 portable executable;
 6. open an in-memory database with the packaged native module so an ABI mismatch
-   fails the build before publication.
+   fails the build before publication;
+7. create an allowlisted `complete-package` ZIP containing the executable,
+   license, first-run documentation, public templates, and empty runtime folder
+   structure.
 
 Source maps, runtime environment files, secrets, databases, raw responses, configuration, and results are excluded from the application archive.
 
-The release workflow validates the tag against `package.json`, runs all checks, rebuilds the native dependency, produces the portable file, generates a SHA-256 checksum, and attaches both to a GitHub Release.
+Provider response bodies are streamed through explicit limits before parsing:
+25 MiB for successful API payloads and 64 KiB for error payloads. This bounds
+memory use even when an upstream service supplies no trustworthy
+`Content-Length` header.
+
+The build removes the previous `dist/` tree before compiling so deleted or renamed modules cannot survive as stale packaged files. The complete-package generator uses an exact public-file allowlist, rejects missing or linked inputs, verifies the resulting ZIP entries, and refuses a production environment example whose application identifier or encryption key was populated. The release workflow verifies that the selected ref is an existing tag, matches `package.json`, points to the checked-out commit, and belongs to `main`; it then runs all checks, rebuilds the native dependency, produces the portable and complete-package downloads, generates a SHA-256 checksum for each, and attaches all four files to a GitHub Release.
 
 ## Portability checklist
 
@@ -393,7 +431,8 @@ directories may be absent and are created on demand. The executable still needs
 valid encryption key. No Node.js installation or compiler is required on the
 target computer because Electron and the native SQLite binary are packaged.
 
-The one-file portable is the release artifact. `win-unpacked` is a development
+The one-file portable and the public `complete-package` starter ZIP are the
+release artifacts. `win-unpacked` is a development
 intermediate that avoids per-launch extraction but must be distributed as a
 complete directory. An NSIS installer adds normal Windows installation,
 shortcuts, and uninstallation at the cost of losing the single relocatable

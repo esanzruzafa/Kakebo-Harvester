@@ -58,6 +58,28 @@ describe("desktop rate-limit planning", () => {
     expect(plan.hasEligibleConnection).toBe(true);
   });
 
+  it("allows a limited bank to be skipped while another connection is renewed", () => {
+    const plan = rateLimitPlan(
+      [
+        connection("limited", {
+          retryAfterAt: "2026-08-22T12:00:00.000Z"
+        }),
+        connection("renewable", {
+          status: "REAUTHORIZATION_REQUIRED",
+          reauthorizationRequired: true
+        })
+      ],
+      Date.parse("2026-08-22T10:00:00.000Z")
+    );
+
+    expect(plan.retryable.map((item) => item.id)).toEqual(["limited"]);
+    expect(plan.hasEligibleConnection).toBe(true);
+    expect(onlineRetryDecision(plan, false)).toEqual({
+      proceed: true,
+      allowOverride: false
+    });
+  });
+
   it("offers an online attempt only for limited banks that have not used it", () => {
     const plan = rateLimitPlan(
       [

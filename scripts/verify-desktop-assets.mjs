@@ -3,7 +3,9 @@ import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   desktopAssetDirectories,
-  desktopAssetFiles
+  desktopAssetFiles,
+  resolveDesktopAssetDestination,
+  resolveDesktopAssetSource
 } from "./desktop-assets.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -31,13 +33,17 @@ function assertSameFiles(actual, expected, label) {
 }
 
 for (const [source, destination] of desktopAssetFiles) {
-  await access(resolve(projectRoot, source));
-  await access(resolve(projectRoot, destination));
+  await access(resolveDesktopAssetSource(projectRoot, source));
+  await access(resolveDesktopAssetDestination(projectRoot, destination));
 }
 
 for (const [source, destination] of desktopAssetDirectories) {
-  const sourceFiles = await filesBelow(resolve(projectRoot, source));
-  const destinationFiles = await filesBelow(resolve(projectRoot, destination));
+  const sourceFiles = await filesBelow(
+    resolveDesktopAssetSource(projectRoot, source)
+  );
+  const destinationFiles = await filesBelow(
+    resolveDesktopAssetDestination(projectRoot, destination)
+  );
   assertSameFiles(destinationFiles, sourceFiles, destination);
 }
 

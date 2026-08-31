@@ -1,4 +1,5 @@
-import { rm } from "node:fs/promises";
+import { lstat, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { AppConfig } from "../config.js";
 import { clearGeneratedExportFiles } from "../export/csv-exporter.js";
 import type { SqliteDatabase } from "./database.js";
@@ -19,7 +20,33 @@ interface LocalDataCleanup {
 
 const defaultCleanup: LocalDataCleanup = {
   clearExports: clearGeneratedExportFiles,
-  clearRawData: async (directory) => rm(directory, { recursive: true, force: true })
+  clearRawData: async (directory) => {
+    try {
+      if ((await lstat(directory)).isSymbolicLink()) {
+        throw new Error("Refusing to clear a symbolic link raw-data directory.");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const hasGitMarker = entries.some(
+      (entry) => entry.name === ".gitkeep" && entry.isFile()
+    );
+    for (const entry of entries) {
+      if (entry.name === ".gitkeep" && entry.isFile()) continue;
+      await rm(join(directory, entry.name), { recursive: true, force: true });
+    }
+    if (!hasGitMarker) {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
 };
 
 /**
@@ -39,6 +66,13 @@ export async function resetLocalData(
     const balances = database.prepare("DELETE FROM balances").run().changes;
     const synchronizationRuns = database.prepare("DELETE FROM sync_runs").run().changes;
     const desktopRuns = database.prepare("DELETE FROM desktop_runs").run().changes;
+    database
+      .prepare(
+        `UPDATE accounts SET
+           last_error_at = NULL, last_error_code = NULL,
+           last_error_message_safe = NULL`
+      )
+      .run();
     database.prepare("UPDATE bank_connections SET last_sync_at = NULL").run();
     return { transactions, balances, synchronizationRuns, desktopRuns };
   })();

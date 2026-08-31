@@ -84,6 +84,27 @@ function printSummary(summary: SyncSummary): void {
   ]);
 }
 
+function printConnectionWarnings(context: SyncExecutionContext): void {
+  const authorization = context.skippedAuthorizationConnectionIds?.size ?? 0;
+  const rateLimited = context.skippedRateLimitConnectionIds?.size ?? 0;
+  const unavailable = context.skippedUnavailableConnectionIds?.size ?? 0;
+  if (authorization > 0) {
+    console.warn(
+      `Warning: ${authorization} bank connection(s) were skipped pending authorization.`
+    );
+  }
+  if (rateLimited > 0) {
+    console.warn(
+      `Warning: ${rateLimited} bank connection(s) were skipped because a request limit is active.`
+    );
+  }
+  if (unavailable > 0) {
+    console.warn(
+      `Warning: ${unavailable} bank connection(s) were skipped because the bank is temporarily unavailable.`
+    );
+  }
+}
+
 async function withSynchronizationLock<Result>(
   database: SqliteDatabase,
   operation: () => Promise<Result>
@@ -225,19 +246,23 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
       return;
     }
     case "sync-accounts": {
+      const context = cliSyncContext(options, config);
       const count = await withSynchronizationLock(database, () =>
-        sync.syncAccounts(cliSyncContext(options, config))
+        sync.syncAccounts(context)
       );
       logger.info({ count }, "Account synchronization completed");
       console.log(`Cuentas sincronizadas: ${count}`);
+      printConnectionWarnings(context);
       return;
     }
     case "sync-balances": {
+      const context = cliSyncContext(options, config);
       const count = await withSynchronizationLock(database, () =>
-        sync.syncBalances(undefined, cliSyncContext(options, config))
+        sync.syncBalances(undefined, context)
       );
       logger.info({ count }, "Balance synchronization completed");
       console.log(`Saldos guardados: ${count}`);
+      printConnectionWarnings(context);
       return;
     }
     case "sync-transactions": {
@@ -246,15 +271,17 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
         value(options, "from"),
         value(options, "to")
       );
+      const context = cliSyncContext(options, config);
       const summary = await withSynchronizationLock(database, () =>
         sync.syncTransactions(
           window.dateFrom,
           window.dateTo,
-          cliSyncContext(options, config)
+          context
         )
       );
       logger.info({ ...summary, ...window }, "Transaction synchronization completed");
       printSummary(summary);
+      printConnectionWarnings(context);
       return;
     }
     case "initial-sync": {
@@ -275,6 +302,21 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
       console.log(
         `Accounts: ${result.accounts ?? 0}; balances: ${result.balances ?? 0}; export: ${result.export?.path ?? "not generated"}`
       );
+      if ((result.skippedConnections ?? 0) > 0) {
+        console.warn(
+          `Warning: ${result.skippedConnections} bank connection(s) were skipped pending authorization.`
+        );
+      }
+      if ((result.skippedRateLimitedConnections ?? 0) > 0) {
+        console.warn(
+          `Warning: ${result.skippedRateLimitedConnections} bank connection(s) were skipped because a request limit is active.`
+        );
+      }
+      if ((result.skippedUnavailableConnections ?? 0) > 0) {
+        console.warn(
+          `Warning: ${result.skippedUnavailableConnections} bank connection(s) were skipped because the bank is temporarily unavailable.`
+        );
+      }
       printSummary(result.transactions ?? emptySyncSummary());
       return;
     }
@@ -302,6 +344,21 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
       console.log(
         `Accounts: ${result.accounts ?? 0}; balances: ${result.balances ?? 0}; movements received: ${summary.received}; export: ${result.export?.path ?? "not generated"}`
       );
+      if ((result.skippedConnections ?? 0) > 0) {
+        console.warn(
+          `Warning: ${result.skippedConnections} bank connection(s) were skipped pending authorization.`
+        );
+      }
+      if ((result.skippedRateLimitedConnections ?? 0) > 0) {
+        console.warn(
+          `Warning: ${result.skippedRateLimitedConnections} bank connection(s) were skipped because a request limit is active.`
+        );
+      }
+      if ((result.skippedUnavailableConnections ?? 0) > 0) {
+        console.warn(
+          `Warning: ${result.skippedUnavailableConnections} bank connection(s) were skipped because the bank is temporarily unavailable.`
+        );
+      }
       printSummary(summary);
       return;
     }

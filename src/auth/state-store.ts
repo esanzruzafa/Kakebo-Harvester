@@ -106,4 +106,15 @@ export class StateStore {
     });
     return transaction();
   }
+
+  public discard(state: string): boolean {
+    return (
+      this.database
+        .prepare(
+          `DELETE FROM pending_authorizations
+           WHERE state_hash = ? AND consumed_at IS NULL`
+        )
+        .run(sha256(state)).changes === 1
+    );
+  }
 }

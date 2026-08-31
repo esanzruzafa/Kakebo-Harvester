@@ -126,4 +126,109 @@ describe("desktop run repository", () => {
     ]);
     database.close();
   });
+
+  it("rolls back balance snapshots when a run cannot be finalized", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-audit-rollback-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo Bank', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, name, active,
+           first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider', 'Account', 1, ?, ?)`
+      )
+      .run(now, now);
+    const repository = new DesktopRunRepository(database);
+    const runId = repository.begin({
+      dateFrom: "2026-01-01",
+      dateTo: "2026-01-31",
+      steps: ["accounts"]
+    });
+    database.exec(
+      `CREATE TRIGGER reject_desktop_run_finish
+       BEFORE UPDATE ON desktop_runs
+       BEGIN
+         SELECT RAISE(ABORT, 'audit storage unavailable');
+       END`
+    );
+
+    expect(() => repository.finish(runId, "SUCCESS")).toThrow(
+      "audit storage unavailable"
+    );
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS total FROM desktop_run_accounts")
+        .get()
+    ).toEqual({ total: 0 });
+    expect(
+      database
+        .prepare("SELECT status, finished_at FROM desktop_runs WHERE id = ?")
+        .get(runId)
+    ).toEqual({ status: "RUNNING", finished_at: null });
+    database.close();
+  });
+
+  it("marks orphaned running audit entries as interrupted", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-audit-interrupted-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const repository = new DesktopRunRepository(database);
+    const runId = repository.begin({
+      dateFrom: "2026-01-01",
+      dateTo: "2026-01-31",
+      steps: ["transactions"]
+    });
+
+    expect(
+      repository.recoverInterruptedRuns(new Date("2026-08-31T09:00:00.000Z"))
+    ).toBe(1);
+    expect(
+      database
+        .prepare(
+          "SELECT status, error_code, error_message_safe FROM desktop_runs WHERE id = ?"
+        )
+        .get(runId)
+    ).toEqual({
+      status: "FAILED",
+      error_code: "INTERRUPTED",
+      error_message_safe:
+        "The previous process ended before this synchronization was finalized."
+    });
+    database.close();
+  });
+
+  it("does not recover running entries while another synchronization lease is active", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-audit-active-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const repository = new DesktopRunRepository(database);
+    repository.begin({
+      dateFrom: "2026-01-01",
+      dateTo: "2026-01-31",
+      steps: ["transactions"]
+    });
+    database
+      .prepare(
+        `INSERT INTO application_locks (name, owner, acquired_at)
+         VALUES ('synchronization', 'other-process', ?)`
+      )
+      .run("2026-08-31T08:59:00.000Z");
+
+    expect(
+      repository.recoverInterruptedRuns(new Date("2026-08-31T08:00:00.000Z"))
+    ).toBe(0);
+    expect(repository.list()[0]?.status).toBe("RUNNING");
+    database.close();
+  });
 });

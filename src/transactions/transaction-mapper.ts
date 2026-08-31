@@ -2,6 +2,7 @@ import type { AppEnvironment } from "../config.js";
 import type { ProviderTransaction } from "../enable-banking/schemas.js";
 import type { StoredAccount } from "../storage/repositories/account-repository.js";
 import { stableJson, sha256 } from "../utils/crypto.js";
+import { assertIsoDate } from "../utils/dates.js";
 import { maskIdentifier, normalizeText } from "../utils/text.js";
 import { createMovementKey, createReconciliationKey } from "./movement-key.js";
 
@@ -66,6 +67,33 @@ function transactionStatus(status: string | null | undefined): string {
   return (status ?? "unknown").toLowerCase();
 }
 
+function validProviderDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  try {
+    return assertIsoDate(trimmed, "provider date");
+  } catch {
+    return null;
+  }
+}
+
+function validProviderDateTime(
+  value: string | null | undefined
+): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const calendarDate = trimmed.slice(0, 10);
+  try {
+    assertIsoDate(calendarDate, "provider transaction date");
+  } catch {
+    return null;
+  }
+  if (trimmed === calendarDate) return trimmed;
+  return /^\d{4}-\d{2}-\d{2}T/.test(trimmed) && !Number.isNaN(Date.parse(trimmed))
+    ? trimmed
+    : null;
+}
+
 function accountIdentifier(
   account: ProviderTransaction["creditor_account"] | null | undefined
 ): string | null {
@@ -115,13 +143,17 @@ export function mapTransaction(input: {
   const accountStableKey = input.account.identification_hash ?? input.account.id;
   const entryReference = transaction.entry_reference?.trim() || null;
   const providerTransactionId = transaction.transaction_id?.trim() || null;
+  const bookingDate = validProviderDate(transaction.booking_date);
+  const valueDate = validProviderDate(transaction.value_date);
+  const transactionDate = validProviderDateTime(transaction.transaction_date);
   const keyInput = {
     accountStableKey,
     status,
     entryReference,
     providerTransactionId,
-    bookingDate: transaction.booking_date,
-    valueDate: transaction.value_date,
+    bookingDate,
+    valueDate,
+    transactionDate,
     amount: money.amount,
     currency: transaction.transaction_amount.currency,
     descriptionNormalized,
@@ -147,9 +179,9 @@ export function mapTransaction(input: {
     fallback_occurrence:
       input.fallbackOccurrence ?? (entryReference || providerTransactionId ? null : 1),
     status,
-    booking_date: transaction.booking_date ?? null,
-    value_date: transaction.value_date ?? null,
-    transaction_datetime: transaction.transaction_date ?? null,
+    booking_date: bookingDate,
+    value_date: valueDate,
+    transaction_datetime: transactionDate,
     amount: money.amount,
     currency: transaction.transaction_amount.currency,
     direction: money.direction,

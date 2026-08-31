@@ -129,6 +129,28 @@ function balanceTotals(accounts: AuditAccountView[]): AuditBalanceTotal[] {
 export class DesktopRunRepository {
   public constructor(private readonly database: SqliteDatabase) {}
 
+  public recoverInterruptedRuns(staleLeaseBefore: Date): number {
+    const finishedAt = new Date().toISOString();
+    return this.database
+      .prepare(
+        `UPDATE desktop_runs
+         SET finished_at = ?, status = 'FAILED', error_code = 'INTERRUPTED',
+             error_message_safe = ?
+         WHERE status = 'RUNNING'
+           AND NOT EXISTS (
+             SELECT 1
+             FROM application_locks
+             WHERE name = 'synchronization'
+               AND acquired_at >= ?
+           )`
+      )
+      .run(
+        finishedAt,
+        "The previous process ended before this synchronization was finalized.",
+        staleLeaseBefore.toISOString()
+      ).changes;
+  }
+
   public begin(input: {
     dateFrom: string;
     dateTo: string;
@@ -153,24 +175,29 @@ export class DesktopRunRepository {
 
   public finish(
     id: string,
-    status: "SUCCESS" | "FAILED",
+    status: "SUCCESS" | "SUCCESS_WITH_WARNINGS" | "FAILED",
     error?: string,
     errorCode?: string
   ): void {
-    this.captureAccountBalances(id);
-    this.database
-      .prepare(
-        `UPDATE desktop_runs SET
-           finished_at = ?, status = ?, error_message_safe = ?, error_code = ?
-         WHERE id = ?`
-      )
-      .run(
-        new Date().toISOString(),
-        status,
-        error ?? null,
-        errorCode ?? null,
-        id
-      );
+    this.database.transaction(() => {
+      this.captureAccountBalances(id);
+      const result = this.database
+        .prepare(
+          `UPDATE desktop_runs SET
+             finished_at = ?, status = ?, error_message_safe = ?, error_code = ?
+           WHERE id = ?`
+        )
+        .run(
+          new Date().toISOString(),
+          status,
+          error ?? null,
+          errorCode ?? null,
+          id
+        );
+      if (result.changes !== 1) {
+        throw new Error(`Unknown desktop run: ${id}`);
+      }
+    })();
   }
 
   private captureAccountBalances(runId: string): void {

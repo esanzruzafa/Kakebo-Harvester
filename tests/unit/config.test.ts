@@ -111,6 +111,20 @@ describe("security-sensitive environment values", () => {
         join(dataRoot, "nested", "exports")
       )
     ).toBe(false);
+    expect(
+      isSafeDataLayout(
+        join(dataRoot, "kakebo-production.sqlite"),
+        join(dataRoot, "documents"),
+        join(dataRoot, "exports")
+      )
+    ).toBe(false);
+    expect(
+      isSafeDataLayout(
+        join(dataRoot, "kakebo-production.sqlite"),
+        join(dataRoot, "raw"),
+        join(dataRoot, "backups")
+      )
+    ).toBe(false);
   });
 });
 

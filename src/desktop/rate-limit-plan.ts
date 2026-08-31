@@ -39,8 +39,10 @@ export function rateLimitPlan(
   return {
     retryable: limited.filter((connection) => !connection.onlineRetryUsed),
     exhausted: limited.filter((connection) => connection.onlineRetryUsed),
-    hasEligibleConnection: authorized.some(
-      (connection) => !limitedIds.has(connection.id)
+    hasEligibleConnection: connections.some(
+      (connection) =>
+        !["DENIED", "REVOKED"].includes(connection.status) &&
+        !limitedIds.has(connection.id)
     )
   };
 }

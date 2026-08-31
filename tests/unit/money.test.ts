@@ -79,4 +79,69 @@ describe("financial amount convention", () => {
     expect(secondOccurrence.movement_key).not.toBe(oneDecimal.movement_key);
     expect(secondOccurrence.fallback_occurrence).toBe(2);
   });
+
+  it("discards malformed provider dates before storing or keying movements", () => {
+    const account = {
+      id: "account",
+      bank_connection_id: "connection",
+      identification_hash: "stable-account",
+      provider_account_id: "provider-account"
+    } as StoredAccount;
+    const baseTransaction = {
+      transaction_amount: { amount: "10.00", currency: "EUR" },
+      status: "BOOK",
+      remittance_information: "Movement with malformed dates"
+    };
+
+    const malformed = mapTransaction({
+      transaction: {
+        ...baseTransaction,
+        booking_date: "2026-04-XX",
+        value_date: "2026-02-30",
+        transaction_date: "not-a-date"
+      },
+      account,
+      environment: "sandbox",
+      rawPath: null
+    });
+    const absent = mapTransaction({
+      transaction: baseTransaction,
+      account,
+      environment: "sandbox",
+      rawPath: null
+    });
+
+    expect(malformed).toMatchObject({
+      booking_date: null,
+      value_date: null,
+      transaction_datetime: null
+    });
+    expect(malformed.movement_key).toBe(absent.movement_key);
+    expect(malformed.reconciliation_key).toBe(absent.reconciliation_key);
+  });
+
+  it("distinguishes ID-less movements that only differ by transaction time", () => {
+    const account = {
+      id: "account",
+      bank_connection_id: "connection",
+      identification_hash: "stable-account",
+      provider_account_id: "provider-account"
+    } as StoredAccount;
+    const mapAt = (transactionDate: string) =>
+      mapTransaction({
+        transaction: {
+          transaction_amount: { amount: "10.00", currency: "EUR" },
+          status: "BOOK",
+          transaction_date: transactionDate,
+          remittance_information: "Repeated same-day movement"
+        },
+        account,
+        environment: "sandbox",
+        rawPath: null
+      });
+
+    expect(mapAt("2026-08-21T08:00:00Z").movement_key).not.toBe(
+      mapAt("2026-08-21T18:00:00Z").movement_key
+    );
+  });
 });

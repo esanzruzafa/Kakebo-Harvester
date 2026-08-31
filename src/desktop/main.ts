@@ -95,6 +95,7 @@ import {
   runDisconnectOperation,
   runRecategorizationOperation
 } from "./committed-operations.js";
+import { runtimeRootDirectory } from "./runtime-paths.js";
 
 const UI_ZOOM_FACTOR = 0.945;
 
@@ -194,29 +195,30 @@ class AuthorizationCoordinator {
   }
 
   public complete(result: AuthorizationCompletionResult): void {
+    const waiter = this.waiters.get(result.connectionId);
+    if (waiter) {
+      clearTimeout(waiter.timeout);
+      this.waiters.delete(result.connectionId);
+      if (result.status === "authorized") {
+        waiter.resolve();
+      } else {
+        waiter.reject(
+          new Error(
+            result.message ??
+              tr(
+                "error.authorizationNotCompleted",
+                "The bank authorization was not completed."
+              )
+          )
+        );
+      }
+    }
     this.publish({
       connectionId: result.connectionId,
       bankName: result.bankName,
       status: result.status,
       ...(result.message ? { message: result.message } : {})
     });
-    const waiter = this.waiters.get(result.connectionId);
-    if (!waiter) return;
-    clearTimeout(waiter.timeout);
-    this.waiters.delete(result.connectionId);
-    if (result.status === "authorized") {
-      waiter.resolve();
-    } else {
-      waiter.reject(
-        new Error(
-          result.message ??
-            tr(
-              "error.authorizationNotCompleted",
-              "The bank authorization was not completed."
-            )
-        )
-      );
-    }
   }
 
   private wait(connectionId: string): Promise<void> {
@@ -602,7 +604,8 @@ async function localHttpsIsTrusted(
     );
     return await isUsableLocalHttpsCertificate({
       pfxPath: application.config.tlsPfxPath,
-      passphrasePath: application.config.tlsPfxPassphrasePath
+      passphrasePath: application.config.tlsPfxPassphrasePath,
+      expectedIssuerThumbprint: thumbprint
     });
   } catch {
     return false;
@@ -803,7 +806,7 @@ function registerIpc(application: KakeboApplication): void {
 
   ipcMain.handle("app:bootstrap", async (event) => {
     assertTrustedSender(event);
-    return await bootstrap(application);
+    return await trackOperation(bootstrap(application));
   });
   ipcMain.handle("app:confirm-close", (event) => {
     assertTrustedSender(event);
@@ -986,15 +989,23 @@ function registerIpc(application: KakeboApplication): void {
     assertTrustedSender(event);
     const language: AppLanguage = z.enum(["en", "es"]).parse(input);
     if (!localization) throw new Error("Localization is unavailable.");
-    await localization.setLanguage(language);
-    return await bootstrap(application);
+    return await trackOperation(
+      (async () => {
+        await localization.setLanguage(language);
+        return await bootstrap(application);
+      })()
+    );
   });
   ipcMain.handle("audit:limit:set", async (event, input: unknown) => {
     assertApplicationSender(event);
     const limit = auditHistoryLimitSchema.parse(input);
     if (!localization) throw new Error("Localization is unavailable.");
-    await localization.setAuditHistoryLimit(limit);
-    return audit.list(limit);
+    return await trackOperation(
+      (async () => {
+        await localization.setAuditHistoryLimit(limit);
+        return audit.list(limit);
+      })()
+    );
   });
   ipcMain.handle("rules:reapply", async (event) => {
     assertTrustedSender(event);
@@ -1469,7 +1480,7 @@ async function runScheduled(): Promise<void> {
   let exitCode = 0;
   try {
     environmentFile = findEnvironmentFile();
-    rootDirectory = dirname(environmentFile);
+    rootDirectory = runtimeRootDirectory(environmentFile);
     process.chdir(rootDirectory);
     application = createKakeboApplication(environmentFile, {
       overrideEnvironment: true
@@ -1478,7 +1489,7 @@ async function runScheduled(): Promise<void> {
       throw new Error("Scheduled desktop synchronization only supports production.");
     }
     const window = getSyncWindow(application.config.syncLookbackDays);
-    await new SyncRunner(
+    const result = await new SyncRunner(
       application.config,
       application.database,
       application.sync
@@ -1487,11 +1498,31 @@ async function runScheduled(): Promise<void> {
       dateFrom: window.dateFrom,
       dateTo: window.dateTo
     });
+    if ((result.skippedConnections ?? 0) > 0) {
+      console.warn(
+        `Warning: ${result.skippedConnections} bank connection(s) were skipped pending authorization.`
+      );
+    }
+    if ((result.skippedRateLimitedConnections ?? 0) > 0) {
+      console.warn(
+        `Warning: ${result.skippedRateLimitedConnections} bank connection(s) were skipped because a request limit is active.`
+      );
+    }
+    if ((result.skippedUnavailableConnections ?? 0) > 0) {
+      console.warn(
+        `Warning: ${result.skippedUnavailableConnections} bank connection(s) were skipped because the bank is temporarily unavailable.`
+      );
+    }
   } catch (error) {
     console.error(`Error: ${safeMessage(error)}`);
     exitCode = error instanceof KakeboError ? error.exitCode : 1;
   } finally {
-    application?.close();
+    try {
+      application?.close();
+    } catch (error) {
+      console.error(`Cleanup warning: ${safeMessage(error)}`);
+      if (exitCode === 0) exitCode = 1;
+    }
   }
   app.exit(exitCode);
 }
@@ -1499,7 +1530,7 @@ async function runScheduled(): Promise<void> {
 async function runDesktop(): Promise<void> {
   await createLoadingWindow();
   environmentFile = findEnvironmentFile();
-  rootDirectory = dirname(environmentFile);
+  rootDirectory = runtimeRootDirectory(environmentFile);
   process.chdir(rootDirectory);
   domainApplication = createKakeboApplication(environmentFile, {
     overrideEnvironment: true
@@ -1612,11 +1643,31 @@ app.on("before-quit", (event) => {
   resolvePendingAccountFailureDecision("stop");
   coordinator?.cancelAll("The application is closing.");
   shutdownPromise ??= (async () => {
-    await Promise.allSettled([...activeOperations]);
-    await callbackServer?.close();
-    callbackServer = undefined;
-    domainApplication?.close();
-    domainApplication = undefined;
+    const failures: unknown[] = [];
+    for (const result of await Promise.allSettled([...activeOperations])) {
+      if (result.status === "rejected") failures.push(result.reason);
+    }
+    try {
+      await callbackServer?.close();
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      callbackServer = undefined;
+    }
+    try {
+      domainApplication?.close();
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      domainApplication = undefined;
+    }
+    if (failures.length > 0) {
+      console.error(
+        `Shutdown completed with ${failures.length} cleanup warning(s): ${failures
+          .map((error) => safeMessage(error))
+          .join("; ")}`
+      );
+    }
     cleanupComplete = true;
     app.quit();
   })();

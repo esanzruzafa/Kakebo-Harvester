@@ -183,6 +183,7 @@ export class AuthorizationService {
     bank: Aspsp,
     purpose: "connect" | "reauthorize"
   ): Promise<AuthorizationStartResult> {
+    const now = new Date().toISOString();
     const state = createAuthorizationState();
     this.states.save(state, {
       bankConnectionId: connection.id,
@@ -191,31 +192,66 @@ export class AuthorizationService {
       environment: this.config.appEnv,
       purpose
     });
-    const authorization = await this.client.startAuthorization({
-      bank,
-      state,
-      redirectUrl: this.config.redirectUrl,
-      psuType: connection.psu_type,
-      language: this.config.defaultLanguage
-    });
-    this.database
-      .prepare(
-        `UPDATE bank_connections SET
-           status = CASE WHEN ? = 'connect' THEN 'PENDING_AUTHORIZATION' ELSE status END,
-           error_code = NULL, error_message_safe = NULL,
-           retry_after_at = NULL, online_retry_used = 0,
-           required_psu_headers_json = ?
-         WHERE id = ?`
-      )
-      .run(
-        purpose,
-        JSON.stringify(
-          (bank.required_psu_headers ?? []).map((header) =>
-            header.toLowerCase()
-          )
-        ),
-        connection.id
-      );
+    let authorization: Awaited<
+      ReturnType<EnableBankingClient["startAuthorization"]>
+    >;
+    try {
+      authorization = await this.client.startAuthorization({
+        bank,
+        state,
+        redirectUrl: this.config.redirectUrl,
+        psuType: connection.psu_type,
+        language: this.config.defaultLanguage
+      });
+    } catch (error) {
+      this.states.discard(state);
+      throw error;
+    }
+    try {
+      this.database
+        .prepare(
+          `UPDATE bank_connections SET
+           status = CASE
+             WHEN @purpose = 'connect' THEN 'PENDING_AUTHORIZATION'
+             ELSE status
+           END,
+           error_code = CASE
+             WHEN @purpose = 'reauthorize' AND retry_after_at > @now
+               THEN error_code
+             ELSE NULL
+           END,
+           error_message_safe = CASE
+             WHEN @purpose = 'reauthorize' AND retry_after_at > @now
+               THEN error_message_safe
+             ELSE NULL
+           END,
+           retry_after_at = CASE
+             WHEN @purpose = 'reauthorize' AND retry_after_at > @now
+               THEN retry_after_at
+             ELSE NULL
+           END,
+           online_retry_used = CASE
+             WHEN @purpose = 'reauthorize' AND retry_after_at > @now
+               THEN online_retry_used
+             ELSE 0
+           END,
+           required_psu_headers_json = @requiredHeaders
+           WHERE id = @connectionId`
+        )
+        .run({
+          purpose,
+          now,
+          requiredHeaders: JSON.stringify(
+            (bank.required_psu_headers ?? []).map((header) =>
+              header.toLowerCase()
+            )
+          ),
+          connectionId: connection.id
+        });
+    } catch (error) {
+      this.states.discard(state);
+      throw error;
+    }
     return {
       url: authorization.url,
       connectionAlias: connection.alias,
@@ -298,9 +334,10 @@ export class AuthorizationService {
       throw new InvalidStateError();
     }
     if (input.error || !input.code) {
-      const message = (
+      const now = new Date().toISOString();
+      const message = safeMessage(
         input.errorDescription ??
-        (input.error ? "Autorización denegada." : "El callback no contiene code.")
+          (input.error ? "Autorización denegada." : "El callback no contiene code.")
       ).slice(0, 300);
       const fallback = this.failedAuthorizationState(
         pending.purpose,
@@ -311,13 +348,26 @@ export class AuthorizationService {
         .prepare(
           `UPDATE bank_connections SET
              status = ?, reauthorization_required = ?,
-             error_code = ?, error_message_safe = ?
+             error_code = CASE
+               WHEN ? = 'reauthorize' AND retry_after_at > ?
+                 THEN error_code
+               ELSE ?
+             END,
+             error_message_safe = CASE
+               WHEN ? = 'reauthorize' AND retry_after_at > ?
+                 THEN error_message_safe
+               ELSE ?
+             END
            WHERE id = ?`
         )
         .run(
           fallback.status,
           fallback.reauthorizationRequired,
+          pending.purpose,
+          now,
           input.error ?? "MISSING_AUTHORIZATION_CODE",
+          pending.purpose,
+          now,
           message,
           pending.bankConnectionId
         );
@@ -346,7 +396,10 @@ export class AuthorizationService {
           id: string;
           provider_session_id_ciphertext: string;
         }>;
-      const raw = await this.rawStore.write("session", pending.bankConnectionId, session);
+      const raw = await this.rawStore.write("session", pending.bankConnectionId, {
+        ...session,
+        session_id: "[REDACTED]"
+      });
       const now = new Date().toISOString();
       const validUntil = session.access?.valid_until ?? null;
       const dbTransaction = this.database.transaction(() => {
@@ -381,12 +434,34 @@ export class AuthorizationService {
           .prepare(
             `UPDATE bank_connections SET
                status = 'AUTHORIZED', last_authorized_at = ?, valid_until = ?,
-               reauthorization_required = 0, error_code = NULL,
-               error_message_safe = NULL, retry_after_at = NULL,
-               online_retry_used = 0
+               reauthorization_required = 0,
+               error_code = CASE
+                 WHEN retry_after_at > ? THEN error_code
+                 ELSE NULL
+               END,
+               error_message_safe = CASE
+                 WHEN retry_after_at > ? THEN error_message_safe
+                 ELSE NULL
+               END,
+               retry_after_at = CASE
+                 WHEN retry_after_at > ? THEN retry_after_at
+                 ELSE NULL
+               END,
+               online_retry_used = CASE
+                 WHEN retry_after_at > ? THEN online_retry_used
+                 ELSE 0
+               END
              WHERE id = ?`
           )
-          .run(now, validUntil, pending.bankConnectionId);
+          .run(
+            now,
+            validUntil,
+            now,
+            now,
+            now,
+            now,
+            pending.bankConnectionId
+          );
         for (const account of session.accounts) {
           this.accounts.upsert(pending.bankConnectionId, account, raw.path);
         }
@@ -441,6 +516,7 @@ export class AuthorizationService {
         }
       }
       const message = safeMessage(error);
+      const now = new Date().toISOString();
       const fallback = this.failedAuthorizationState(
         pending.purpose,
         pending.bankConnectionId,
@@ -450,14 +526,27 @@ export class AuthorizationService {
         .prepare(
           `UPDATE bank_connections SET
              status = ?, reauthorization_required = ?,
-             error_code = ?, error_message_safe = ?
+             error_code = CASE
+               WHEN ? = 'reauthorize' AND retry_after_at > ?
+                 THEN error_code
+               ELSE ?
+             END,
+             error_message_safe = CASE
+               WHEN ? = 'reauthorize' AND retry_after_at > ?
+                 THEN error_message_safe
+               ELSE ?
+             END
            WHERE id = ?`
         )
         .run(
           fallback.status,
           fallback.reauthorizationRequired,
+          pending.purpose,
+          now,
           providerErrorCode(error) ??
             (error instanceof KakeboError ? error.code : "CALLBACK_ERROR"),
+          pending.purpose,
+          now,
           message,
           pending.bankConnectionId
         );

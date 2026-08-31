@@ -8,6 +8,8 @@ import {
   createDatabase,
   type SqliteDatabase
 } from "../storage/database.js";
+import { DesktopRunRepository } from "../storage/repositories/desktop-run-repository.js";
+import { SYNCHRONIZATION_LOCK_STALE_AFTER_MS } from "../sync/sync-runner.js";
 import { configureTlsTrust } from "../tls.js";
 
 export interface KakeboApplication {
@@ -27,17 +29,29 @@ export function createKakeboApplication(
   const config = loadConfig(envFile, options);
   configureTlsTrust(config.useSystemCa);
   const database = createDatabase(config.databasePath);
-  const logger = createLogger(config.logLevel);
-  const client = new EnableBankingClient(config);
-  const authorization = new AuthorizationService(config, database, client);
-  const sync = new SyncService(config, database, client);
-  return {
-    config,
-    database,
-    client,
-    authorization,
-    sync,
-    logger,
-    close: () => database.close()
-  };
+  try {
+    new DesktopRunRepository(database).recoverInterruptedRuns(
+      new Date(Date.now() - SYNCHRONIZATION_LOCK_STALE_AFTER_MS)
+    );
+    const logger = createLogger(config.logLevel);
+    const client = new EnableBankingClient(config);
+    const authorization = new AuthorizationService(config, database, client);
+    const sync = new SyncService(config, database, client);
+    return {
+      config,
+      database,
+      client,
+      authorization,
+      sync,
+      logger,
+      close: () => database.close()
+    };
+  } catch (error) {
+    try {
+      database.close();
+    } catch {
+      // Preserve the initialization failure that caused the cleanup.
+    }
+    throw error;
+  }
 }

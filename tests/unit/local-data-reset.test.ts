@@ -1,4 +1,11 @@
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  rm,
+  symlink,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -37,6 +44,14 @@ describe("resetLocalData", () => {
       ) VALUES ('account', 'connection', 'provider', 'Account', 1, ?, ?)`)
       .run(now, now);
     database
+      .prepare(
+        `UPDATE accounts SET
+           last_error_at = ?, last_error_code = 'RESOURCE_EXPIRED',
+           last_error_message_safe = 'Previous synchronization error'
+         WHERE id = 'account'`
+      )
+      .run(now);
+    database
       .prepare(`INSERT INTO transactions (
         id, movement_key, reconciliation_key, provider, environment, bank_connection_id,
         account_id, status, amount, currency, direction, description_normalized,
@@ -67,6 +82,7 @@ describe("resetLocalData", () => {
       ) VALUES ('desktop-run', ?, 'SUCCESS', '2026-01-01', '2026-01-01', '[]')`)
       .run(now);
     await mkdir(join(config.rawDataDirectory, "transactions"), { recursive: true });
+    await writeFile(join(config.rawDataDirectory, ".gitkeep"), "");
     await writeFile(join(config.rawDataDirectory, "transactions", "sample.json"), "{}");
     await mkdir(config.exportDirectory, { recursive: true });
     await writeFile(join(config.exportDirectory, "kakebo_movements.csv"), "MovementKey\nmovement\n");
@@ -83,6 +99,18 @@ describe("resetLocalData", () => {
       expect(database.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get()).toEqual({ total: 1 });
     }
     expect(database.prepare("SELECT last_sync_at FROM bank_connections").get()).toEqual({ last_sync_at: null });
+    expect(
+      database
+        .prepare(
+          `SELECT last_error_at, last_error_code, last_error_message_safe
+           FROM accounts WHERE id = 'account'`
+        )
+        .get()
+    ).toEqual({
+      last_error_at: null,
+      last_error_code: null,
+      last_error_message_safe: null
+    });
     for (const table of [
       "transactions",
       "card_import_source_rows",
@@ -93,7 +121,10 @@ describe("resetLocalData", () => {
     ]) {
       expect(database.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get()).toEqual({ total: 0 });
     }
-    await expect(access(config.rawDataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(join(config.rawDataDirectory, ".gitkeep"))).resolves.toBeUndefined();
+    await expect(
+      access(join(config.rawDataDirectory, "transactions"))
+    ).rejects.toMatchObject({ code: "ENOENT" });
     database.close();
   });
 
@@ -142,6 +173,24 @@ describe("resetLocalData", () => {
     expect(database.prepare("SELECT last_sync_at FROM bank_connections").get()).toEqual({
       last_sync_at: null
     });
+    database.close();
+  });
+
+  it("refuses to delete raw data through a directory link", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-reset-linked-raw-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const linkedTarget = join(root, "linked-raw-target");
+    await mkdir(linkedTarget, { recursive: true });
+    await writeFile(join(linkedTarget, "must-remain.json"), "{}");
+    await symlink(linkedTarget, config.rawDataDirectory, "junction");
+
+    const result = await resetLocalData(config, database);
+
+    expect(result.cleanupWarnings).toContain("raw-data");
+    await expect(
+      access(join(linkedTarget, "must-remain.json"))
+    ).resolves.toBeUndefined();
     database.close();
   });
 

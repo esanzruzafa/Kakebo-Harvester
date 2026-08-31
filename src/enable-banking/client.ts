@@ -28,6 +28,48 @@ interface RequestOptions {
   psuHeaders?: PsuHeaders;
 }
 
+const MAX_PROVIDER_RESPONSE_BYTES = 25 * 1024 * 1024;
+const MAX_PROVIDER_ERROR_BYTES = 64 * 1024;
+
+async function boundedResponseText(
+  response: Response,
+  maximumBytes: number
+): Promise<string> {
+  const declaredLength = response.headers.get("content-length")?.trim();
+  if (declaredLength && /^\d+$/u.test(declaredLength)) {
+    const declaredBytes = Number(declaredLength);
+    if (!Number.isSafeInteger(declaredBytes) || declaredBytes > maximumBytes) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new MalformedProviderResponseError(
+        `Enable Banking returned a response larger than ${maximumBytes} bytes.`
+      );
+    }
+  }
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = "";
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > maximumBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new MalformedProviderResponseError(
+          `Enable Banking returned a response larger than ${maximumBytes} bytes.`
+        );
+      }
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export interface PsuHeaders {
   ipAddress?: string;
   userAgent?: string;
@@ -180,7 +222,7 @@ export class EnableBankingClient {
       if (value !== undefined) url.searchParams.set(key, value);
     }
 
-    const retryStatuses = new Set([408, 502, 503, 504]);
+    const retryStatuses = new Set([408, 500, 502, 503, 504]);
     const method = options.method ?? "GET";
     const maximumAttempts = method === "POST" ? 1 : 4;
     for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
@@ -204,7 +246,10 @@ export class EnableBankingClient {
         });
 
         if (response.ok) {
-          const body = await response.text();
+          const body = await boundedResponseText(
+            response,
+            MAX_PROVIDER_RESPONSE_BYTES
+          );
           if (body.trim().length === 0) return undefined;
           try {
             return JSON.parse(body) as unknown;
@@ -215,7 +260,10 @@ export class EnableBankingClient {
             );
           }
         }
-        const body = (await response.text()).slice(0, 500);
+        const body = await boundedResponseText(
+          response,
+          MAX_PROVIDER_ERROR_BYTES
+        );
         const failure = providerError(body);
         const providerCode = failure.providerCode;
         const metadata = {
@@ -253,17 +301,20 @@ export class EnableBankingClient {
             providerCode ?? "RATE_LIMIT_EXCEEDED"
           );
         }
-        if (
-          response.status === 401 ||
-          response.status === 403 ||
-          (providerCode && authenticationErrorCodes.has(providerCode))
-        ) {
+        if (providerCode && authenticationErrorCodes.has(providerCode)) {
           throw new EnableBankingAuthenticationError(
             providerFailureMessage(response.status, failure),
             metadata
           );
         }
-        if (providerCode && unavailableErrorCodes.has(providerCode)) {
+        const retryableProviderFailure =
+          retryStatuses.has(response.status) &&
+          attempt < maximumAttempts - 1;
+        if (
+          providerCode &&
+          unavailableErrorCodes.has(providerCode) &&
+          !retryableProviderFailure
+        ) {
           throw new BankUnavailableError(
             providerCode === "ASPSP_ERROR"
               ? aspspTemporaryFailureMessage(response.status, failure)
@@ -272,31 +323,29 @@ export class EnableBankingClient {
             metadata
           );
         }
+        if (providerCode && !retryableProviderFailure) {
+          throw new EnableBankingProviderError(
+            providerFailureMessage(response.status, failure),
+            providerCode,
+            response.status,
+            failure.message
+          );
+        }
+        if (response.status === 401 || response.status === 403) {
+          throw new EnableBankingAuthenticationError(
+            providerFailureMessage(response.status, failure),
+            metadata
+          );
+        }
         if ([400, 404, 422].includes(response.status)) {
           if (/expired|revoked|session/i.test(body)) {
             throw new ReauthorizationRequiredError(undefined, [], metadata);
-          }
-          if (providerCode) {
-            throw new EnableBankingProviderError(
-              providerFailureMessage(response.status, failure),
-              providerCode,
-              response.status,
-              failure.message
-            );
           }
           throw new MalformedProviderResponseError(
             providerFailureMessage(response.status, failure)
           );
         }
         if (!retryStatuses.has(response.status)) {
-          if (providerCode) {
-            throw new EnableBankingProviderError(
-              providerFailureMessage(response.status, failure),
-              providerCode,
-              response.status,
-              failure.message
-            );
-          }
           throw new BankUnavailableError(
             `Enable Banking respondió con HTTP ${response.status}.`,
             undefined,
@@ -390,8 +439,25 @@ export class EnableBankingClient {
   }
 
   public async getSession(sessionId: string) {
-    const value = await this.request(`/sessions/${encodeURIComponent(sessionId)}`);
-    return this.parse(getSessionResponseSchema, value, "la sesión");
+    try {
+      const value = await this.request(`/sessions/${encodeURIComponent(sessionId)}`);
+      return this.parse(getSessionResponseSchema, value, "la sesión");
+    } catch (error) {
+      if (
+        error instanceof EnableBankingProviderError &&
+        error.providerCode === "RESOURCE_EXPIRED"
+      ) {
+        throw new ReauthorizationRequiredError(
+          "La sesión bancaria ha caducado y debe volver a autorizarse.",
+          [],
+          {
+            providerCode: error.providerCode,
+            httpStatus: error.httpStatus
+          }
+        );
+      }
+      throw error;
+    }
   }
 
   public async deleteSession(sessionId: string): Promise<void> {

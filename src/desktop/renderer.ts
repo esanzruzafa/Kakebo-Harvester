@@ -5,7 +5,10 @@ import type {
   DesktopBootstrap,
   SelectedCardFile
 } from "./contracts.js";
-import { rowDropInsertionIndex } from "./row-drop.js";
+import {
+  adjacentMovableIndex,
+  rowDropInsertionIndex
+} from "./row-drop.js";
 import { onlineRetryDecision, rateLimitPlan } from "./rate-limit-plan.js";
 import { formatExactCurrencyDecimal } from "../utils/currency.js";
 import type { CardImportProfile } from "../settings/card-import-profiles-store.js";
@@ -25,6 +28,10 @@ import type {
   SyncStep
 } from "../sync/sync-runner.js";
 import type { FollowUpWarning } from "./committed-operations.js";
+import {
+  mergeEditableDrafts,
+  type EditableDrafts
+} from "./dirty-refresh.js";
 
 interface ProgressEntry {
   key: string;
@@ -36,7 +43,7 @@ let state: DesktopBootstrap;
 let currentTranslations: Record<string, string> = {};
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let progressEntries: ProgressEntry[] = [];
-let operationInProgress = false;
+let activeOperationCount = 0;
 let closePromptOpen = false;
 const savedTabSnapshots = new Map<string, string>();
 let selectedCardFiles: Array<
@@ -46,6 +53,7 @@ let connectionWizardBanks: BankOption[] = [];
 let selectedConnectionBank: BankOption | undefined;
 let connectionWizardBusy = false;
 let bankLoadRequest = 0;
+let connectionWizardPreviousFocus: HTMLElement | undefined;
 
 const connectionCountryCodes = [
   "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE",
@@ -221,6 +229,8 @@ function errorMessage(error: unknown): string {
 function showToast(message: string, tone: boolean | "warning" = false): void {
   const toast = element<HTMLDivElement>("toast");
   toast.textContent = message;
+  toast.setAttribute("role", tone === true ? "alert" : "status");
+  toast.setAttribute("aria-live", tone === true ? "assertive" : "polite");
   toast.classList.toggle("is-error", tone === true);
   toast.classList.toggle("is-warning", tone === "warning");
   toast.hidden = false;
@@ -228,6 +238,18 @@ function showToast(message: string, tone: boolean | "warning" = false): void {
   toastTimer = setTimeout(() => {
     toast.hidden = true;
   }, 4_500);
+}
+
+function rejectConcurrentOperation(): boolean {
+  if (activeOperationCount === 0) return false;
+  showToast(
+    t(
+      "error.operationInProgress",
+      "Wait for the current operation to finish before starting another one."
+    ),
+    true
+  );
+  return true;
 }
 
 function localDate(value: string | null): string {
@@ -243,6 +265,7 @@ function localDate(value: string | null): string {
 function statusClass(status: string): "success" | "warning" | "error" | "neutral" {
   if (status === "AUTHORIZED" || status === "SUCCESS") return "success";
   if (
+    status === "SUCCESS_WITH_WARNINGS" ||
     status.includes("PENDING") ||
     status === "REAUTHORIZATION_REQUIRED" ||
     status === "RUNNING"
@@ -285,7 +308,7 @@ function onClick(
 
 type ModalChoice = "confirm" | "discard" | "cancel";
 
-let activeModalFinish: ((choice: ModalChoice) => void) | undefined;
+let modalQueue: Promise<void> = Promise.resolve();
 
 interface AppModalOptions {
   title: string;
@@ -296,8 +319,64 @@ interface AppModalOptions {
   danger?: boolean;
 }
 
-function showAppModal(options: AppModalOptions): Promise<ModalChoice> {
-  activeModalFinish?.("cancel");
+function focusableElements(container: HTMLElement): HTMLElement[] {
+  return [
+    ...container.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"
+    )
+  ].filter(
+    (candidate) =>
+      !candidate.hidden && candidate.getClientRects().length > 0
+  );
+}
+
+function updateOverlayInertState(): void {
+  const confirmation = element<HTMLElement>("app-modal");
+  const wizard = element<HTMLElement>("connection-wizard");
+  const shell = document.querySelector<HTMLElement>(".app-shell");
+  if (!shell) throw new Error("Missing application shell.");
+  const confirmationOpen = !confirmation.hidden;
+  const wizardOpen = !wizard.hidden;
+  shell.inert = confirmationOpen || wizardOpen;
+  wizard.inert = confirmationOpen;
+}
+
+function handleDialogKeydown(
+  event: KeyboardEvent,
+  container: HTMLElement,
+  cancel: () => void
+): void {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    cancel();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = focusableElements(container);
+  if (focusable.length === 0) {
+    event.preventDefault();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (!first || !last) return;
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  } else if (!container.contains(document.activeElement)) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function displayAppModal(options: AppModalOptions): Promise<ModalChoice> {
+  const previousFocus =
+    document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : undefined;
   const modal = element<HTMLElement>("app-modal");
   element("app-modal-kicker").textContent = t(
     "dialog.kicker",
@@ -314,21 +393,37 @@ function showAppModal(options: AppModalOptions): Promise<ModalChoice> {
   discard.textContent = options.discardLabel ?? "";
   cancel.textContent = options.cancelLabel ?? t("common.cancel", "Cancel");
   modal.hidden = false;
+  updateOverlayInertState();
   accept.focus();
   return new Promise((resolve) => {
     const finish = (value: ModalChoice): void => {
       modal.hidden = true;
+      updateOverlayInertState();
       accept.onclick = null;
       discard.onclick = null;
       cancel.onclick = null;
-      if (activeModalFinish === finish) activeModalFinish = undefined;
+      modal.removeEventListener("keydown", onKeydown);
+      if (previousFocus?.isConnected && !previousFocus.closest("[inert]")) {
+        previousFocus.focus();
+      }
       resolve(value);
     };
-    activeModalFinish = finish;
+    const onKeydown = (event: KeyboardEvent): void =>
+      handleDialogKeydown(event, modal, () => finish("cancel"));
     accept.onclick = () => finish("confirm");
     discard.onclick = () => finish("discard");
     cancel.onclick = () => finish("cancel");
+    modal.addEventListener("keydown", onKeydown);
   });
+}
+
+function showAppModal(options: AppModalOptions): Promise<ModalChoice> {
+  const result = modalQueue.then(() => displayAppModal(options));
+  modalQueue = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
 }
 
 async function confirmInApp(
@@ -416,12 +511,11 @@ function renderConnectionBankList(): void {
     const option = document.createElement("button");
     option.type = "button";
     option.className = "connection-bank-option";
-    option.setAttribute("role", "option");
     const selected =
       selectedConnectionBank?.name === bank.name &&
       selectedConnectionBank.country === bank.country;
     option.classList.toggle("is-selected", selected);
-    option.setAttribute("aria-selected", String(selected));
+    option.setAttribute("aria-pressed", String(selected));
     const details = document.createElement("span");
     const name = document.createElement("strong");
     name.textContent = bank.name;
@@ -510,7 +604,7 @@ async function saveAccountsBeforeConnecting(): Promise<boolean> {
   if (choice === "confirm") {
     await saveTab("accounts", false);
   } else {
-    await refresh();
+    await refresh({ preserveUnsaved: false });
   }
   return true;
 }
@@ -556,7 +650,7 @@ async function loadConnectionBanks(): Promise<void> {
 }
 
 async function openConnectionWizard(): Promise<void> {
-  if (operationInProgress) {
+  if (activeOperationCount > 0) {
     showToast(
       t(
         "error.connectDuringSync",
@@ -574,7 +668,13 @@ async function openConnectionWizard(): Promise<void> {
   renderConnectionCountries();
   renderConnectionBankSelection();
   renderConnectionBankList();
+  connectionWizardPreviousFocus =
+    document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : undefined;
   element<HTMLElement>("connection-wizard").hidden = false;
+  updateOverlayInertState();
+  element<HTMLSelectElement>("connection-country").focus();
   if (!state.callbackReady) {
     setConnectionWizardStatus(
       t(
@@ -592,11 +692,20 @@ function closeConnectionWizard(): void {
   if (connectionWizardBusy) return;
   bankLoadRequest += 1;
   element<HTMLElement>("connection-wizard").hidden = true;
+  updateOverlayInertState();
+  if (
+    connectionWizardPreviousFocus?.isConnected &&
+    !connectionWizardPreviousFocus.closest("[inert]")
+  ) {
+    connectionWizardPreviousFocus.focus();
+  }
+  connectionWizardPreviousFocus = undefined;
 }
 
 async function startBankConnection(): Promise<void> {
   const bank = selectedConnectionBank;
   if (!bank || connectionWizardBusy) return;
+  if (rejectConcurrentOperation()) return;
   if (!state.callbackReady) {
     setConnectionWizardStatus(
       t(
@@ -611,7 +720,7 @@ async function startBankConnection(): Promise<void> {
     | "personal"
     | "business";
   connectionWizardBusy = true;
-  operationInProgress = true;
+  activeOperationCount += 1;
   const start = element<HTMLButtonElement>("connection-wizard-start");
   const cancel = element<HTMLButtonElement>("connection-wizard-cancel");
   const reload = element<HTMLButtonElement>("reload-banks");
@@ -639,7 +748,8 @@ async function startBankConnection(): Promise<void> {
       )
     );
     const result = await connection;
-    element<HTMLElement>("connection-wizard").hidden = true;
+    connectionWizardBusy = false;
+    closeConnectionWizard();
     await refresh();
     if (result.warnings.length > 0) {
       showToast(followUpWarningMessage(result.warnings), "warning");
@@ -651,7 +761,7 @@ async function startBankConnection(): Promise<void> {
     await refresh().catch(() => undefined);
   } finally {
     connectionWizardBusy = false;
-    operationInProgress = false;
+    activeOperationCount -= 1;
     cancel.disabled = false;
     reload.disabled = false;
     element<HTMLSelectElement>("connection-country").disabled = false;
@@ -753,7 +863,10 @@ function renderConnections(): void {
         : t("connections.renew", "Renew access");
       const reconnect = button(idleLabel);
       onClick(reconnect, async () => {
+        if (rejectConcurrentOperation()) return;
+        activeOperationCount += 1;
         reconnect.disabled = true;
+        revoke.disabled = true;
         reconnect.textContent = t("connections.waiting", "Waiting for the bank…");
         try {
           const result = await window.kakebo.reauthorize(connection.id);
@@ -771,13 +884,16 @@ function renderConnections(): void {
         } catch (error) {
           showToast(errorMessage(error), true);
         } finally {
+          activeOperationCount -= 1;
           reconnect.disabled = false;
+          revoke.disabled = false;
           reconnect.textContent = idleLabel;
         }
       });
       const revokeLabel = t("connections.revoke", "Revoke consent");
       const revoke = button(revokeLabel, "button danger");
       onClick(revoke, async () => {
+        if (rejectConcurrentOperation()) return;
         const confirmed = await confirmInApp(
           tf("dialog.revoke.title", "Revoke {bank} consent?", {
             bank: connection.alias
@@ -789,7 +905,8 @@ function renderConnections(): void {
           t("dialog.revoke.confirm", "Revoke consent")
         );
         if (!confirmed) return;
-        operationInProgress = true;
+        if (rejectConcurrentOperation()) return;
+        activeOperationCount += 1;
         reconnect.disabled = true;
         revoke.disabled = true;
         revoke.textContent = t("connections.revoking", "Revoking…");
@@ -815,7 +932,7 @@ function renderConnections(): void {
         } catch (error) {
           showToast(errorMessage(error), true);
         } finally {
-          operationInProgress = false;
+          activeOperationCount -= 1;
           reconnect.disabled = false;
           revoke.disabled = false;
           revoke.textContent = revokeLabel;
@@ -917,7 +1034,13 @@ function createAuditRun(run: AuditRunView, expanded = false): HTMLElement {
   }
   if (run.error) {
     const message = document.createElement("span");
-    message.textContent = errorMessage(run.error);
+    message.textContent =
+      run.errorCode === "INTERRUPTED"
+        ? t(
+            "audit.interrupted",
+            "The previous process ended before this synchronization was finalized."
+          )
+        : errorMessage(run.error);
     error.append(message);
   }
   article.append(header, error, accounts);
@@ -1311,11 +1434,22 @@ function subcategoriesFor(categoryName: string): string[] {
   );
 }
 
-function dragHandle(label: string): HTMLButtonElement {
+function dragHandle(
+  label: string,
+  group: string,
+  index: number
+): HTMLButtonElement {
   const handle = button("⋮⋮", "drag-handle");
   handle.draggable = true;
-  handle.setAttribute("aria-label", label);
-  handle.title = label;
+  handle.dataset["dragGroup"] = group;
+  handle.dataset["dragIndex"] = String(index);
+  const keyboardHint = t(
+    "reorder.keyboardHint",
+    "Use the Up and Down arrow keys to reorder."
+  );
+  handle.setAttribute("aria-label", `${label}. ${keyboardHint}`);
+  handle.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown");
+  handle.title = `${label}. ${keyboardHint}`;
   return handle;
 }
 
@@ -1347,7 +1481,9 @@ function enableRowDrop(
 function activateDrag(
   handle: HTMLButtonElement,
   row: HTMLTableRowElement,
-  index: number
+  index: number,
+  movableIndices: readonly number[],
+  move: (from: number, to: number) => void
 ): void {
   handle.addEventListener("dragstart", (event) => {
     row.classList.add("is-dragging");
@@ -1359,6 +1495,23 @@ function activateDrag(
     for (const candidate of document.querySelectorAll(".is-drop-target")) {
       candidate.classList.remove("is-drop-target");
     }
+  });
+  handle.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    const target = adjacentMovableIndex(
+      index,
+      event.key === "ArrowUp" ? -1 : 1,
+      movableIndices
+    );
+    if (target === undefined) return;
+    event.preventDefault();
+    const group = handle.dataset["dragGroup"];
+    move(index, target);
+    if (!group) return;
+    const movedHandle = document.querySelector<HTMLButtonElement>(
+      `.drag-handle[data-drag-group="${CSS.escape(group)}"][data-drag-index="${target}"]`
+    );
+    movedHandle?.focus();
   });
 }
 
@@ -1407,9 +1560,17 @@ function renderExclusions(): void {
     const handle = dragHandle(
       tf("exclusions.dragAria", "Move exclusion {number}", {
         number: index + 1
-      })
+      }),
+      "exclusions",
+      index
     );
-    activateDrag(handle, row, index);
+    activateDrag(
+      handle,
+      row,
+      index,
+      state.exclusions.map((_item, itemIndex) => itemIndex),
+      moveExclusion
+    );
     handleCell.append(handle);
     enableRowDrop(row, index, moveExclusion);
 
@@ -1470,9 +1631,17 @@ function renderRules(): void {
 
     const handleCell = row.insertCell();
     const handle = dragHandle(
-      tf("rules.dragAria", "Move rule {number}", { number: index + 1 })
+      tf("rules.dragAria", "Move rule {number}", { number: index + 1 }),
+      "rules",
+      index
     );
-    activateDrag(handle, row, index);
+    activateDrag(
+      handle,
+      row,
+      index,
+      state.rules.map((_item, itemIndex) => itemIndex),
+      moveRule
+    );
     handleCell.append(handle);
     enableRowDrop(row, index, moveRule);
 
@@ -1594,7 +1763,13 @@ function exportFieldLabel(field: ExportField): string {
 
 function moveExportColumn(from: number, to: number): void {
   const settings = exportValues();
-  if (!settings.columns[from]?.enabled || !settings.columns[to]?.enabled) return;
+  if (
+    !settings.columns[from]?.enabled ||
+    to < 0 ||
+    to >= settings.columns.length
+  ) {
+    return;
+  }
   const [moved] = settings.columns.splice(from, 1);
   if (!moved) return;
   settings.columns.splice(to, 0, moved);
@@ -1620,17 +1795,32 @@ function renderExportSettings(): void {
     const row = body.insertRow();
     row.dataset["exportColumnIndex"] = String(index);
     const handleCell = row.insertCell();
+    const columnNumber = settings.columns
+      .slice(0, index + 1)
+      .filter((item) => item.enabled).length;
     if (column.enabled) {
-      const handle = dragHandle(tf("export.dragAria", "Move export column {number}", { number: index + 1 }));
-      activateDrag(handle, row, index);
+      const handle = dragHandle(
+        tf("export.dragAria", "Move export column {number}", {
+          number: columnNumber
+        }),
+        "export",
+        index
+      );
+      activateDrag(
+        handle,
+        row,
+        index,
+        settings.columns.flatMap((item, itemIndex) =>
+          item.enabled ? [itemIndex] : []
+        ),
+        moveExportColumn
+      );
       handleCell.append(handle);
       enableRowDrop(row, index, moveExportColumn);
     }
     const numberCell = row.insertCell();
     numberCell.className = "row-number";
-    numberCell.textContent = column.enabled
-      ? String(settings.columns.slice(0, index + 1).filter((item) => item.enabled).length)
-      : "";
+    numberCell.textContent = column.enabled ? String(columnNumber) : "";
     const enabledCell = row.insertCell();
     const enabled = checkbox(
       column.enabled,
@@ -1690,11 +1880,48 @@ function renderAll(): void {
   renderProgress();
 }
 
-async function refresh(): Promise<void> {
-  state = await window.kakebo.bootstrap();
+function captureEditableDrafts(tabs: ReadonlySet<EditableTab>): EditableDrafts {
+  return {
+    ...(tabs.has("accounts") ? { accounts: accountValues() } : {}),
+    ...(tabs.has("cards")
+      ? { cardImportProfiles: cardProfileValues() }
+      : {}),
+    ...(tabs.has("categories")
+      ? {
+          exclusions: exclusionValues(),
+          rules: ruleValues(),
+          categories: categoryValues()
+        }
+      : {}),
+    ...(tabs.has("export") ? { exportSettings: exportValues() } : {})
+  };
+}
+
+async function refresh(
+  options: { preserveUnsaved?: boolean } = {}
+): Promise<void> {
+  const shouldPreserve =
+    options.preserveUnsaved !== false && savedTabSnapshots.size > 0;
+  const dirtyTabs = new Set<EditableTab>(
+    shouldPreserve ? unsavedTabs() : []
+  );
+  const drafts = captureEditableDrafts(dirtyTabs);
+  const priorSnapshots = new Map(savedTabSnapshots);
+  const fresh = await window.kakebo.bootstrap();
+  state = dirtyTabs.size > 0
+    ? { ...fresh, ...mergeEditableDrafts(fresh, drafts) }
+    : fresh;
   applyTranslations();
   renderAll();
-  rememberAllSavedTabs();
+  for (const tab of editableTabs) {
+    if (dirtyTabs.has(tab)) {
+      const snapshot = priorSnapshots.get(tab);
+      if (snapshot === undefined) savedTabSnapshots.delete(tab);
+      else savedTabSnapshots.set(tab, snapshot);
+    } else {
+      rememberSavedTab(tab);
+    }
+  }
 }
 
 function selectedSteps(): SyncStep[] {
@@ -2093,7 +2320,7 @@ function setupNavigation(): void {
       if (
         active &&
         active !== tab &&
-        (tabHasUnsavedChanges(active) || operationInProgress)
+        (tabHasUnsavedChanges(active) || activeOperationCount > 0)
       ) {
         void confirmNavigation(active, tab);
         return;
@@ -2114,7 +2341,7 @@ function activateTab(tab: string): void {
 }
 
 async function confirmNavigation(from: string, to: string): Promise<void> {
-  if (operationInProgress) {
+  if (activeOperationCount > 0) {
     const proceed = await confirmInApp(
       t("dialog.operationNavigation.title", "Operation in progress"),
       t(
@@ -2147,7 +2374,7 @@ async function confirmNavigation(from: string, to: string): Promise<void> {
       return;
     }
   } else {
-    await refresh();
+    await refresh({ preserveUnsaved: false });
   }
   activateTab(to);
 }
@@ -2193,6 +2420,10 @@ function localizedDoctorValue(
 }
 
 function setupActions(): void {
+  const connectionWizard = element<HTMLElement>("connection-wizard");
+  connectionWizard.addEventListener("keydown", (event) =>
+    handleDialogKeydown(event, connectionWizard, closeConnectionWizard)
+  );
   element<HTMLSelectElement>("sync-preset").addEventListener("change", (event) =>
     applyPreset((event.currentTarget as HTMLSelectElement).value)
   );
@@ -2262,6 +2493,7 @@ function setupActions(): void {
   });
 
   onClick(element<HTMLButtonElement>("start-sync"), async () => {
+    if (rejectConcurrentOperation()) return;
     const start = element<HTMLButtonElement>("start-sync");
     const steps = selectedSteps();
     const accessesBank = steps.some((step) => step !== "export");
@@ -2319,7 +2551,7 @@ function setupActions(): void {
       });
       return;
     }
-    operationInProgress = true;
+    activeOperationCount += 1;
     start.disabled = true;
     start.textContent = t("sync.running", "Synchronizing…");
     resetProgress();
@@ -2333,11 +2565,15 @@ function setupActions(): void {
           : {})
       });
       const status = element("run-status");
-      const hasAccountFailures = (result.accountFailures ?? 0) > 0;
-      status.className = hasAccountFailures
+      const hasRunWarnings =
+        (result.accountFailures ?? 0) > 0 ||
+        (result.skippedConnections ?? 0) > 0 ||
+        (result.skippedRateLimitedConnections ?? 0) > 0 ||
+        (result.skippedUnavailableConnections ?? 0) > 0;
+      status.className = hasRunWarnings
         ? "status-badge warning"
         : "status-badge success";
-      status.textContent = hasAccountFailures
+      status.textContent = hasRunWarnings
         ? t("progress.completedWithWarnings", "Completed with warnings")
         : t("progress.completed", "Completed");
       const summary = element<HTMLElement>("run-result");
@@ -2366,18 +2602,40 @@ function setupActions(): void {
           ? null
           : tf("result.accountFailures", "{count} account issue(s)", {
               count: result.accountFailures
-            })
+            }),
+        result.skippedConnections === undefined
+          ? null
+          : tf(
+              "result.skippedConnections",
+              "{count} bank connection(s) skipped pending authorization",
+              { count: result.skippedConnections }
+            ),
+        result.skippedRateLimitedConnections === undefined
+          ? null
+          : tf(
+              "result.skippedRateLimitedConnections",
+              "{count} bank connection(s) skipped due to an active request limit",
+              { count: result.skippedRateLimitedConnections }
+            ),
+        result.skippedUnavailableConnections === undefined
+          ? null
+          : tf(
+              "result.skippedUnavailableConnections",
+              "{count} temporarily unavailable bank connection(s) skipped",
+              { count: result.skippedUnavailableConnections }
+            )
       ]
         .filter((value): value is string => value !== null)
         .join(" · ");
       summary.hidden = false;
       showToast(
-        hasAccountFailures
+        hasRunWarnings
           ? t(
               "toast.syncCompletedWithWarnings",
-              "Synchronization completed with account issues."
+              "Synchronization completed with bank or account issues."
             )
-          : t("toast.syncCompleted", "Synchronization completed successfully.")
+          : t("toast.syncCompleted", "Synchronization completed successfully."),
+        hasRunWarnings ? "warning" : false
       );
       await refresh();
     } catch (error) {
@@ -2387,7 +2645,7 @@ function setupActions(): void {
       showToast(errorMessage(error), true);
       await refresh().catch(() => undefined);
     } finally {
-      operationInProgress = false;
+      activeOperationCount -= 1;
       start.disabled = false;
       start.textContent = t("sync.start", "Start synchronization");
     }
@@ -2537,22 +2795,27 @@ function setupActions(): void {
   });
 
   onClick(element<HTMLButtonElement>("import-card-files"), async () => {
+    if (rejectConcurrentOperation()) return;
     const importButton = element<HTMLButtonElement>("import-card-files");
-    operationInProgress = true;
+    const files = selectedCardFiles
+      .filter((file) => file.included)
+      .map((file) => ({ path: file.path, profileId: file.profileId }));
+    if (files.length === 0) {
+      showToast(
+        t("cards.selectAtLeastOne", "Select at least one workbook to import."),
+        true
+      );
+      return;
+    }
+    activeOperationCount += 1;
+    element<HTMLElement>("view-cards").inert = true;
     importButton.disabled = true;
     importButton.textContent = t("cards.importing", "Importing…");
     try {
       state.cardImportProfiles = await window.kakebo.saveCardImportProfiles(
         cardProfileValues()
       );
-      const files = selectedCardFiles
-        .filter((file) => file.included)
-        .map((file) => ({ path: file.path, profileId: file.profileId }));
-      if (files.length === 0) {
-        throw new Error(
-          t("cards.selectAtLeastOne", "Select at least one workbook to import.")
-        );
-      }
+      rememberSavedTab("cards");
       const result = await window.kakebo.importCardFiles({ files });
       const summary = element<HTMLElement>("card-import-result");
       summary.textContent = tf(
@@ -2582,7 +2845,8 @@ function setupActions(): void {
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
-      operationInProgress = false;
+      activeOperationCount -= 1;
+      element<HTMLElement>("view-cards").inert = false;
       importButton.disabled = false;
       importButton.textContent = t("cards.importSelected", "Import selected");
     }
@@ -2689,10 +2953,16 @@ function setupActions(): void {
   });
 
   onClick(element<HTMLButtonElement>("reapply-rules"), async () => {
+    if (rejectConcurrentOperation()) return;
     const reapply = element<HTMLButtonElement>("reapply-rules");
+    activeOperationCount += 1;
+    element<HTMLElement>("view-categories").inert = true;
     reapply.disabled = true;
     reapply.textContent = t("rules.applying", "Applying…");
     try {
+      if (tabHasUnsavedChanges("categories")) {
+        await saveTab("categories", false);
+      }
       const result = await window.kakebo.reapplyRules();
       showToast(
         result.warnings.length > 0
@@ -2711,6 +2981,8 @@ function setupActions(): void {
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
+      activeOperationCount -= 1;
+      element<HTMLElement>("view-categories").inert = false;
       reapply.disabled = false;
       reapply.textContent = t("rules.reapply", "Apply to history");
     }
@@ -2770,19 +3042,56 @@ function setupActions(): void {
     (event) => {
       void (async () => {
         const selector = event.currentTarget as HTMLSelectElement;
+        const previousLanguage = state.language;
+        if (rejectConcurrentOperation()) {
+          selector.value = previousLanguage;
+          return;
+        }
+        activeOperationCount += 1;
         selector.disabled = true;
         try {
+          const pending = unsavedTabs();
+          if (pending.length > 0) {
+            const choice = await showAppModal({
+              title: t(
+                "dialog.languageUnsaved.title",
+                "Unsaved changes"
+              ),
+              detail: tf(
+                "dialog.languageUnsaved.detail",
+                "There are unsaved changes in {count} section(s). Save them before changing the language?",
+                { count: pending.length }
+              ),
+              confirmLabel: t(
+                "dialog.languageUnsaved.save",
+                "Save and change language"
+              ),
+              discardLabel: t(
+                "dialog.languageUnsaved.discard",
+                "Discard and change language"
+              )
+            });
+            if (choice === "cancel") {
+              selector.value = previousLanguage;
+              return;
+            }
+            if (choice === "confirm") {
+              for (const tab of pending) await saveTab(tab, false);
+            }
+          }
           state = await window.kakebo.setLanguage(
             selector.value as "en" | "es"
           );
           applyTranslations();
           renderAll();
+          rememberAllSavedTabs();
           refreshCurrentPageTitle();
           showToast(t("toast.languageChanged", "Language changed."));
         } catch (error) {
-          selector.value = state.language;
+          selector.value = previousLanguage;
           showToast(errorMessage(error), true);
         } finally {
+          activeOperationCount -= 1;
           selector.disabled = false;
         }
       })();
@@ -2790,7 +3099,9 @@ function setupActions(): void {
   );
 
   onClick(element<HTMLButtonElement>("setup-https"), async () => {
+    if (rejectConcurrentOperation()) return;
     const setup = element<HTMLButtonElement>("setup-https");
+    activeOperationCount += 1;
     setup.disabled = true;
     setup.textContent = t("portability.preparing", "Preparing HTTPS…");
     try {
@@ -2804,6 +3115,7 @@ function setupActions(): void {
     } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
+      activeOperationCount -= 1;
       setup.disabled = false;
       setup.textContent = t(
         "portability.https",
@@ -2814,7 +3126,7 @@ function setupActions(): void {
 }
 
 async function handleCloseRequest(): Promise<void> {
-  if (operationInProgress) {
+  if (activeOperationCount > 0) {
     const proceed = await confirmInApp(
       t("dialog.operationClose.title", "Operation in progress"),
       t(

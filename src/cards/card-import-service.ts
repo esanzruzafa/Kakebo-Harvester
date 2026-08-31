@@ -133,9 +133,9 @@ function validIsoDate(year: number, month: number, day: number): string {
 function parseDate(value: unknown, format: CardImportProfile["dateFormat"]): string {
   if (value instanceof Date) {
     return validIsoDate(
-      value.getUTCFullYear(),
-      value.getUTCMonth() + 1,
-      value.getUTCDate()
+      value.getFullYear(),
+      value.getMonth() + 1,
+      value.getDate()
     );
   }
   const text = String(value).trim();
@@ -173,9 +173,12 @@ function parseAmount(
   if (typeof value === "number" && Number.isFinite(value)) {
     raw = String(value);
   } else {
+    const currencyCode = new RegExp(profile.currency, "giu");
     raw = String(value)
       .trim()
-      .replace(/\s|\u00a0|€|EUR/giu, "");
+      .replace(/\s/gu, "")
+      .replace(currencyCode, "")
+      .replace(/\p{Sc}/gu, "");
     const negativeParentheses = raw.startsWith("(") && raw.endsWith(")");
     if (negativeParentheses) raw = `-${raw.slice(1, -1)}`;
     const decimal =

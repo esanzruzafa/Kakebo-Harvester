@@ -34,6 +34,7 @@ function localDate(value: string | null): string {
 
 function statusClass(status: string): "success" | "warning" | "error" | "neutral" {
   if (status === "SUCCESS") return "success";
+  if (status === "SUCCESS_WITH_WARNINGS") return "warning";
   if (status === "RUNNING") return "warning";
   if (status === "FAILED") return "error";
   return "neutral";
@@ -129,7 +130,13 @@ function renderRun(run: AuditRunView, expanded = false): HTMLElement {
   }
   if (run.error) {
     const message = document.createElement("span");
-    message.textContent = run.error;
+    message.textContent =
+      run.errorCode === "INTERRUPTED"
+        ? t(
+            "audit.interrupted",
+            "The previous process ended before this synchronization was finalized."
+          )
+        : run.error;
     error.append(message);
   }
   article.append(header, error, accounts);

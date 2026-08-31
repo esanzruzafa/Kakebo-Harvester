@@ -20,7 +20,12 @@ async function main(): Promise<void> {
     console.error(`Error: ${safeMessage(error)}`);
     process.exitCode = error instanceof KakeboError ? error.exitCode : 1;
   } finally {
-    application?.close();
+    try {
+      application?.close();
+    } catch (error) {
+      console.error(`Cleanup warning: ${safeMessage(error)}`);
+      if (!process.exitCode) process.exitCode = 1;
+    }
   }
 }
 

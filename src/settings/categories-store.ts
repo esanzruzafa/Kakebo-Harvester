@@ -1,7 +1,7 @@
-import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { ConfigurationError } from "../errors.js";
+import { writeJsonAtomically } from "./atomic-json-file.js";
 
 export const categoryDefinitionSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -58,19 +58,7 @@ export class CategoriesStore {
         cause: error
       });
     }
-    await mkdir(dirname(this.path), { recursive: true });
-    const temporary = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    const backup = `${this.path}.backup`;
-    try {
-      await copyFile(this.path, backup);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    await writeFile(temporary, `${JSON.stringify(categories, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600
-    });
-    await rename(temporary, this.path);
+    await writeJsonAtomically(this.path, categories, { backup: true });
     return categories;
   }
 }

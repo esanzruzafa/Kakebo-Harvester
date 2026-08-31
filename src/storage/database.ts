@@ -48,7 +48,11 @@ export function createDatabase(databasePath: string): SqliteDatabase {
     applyMigrations(database);
     return database;
   } catch (error) {
-    database?.close();
+    try {
+      database?.close();
+    } catch {
+      // Preserve the open or migration failure that triggered cleanup.
+    }
     throw new DatabaseError(`No se ha podido abrir o migrar SQLite en ${databasePath}.`, {
       cause: error
     });

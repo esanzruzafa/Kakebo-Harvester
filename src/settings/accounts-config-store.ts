@@ -1,6 +1,5 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import type { EditableAccount } from "../storage/repositories/account-repository.js";
+import { writeJsonAtomically } from "./atomic-json-file.js";
 
 interface AccountsConfigFile {
   version: 1;
@@ -31,12 +30,6 @@ export class AccountsConfigStore {
         exportEnabled: account.exportEnabled
       }))
     };
-    await mkdir(dirname(this.path), { recursive: true });
-    const temporary = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(content, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600
-    });
-    await rename(temporary, this.path);
+    await writeJsonAtomically(this.path, content);
   }
 }

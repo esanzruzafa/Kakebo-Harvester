@@ -52,8 +52,33 @@ export interface AccountSettingsUpdate {
 interface AccountIdentityRow {
   id: string;
   identification_hash: string | null;
+  iban_masked: string | null;
   account_alias: string | null;
   first_seen_at: string;
+}
+
+function isIbanIdentificationHash(value: string | null | undefined): value is string {
+  if (!value || value.length > 8_192) return false;
+  const separator = value.indexOf(".");
+  if (separator <= 0) return false;
+  try {
+    const descriptor: unknown = JSON.parse(
+      Buffer.from(value.slice(0, separator), "base64").toString("utf8")
+    );
+    return (
+      Array.isArray(descriptor) &&
+      descriptor.some(
+        (path) =>
+          Array.isArray(path) &&
+          path.length === 3 &&
+          path[0] === "account" &&
+          path[1] === "account_id" &&
+          path[2] === "iban"
+      )
+    );
+  } catch {
+    return false;
+  }
 }
 
 function stableIdentificationHashes(account: AccountResource): string[] {
@@ -62,8 +87,7 @@ function stableIdentificationHashes(account: AccountResource): string[] {
     ...(account.identification_hashes ?? [])
   ].filter(
     (value, index, values): value is string =>
-      typeof value === "string" &&
-      value.length > 0 &&
+      isIbanIdentificationHash(value) &&
       values.indexOf(value) === index
   );
 }
@@ -159,23 +183,22 @@ export class AccountRepository {
 
   private findByIdentificationHashes(
     connectionId: string,
-    hashes: string[]
+    hashes: string[],
+    maskedIban: string | null
   ): AccountIdentityRow[] {
-    if (hashes.length === 0) return [];
+    if (hashes.length === 0 || !maskedIban) return [];
     const placeholders = hashes.map(() => "?").join(", ");
     return this.database
       .prepare(
-        `SELECT DISTINCT a.id, a.identification_hash, a.account_alias, a.first_seen_at
+        `SELECT a.id, a.identification_hash, a.iban_masked,
+                a.account_alias, a.first_seen_at
          FROM accounts a
-         LEFT JOIN account_identification_hashes h ON h.account_id = a.id
          WHERE a.bank_connection_id = ?
-           AND (
-             a.identification_hash IN (${placeholders})
-             OR h.identification_hash IN (${placeholders})
-           )
+           AND a.iban_masked = ?
+           AND a.identification_hash IN (${placeholders})
          ORDER BY (a.account_alias IS NOT NULL) DESC, a.first_seen_at, a.id`
       )
-      .all(connectionId, ...hashes, ...hashes) as AccountIdentityRow[];
+      .all(connectionId, maskedIban, ...hashes) as AccountIdentityRow[];
   }
 
   private findIdentityByProviderAccountId(
@@ -184,7 +207,7 @@ export class AccountRepository {
   ): AccountIdentityRow | undefined {
     return this.database
       .prepare(
-        `SELECT id, identification_hash, account_alias, first_seen_at
+        `SELECT id, identification_hash, iban_masked, account_alias, first_seen_at
          FROM accounts
          WHERE bank_connection_id = ? AND provider_account_id = ?`
       )
@@ -303,6 +326,10 @@ export class AccountRepository {
     accountId: string,
     hashes: string[]
   ): void {
+    if (hashes.length === 0) return;
+    this.database
+      .prepare("DELETE FROM account_identification_hashes WHERE account_id = ?")
+      .run(accountId);
     const statement = this.database.prepare(
       `INSERT INTO account_identification_hashes (
          bank_connection_id, identification_hash, account_id
@@ -321,7 +348,13 @@ export class AccountRepository {
     const execute = this.database.transaction(() => {
       const now = new Date().toISOString();
       const hashes = stableIdentificationHashes(account);
-      const matchesByHash = this.findByIdentificationHashes(connectionId, hashes);
+      const iban = account.account_id?.iban;
+      const maskedIban = maskIdentifier(iban);
+      const matchesByHash = this.findByIdentificationHashes(
+        connectionId,
+        hashes,
+        maskedIban
+      );
       const matchByProviderId = this.findIdentityByProviderAccountId(
         connectionId,
         account.uid
@@ -339,13 +372,17 @@ export class AccountRepository {
         }
       }
 
-      const iban = account.account_id?.iban;
       if (existing) {
+        const identificationHash = isIbanIdentificationHash(
+          existing.identification_hash
+        )
+          ? existing.identification_hash
+          : (hashes[0] ?? existing.identification_hash);
         this.database
           .prepare(
             `UPDATE accounts SET
                provider_account_id = ?,
-               identification_hash = COALESCE(identification_hash, ?),
+               identification_hash = ?,
                iban_masked = ?, currency = ?, name = ?, display_name = ?,
                account_type = ?, product_type = ?, active = 1, last_seen_at = ?,
                raw_response_path = ?, last_error_at = NULL, last_error_code = NULL,
@@ -354,8 +391,8 @@ export class AccountRepository {
           )
           .run(
             account.uid,
-            hashes[0] ?? null,
-            maskIdentifier(iban),
+            identificationHash,
+            maskedIban,
             account.currency ?? null,
             account.name ?? null,
             account.details ?? account.name ?? null,
@@ -383,7 +420,7 @@ export class AccountRepository {
           connectionId,
           account.uid,
           hashes[0] ?? null,
-          maskIdentifier(iban),
+          maskedIban,
           account.currency ?? null,
           account.name ?? null,
           account.details ?? account.name ?? null,

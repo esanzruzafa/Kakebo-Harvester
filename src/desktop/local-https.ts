@@ -7,6 +7,14 @@ interface LocalCertificate {
   valid_to?: string | undefined;
   subject?: { CN?: string | string[] | undefined } | undefined;
   subjectaltname?: string | undefined;
+  issuerCertificate?: { fingerprint?: string | undefined } | undefined;
+}
+
+function normalizedSha1Thumbprint(value: string | undefined): string | undefined {
+  const normalized = value?.replaceAll(":", "").toUpperCase();
+  return normalized && /^[A-F0-9]{40}$/u.test(normalized)
+    ? normalized
+    : undefined;
 }
 
 export function tlsSetupScriptPath(input: {
@@ -21,7 +29,8 @@ export function tlsSetupScriptPath(input: {
 
 export function isCurrentLocalhostCertificate(
   certificate: LocalCertificate,
-  now = Date.now()
+  now = Date.now(),
+  expectedIssuerThumbprint?: string
 ): boolean {
   const validFrom = Date.parse(certificate.valid_from ?? "");
   const validTo = Date.parse(certificate.valid_to ?? "");
@@ -34,6 +43,11 @@ export function isCurrentLocalhostCertificate(
   const sanIncludesLocalhost = (certificate.subjectaltname ?? "")
     .split(",")
     .some((entry) => entry.trim().toLowerCase() === "dns:localhost");
+  const expectedIssuer = normalizedSha1Thumbprint(expectedIssuerThumbprint);
+  const issuerMatches =
+    expectedIssuer === undefined ||
+    normalizedSha1Thumbprint(certificate.issuerCertificate?.fingerprint) ===
+      expectedIssuer;
 
   return (
     Number.isFinite(validFrom) &&
@@ -41,20 +55,23 @@ export function isCurrentLocalhostCertificate(
     validFrom <= now &&
     now < validTo &&
     subjectIsLocalhost &&
-    sanIncludesLocalhost
+    sanIncludesLocalhost &&
+    issuerMatches
   );
 }
 
 export async function isUsableLocalHttpsCertificate(input: {
   pfxPath: string;
   passphrasePath: string;
+  expectedIssuerThumbprint?: string;
 }): Promise<boolean> {
   let server: ReturnType<typeof createServer> | undefined;
   try {
-    const [pfx, passphrase] = await Promise.all([
+    const [pfx, storedPassphrase] = await Promise.all([
       readFile(input.pfxPath),
       readFile(input.passphrasePath, "utf8")
     ]);
+    const passphrase = storedPassphrase.trim();
     server = createServer({ pfx, passphrase });
     await new Promise<void>((resolve, reject) => {
       server?.once("error", reject);
@@ -76,7 +93,11 @@ export async function isUsableLocalHttpsCertificate(input: {
       }, 10_000);
       socket.once("secureConnect", () => {
         clearTimeout(timeout);
-        const valid = isCurrentLocalhostCertificate(socket.getPeerCertificate());
+        const valid = isCurrentLocalhostCertificate(
+          socket.getPeerCertificate(true),
+          Date.now(),
+          input.expectedIssuerThumbprint
+        );
         socket.end();
         resolve(valid);
       });

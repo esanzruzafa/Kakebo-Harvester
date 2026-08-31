@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { ConfigurationError } from "../errors.js";
+import { writeJsonAtomically } from "./atomic-json-file.js";
 
 export const exportFields = [
   "movementKey",
@@ -76,6 +76,12 @@ function parseSettings(value: unknown): ExportSettings {
     }
     fields.add(column.field);
   }
+  const missingFields = exportFields.filter((field) => !fields.has(field));
+  if (missingFields.length > 0) {
+    throw new Error(
+      `Export fields are missing from the configuration: ${missingFields.join(", ")}.`
+    );
+  }
   if (!settings.columns.some((column) => column.enabled)) {
     throw new Error("At least one export column must be enabled.");
   }
@@ -86,11 +92,28 @@ function migrateSettings(value: unknown): unknown {
   if (!value || typeof value !== "object" || !Array.isArray((value as { columns?: unknown }).columns)) {
     return value;
   }
+  const columns = (
+    value as { columns: Array<{ field?: unknown }> }
+  ).columns.filter((column) => column.field !== "currency");
+  const configuredFields = new Set(
+    columns
+      .map((column) => column.field)
+      .filter((field): field is ExportField =>
+        exportFields.includes(field as ExportField)
+      )
+  );
   return {
     ...value,
-    columns: (value as { columns: Array<{ field?: unknown }> }).columns.filter(
-      (column) => column.field !== "currency"
-    )
+    columns: [
+      ...columns,
+      ...exportFields
+        .filter((field) => !configuredFields.has(field))
+        .map((field) => ({
+          field,
+          header: defaultHeaders[field],
+          enabled: false
+        }))
+    ]
   };
 }
 
@@ -175,19 +198,7 @@ export class ExportSettingsStore {
         cause: error
       });
     }
-    await mkdir(dirname(this.path), { recursive: true });
-    const temporary = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    const backup = `${this.path}.backup`;
-    try {
-      await copyFile(this.path, backup);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    await writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600
-    });
-    await rename(temporary, this.path);
+    await writeJsonAtomically(this.path, settings, { backup: true });
     return settings;
   }
 }

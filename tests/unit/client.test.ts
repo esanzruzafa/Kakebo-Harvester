@@ -361,6 +361,106 @@ describe("Enable Banking client", () => {
     expect((failure as Error).message).toContain("al menos un minuto");
   });
 
+  it("keeps ASPSP failures temporary even when the bank gateway returns HTTP 403", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    const client = new EnableBankingClient(
+      config,
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: "ASPSP_ERROR",
+            message: "Error interacting with ASPSP"
+          }),
+          { status: 403 }
+        )
+      )
+    );
+
+    const failure = await client
+      .getAccount("account-id")
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(BankUnavailableError);
+    expect(failure).toMatchObject({
+      providerCode: "ASPSP_ERROR",
+      httpStatus: 403
+    });
+  });
+
+  it("preserves account resource errors returned with HTTP 403", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    const client = new EnableBankingClient(
+      config,
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: "RESOURCE_EXPIRED",
+            message: "The requested account resource has expired"
+          }),
+          { status: 403 }
+        )
+      )
+    );
+
+    const failure = await client
+      .getAccount("account-id")
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(EnableBankingProviderError);
+    expect(failure).toMatchObject({
+      providerCode: "RESOURCE_EXPIRED",
+      httpStatus: 403,
+      providerMessage: "The requested account resource has expired"
+    });
+  });
+
+  it("maps an expired session resource to reauthorization without changing account errors", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    const client = new EnableBankingClient(
+      config,
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: "RESOURCE_EXPIRED",
+            message: "The requested session resource has expired"
+          }),
+          { status: 403 }
+        )
+      )
+    );
+
+    const failure = await client
+      .getSession("session-id")
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ReauthorizationRequiredError);
+    expect(failure).toMatchObject({
+      providerCode: "RESOURCE_EXPIRED",
+      httpStatus: 403
+    });
+  });
+
   it("ignores an overflowing Retry-After value and keeps a safe fallback", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-28T10:00:00.000Z"));
@@ -462,6 +562,34 @@ describe("Enable Banking client", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects provider responses whose declared body exceeds the safety limit", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-response-limit-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    const response = new Response("{}", {
+      status: 200,
+      headers: { "content-length": "30000000" }
+    });
+    const responseBody = response.body;
+    if (!responseBody) {
+      throw new Error("Expected the test response to expose a body stream.");
+    }
+    const cancel = vi.spyOn(responseBody, "cancel");
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+    const client = new EnableBankingClient(config, fetchMock);
+
+    await expect(client.checkApplication()).rejects.toBeInstanceOf(
+      MalformedProviderResponseError
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   it("retains retries for safe GET requests", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-client-get-"));
     const config = testConfig(root);
@@ -475,6 +603,56 @@ describe("Enable Banking client", () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response("Service unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    const client = new EnableBankingClient(config, fetchMock);
+
+    await expect(client.checkApplication()).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries transient internal provider errors for safe GET requests", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-get-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response("Internal provider error", { status: 500 })
+      )
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    const client = new EnableBankingClient(config, fetchMock);
+
+    await expect(client.checkApplication()).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries an unknown provider failure on a transient GET status", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-get-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "UPSTREAM_FAILURE",
+            message: "Temporary upstream failure"
+          }),
+          { status: 500 }
+        )
+      )
       .mockResolvedValueOnce(new Response("{}", { status: 200 }));
     const client = new EnableBankingClient(config, fetchMock);
 

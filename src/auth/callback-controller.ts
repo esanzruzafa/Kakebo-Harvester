@@ -100,7 +100,14 @@ export function registerCallback(
     );
     try {
       const result = await authorizationService.complete(callbackInput(request.query));
-      events.onAuthorizationResult?.(result);
+      try {
+        events.onAuthorizationResult?.(result);
+      } catch (error) {
+        request.log.warn(
+          { error: safeMessage(error) },
+          "Bank authorization result notification failed"
+        );
+      }
       if (result.status === "authorized") {
         return await reply
           .type("text/html; charset=utf-8")

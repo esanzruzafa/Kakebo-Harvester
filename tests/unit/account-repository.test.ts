@@ -10,6 +10,13 @@ import { testConfig } from "../helpers.js";
 
 let root: string | undefined;
 
+function providerIdentificationHash(
+  paths: string[][],
+  digest: string
+): string {
+  return `${Buffer.from(JSON.stringify(paths)).toString("base64")}.${digest}`;
+}
+
 afterEach(async () => {
   if (root) await rm(root, { recursive: true, force: true });
   root = undefined;
@@ -103,11 +110,21 @@ describe("account synchronization eligibility", () => {
       )
       .run(now);
     const repository = new AccountRepository(database);
+    const iban = "ES0100000000000000000001";
+    const primaryHash = providerIdentificationHash(
+      [["account", "account_id", "iban"], ["account", "currency"]],
+      "primary"
+    );
+    const secondaryHash = providerIdentificationHash(
+      [["account", "account_id", "iban"]],
+      "secondary"
+    );
     const canonicalId = repository.upsert(
       "connection",
       {
         uid: "old-provider-id",
-        identification_hash: "stable-hash",
+        identification_hash: primaryHash,
+        account_id: { iban },
         name: "Current account",
         currency: "EUR"
       },
@@ -148,10 +165,10 @@ describe("account synchronization eligibility", () => {
     database
       .prepare(
         `INSERT INTO accounts (
-           id, bank_connection_id, provider_account_id, identification_hash, name,
-           active, first_seen_at, last_seen_at
+         id, bank_connection_id, provider_account_id, identification_hash, name,
+           iban_masked, active, first_seen_at, last_seen_at
          ) VALUES ('duplicate', 'connection', 'new-provider-id', 'old-duplicate-hash', 'Duplicate',
-                   1, ?, ?)`
+                   'ES************01', 1, ?, ?)`
       )
       .run(now, now);
     database
@@ -210,7 +227,8 @@ describe("account synchronization eligibility", () => {
         "connection",
         {
           uid: "new-provider-id",
-          identification_hashes: ["stable-hash", "secondary-hash"],
+          identification_hashes: [primaryHash, secondaryHash],
+          account_id: { iban },
           name: "Current account",
           currency: "EUR"
         },
@@ -230,7 +248,7 @@ describe("account synchronization eligibility", () => {
       {
         id: canonicalId,
         provider_account_id: "new-provider-id",
-        identification_hash: "stable-hash",
+        identification_hash: primaryHash,
         account_alias: "Household",
         sync_enabled: 0,
         export_enabled: 0
@@ -290,24 +308,134 @@ describe("account synchronization eligibility", () => {
         )
         .all()
     ).toEqual([
-      { identification_hash: "secondary-hash", account_id: canonicalId },
-      { identification_hash: "stable-hash", account_id: canonicalId }
+      { identification_hash: primaryHash, account_id: canonicalId },
+      { identification_hash: secondaryHash, account_id: canonicalId }
     ]);
-    expect(
+    database.close();
+  });
+
+  it("keeps distinct IBAN accounts when the provider gives them the same name hash", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-name-collision-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Kutxabank', 'ES',
+                   'personal', 'Kutxabank personal', 'AUTHORIZED', ?)`
+      )
+      .run(new Date().toISOString());
+    const repository = new AccountRepository(database);
+    const sharedNameHash = providerIdentificationHash(
+      [["aspsp_name"], ["aspsp_country"], ["account", "name"]],
+      "shared-name"
+    );
+    const accounts = [
+      { uid: "provider-payroll", iban: "ES0100000000000000000001", details: "Payroll" },
+      { uid: "provider-savings", iban: "ES0100000000000000000002", details: "Savings" },
+      { uid: "provider-shared", iban: "ES0100000000000000000003", details: "Shared" }
+    ];
+
+    for (const [index, account] of accounts.entries()) {
+      const ibanHash = providerIdentificationHash(
+        [["account", "account_id", "iban"], ["account", "currency"]],
+        `iban-${index}`
+      );
       repository.upsert(
         "connection",
         {
-          uid: "latest-provider-id",
-          identification_hash: "secondary-hash",
-          name: "Current account",
+          uid: account.uid,
+          identification_hash: ibanHash,
+          identification_hashes: [ibanHash, sharedNameHash],
+          account_id: { iban: account.iban },
+          name: "CUENTA",
+          details: account.details,
           currency: "EUR"
         },
         null
+      );
+    }
+
+    const storedAccounts = database
+      .prepare(
+        `SELECT provider_account_id, display_name
+         FROM accounts ORDER BY provider_account_id`
       )
-    ).toBe(canonicalId);
-    expect(database.prepare("SELECT COUNT(*) AS count FROM accounts").get()).toEqual({
-      count: 1
-    });
+      .all();
     database.close();
+    expect(storedAccounts).toEqual([
+      { provider_account_id: "provider-payroll", display_name: "Payroll" },
+      { provider_account_id: "provider-savings", display_name: "Savings" },
+      { provider_account_id: "provider-shared", display_name: "Shared" }
+    ]);
+  });
+
+  it("does not merge through a contaminated historical hash alias", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-alias-collision-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Kutxabank', 'ES',
+                   'personal', 'Kutxabank personal', 'AUTHORIZED', ?)`
+      )
+      .run(new Date().toISOString());
+    const repository = new AccountRepository(database);
+    const firstHash = providerIdentificationHash(
+      [["account", "account_id", "iban"]],
+      "first-iban"
+    );
+    const secondHash = providerIdentificationHash(
+      [["account", "account_id", "iban"]],
+      "second-iban"
+    );
+    const firstId = repository.upsert(
+      "connection",
+      {
+        uid: "provider-first",
+        identification_hash: firstHash,
+        account_id: { iban: "ES0100000000000000000001" },
+        details: "First account",
+        currency: "EUR"
+      },
+      null
+    );
+    database
+      .prepare(
+        `INSERT INTO account_identification_hashes (
+           bank_connection_id, identification_hash, account_id
+         ) VALUES ('connection', ?, ?)`
+      )
+      .run(secondHash, firstId);
+
+    const secondId = repository.upsert(
+      "connection",
+      {
+        uid: "provider-second",
+        identification_hash: secondHash,
+        account_id: { iban: "ES0199999999999999999901" },
+        details: "Second account",
+        currency: "EUR"
+      },
+      null
+    );
+    const stored = database
+      .prepare(
+        `SELECT provider_account_id, display_name
+         FROM accounts ORDER BY provider_account_id`
+      )
+      .all();
+    database.close();
+
+    expect(secondId).not.toBe(firstId);
+    expect(stored).toEqual([
+      { provider_account_id: "provider-first", display_name: "First account" },
+      { provider_account_id: "provider-second", display_name: "Second account" }
+    ]);
   });
 });

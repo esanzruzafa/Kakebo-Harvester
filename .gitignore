@@ -32,3 +32,4 @@ config/export-settings.json.state.json
 config/card-import-profiles.json
 config/ui-settings.json
 config/*.backup
+config/*.tmp
