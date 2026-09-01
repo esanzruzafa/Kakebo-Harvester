@@ -40,6 +40,62 @@ function transaction(overrides: Partial<NormalizedTransaction> = {}): Normalized
 }
 
 describe("transaction idempotency", () => {
+  it("retains a provider identity when a later response omits it", () => {
+    const database = createDatabase(":memory:");
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', ?, 1, ?, ?)`
+      )
+      .run(createId(), now, now);
+    const repository = new TransactionRepository(database);
+
+    expect(
+      repository.upsert(
+        transaction({
+          movement_key: "identified-movement",
+          provider_transaction_id: "provider-transaction",
+          fallback_occurrence: 1,
+          status: "booked"
+        })
+      )
+    ).toBe("inserted");
+    expect(
+      repository.upsert(
+        transaction({
+          movement_key: "idless-movement",
+          fallback_occurrence: 1,
+          status: "booked",
+          raw_fingerprint: "raw-without-provider-id"
+        })
+      )
+    ).toBe("updated");
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count, movement_key, provider_transaction_id
+           FROM transactions`
+        )
+        .get()
+    ).toEqual({
+      count: 1,
+      movement_key: "identified-movement",
+      provider_transaction_id: "provider-transaction"
+    });
+    database.close();
+  });
+
   it.each([
     {
       field: "booking_date" as const,

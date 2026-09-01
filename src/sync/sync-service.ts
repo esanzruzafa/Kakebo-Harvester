@@ -14,7 +14,7 @@ import {
   providerErrorCode
 } from "../errors.js";
 import type { SqliteDatabase } from "../storage/database.js";
-import { RawStore } from "../storage/raw-store.js";
+import { RawStore, type RawWriteResult } from "../storage/raw-store.js";
 import {
   AccountRepository,
   type StoredAccount
@@ -85,6 +85,13 @@ function emptySummary(): SyncSummary {
     duplicates: 0,
     pendingReconciled: 0
   };
+}
+
+interface FetchedTransactionPage {
+  page: number;
+  fetchedAt: string;
+  raw: RawWriteResult;
+  response: Awaited<ReturnType<EnableBankingClient["getTransactions"]>>;
 }
 
 function firstValidMovementDate(
@@ -774,9 +781,11 @@ export class SyncService {
     const summary = emptySummary();
     const seenKeys = new Set<string>();
     const fallbackOccurrences = new Map<string, Set<number>>();
+    const fetchedPages: FetchedTransactionPage[] = [];
     let continuationKey: string | undefined;
     let page = 1;
     let strategy: "longest" | undefined;
+    let paginationComplete = false;
     while (page <= this.config.maxTransactionPages) {
       let response;
       try {
@@ -801,16 +810,50 @@ export class SyncService {
         throw error;
       }
       const raw = await this.rawStore.write("transactions", account.id, response, String(page));
-      this.database
-        .prepare(
-          `INSERT INTO transactions_raw (
-             id, account_id, fetched_at, page_number, raw_response_path, raw_fingerprint
-           ) VALUES (?, ?, ?, ?, ?, ?)`
-        )
-        .run(createId(), account.id, new Date().toISOString(), page, raw.path, raw.fingerprint);
+      fetchedPages.push({
+        page,
+        fetchedAt: new Date().toISOString(),
+        raw,
+        response
+      });
 
-      summary.pages += 1;
-      const databaseTransaction = this.database.transaction(() => {
+      const nextKey = response.continuation_key ?? undefined;
+      if (!nextKey) {
+        paginationComplete = true;
+        break;
+      }
+      if (seenKeys.has(nextKey)) {
+        throw new Error("Enable Banking repitió continuation_key; paginación detenida.");
+      }
+      seenKeys.add(nextKey);
+      continuationKey = nextKey;
+      page += 1;
+    }
+    if (!paginationComplete) {
+      throw new Error(
+        `Se alcanzó MAX_TRANSACTION_PAGES=${this.config.maxTransactionPages}; sincronización detenida.`
+      );
+    }
+
+    const databaseTransaction = this.database.transaction(() => {
+      for (const fetchedPage of fetchedPages) {
+        this.database
+          .prepare(
+            `INSERT INTO transactions_raw (
+               id, account_id, fetched_at, page_number, raw_response_path, raw_fingerprint
+             ) VALUES (?, ?, ?, ?, ?, ?)`
+          )
+          .run(
+            createId(),
+            account.id,
+            fetchedPage.fetchedAt,
+            fetchedPage.page,
+            fetchedPage.raw.path,
+            fetchedPage.raw.fingerprint
+          );
+        summary.pages += 1;
+        const response = fetchedPage.response;
+        const raw = fetchedPage.raw;
         for (const providerTransaction of response.transactions) {
           let normalized = mapTransaction({
             transaction: providerTransaction,
@@ -868,21 +911,10 @@ export class SyncService {
           if (outcome === "duplicate") summary.duplicates += 1;
           if (outcome === "reconciled") summary.pendingReconciled += 1;
         }
-      });
-      databaseTransaction();
-
-      const nextKey = response.continuation_key ?? undefined;
-      if (!nextKey) return summary;
-      if (seenKeys.has(nextKey)) {
-        throw new Error("Enable Banking repitió continuation_key; paginación detenida.");
       }
-      seenKeys.add(nextKey);
-      continuationKey = nextKey;
-      page += 1;
-    }
-    throw new Error(
-      `Se alcanzó MAX_TRANSACTION_PAGES=${this.config.maxTransactionPages}; sincronización detenida.`
-    );
+    });
+    databaseTransaction();
+    return summary;
   }
 
   public async syncTransactions(

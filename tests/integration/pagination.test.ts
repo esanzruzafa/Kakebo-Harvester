@@ -19,6 +19,69 @@ afterEach(async () => {
 });
 
 describe("paginated transaction synchronization", () => {
+  it("does not persist earlier pages when a later page fails", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-pagination-rollback-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Banco Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('session', 'connection', 'encrypted-session', ?, 'AUTHORIZED')`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, identification_hash,
+           name, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider-account', 'stable-account',
+                   'Cuenta Demo', 1, ?, ?)`
+      )
+      .run(now, now);
+    const firstPage = transactionsResponseSchema.parse({
+      transactions: [
+        {
+          entry_reference: "first-page-movement",
+          transaction_amount: { currency: "EUR", amount: "10.00" },
+          credit_debit_indicator: "DBIT",
+          status: "BOOK",
+          booking_date: "2026-07-24",
+          remittance_information: "First page movement"
+        }
+      ],
+      continuation_key: "page-2"
+    });
+    const client = {
+      getTransactions: vi
+        .fn()
+        .mockResolvedValueOnce(firstPage)
+        .mockRejectedValueOnce(new Error("Second page unavailable"))
+    } as unknown as EnableBankingClient;
+    const service = new SyncService(config, database, client);
+
+    await expect(
+      service.syncTransactions("2026-07-01", "2026-07-31")
+    ).rejects.toThrow("Second page unavailable");
+    expect(database.prepare("SELECT COUNT(*) AS count FROM transactions").get()).toEqual({
+      count: 0
+    });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM transactions_raw").get()
+    ).toEqual({ count: 0 });
+    database.close();
+  });
+
   it("reads all pages and remains idempotent on the next run", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-pagination-"));
     const config = testConfig(root);

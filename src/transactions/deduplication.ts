@@ -30,8 +30,8 @@ const updateSql = `
       ELSE @movement_key
     END,
     reconciliation_key = @reconciliation_key,
-    provider_transaction_id = @provider_transaction_id,
-    entry_reference = @entry_reference,
+    provider_transaction_id = COALESCE(@provider_transaction_id, provider_transaction_id),
+    entry_reference = COALESCE(@entry_reference, entry_reference),
     fallback_occurrence = @fallback_occurrence,
     status = @status,
     booking_date = COALESCE(@booking_date, booking_date),
@@ -95,8 +95,6 @@ export class TransactionRepository {
              OR (
                @entry_reference IS NULL
                AND @provider_transaction_id IS NULL
-               AND entry_reference IS NULL
-               AND provider_transaction_id IS NULL
                AND (
                  fallback_occurrence IS @fallback_occurrence
                  OR (fallback_occurrence IS NULL AND @fallback_occurrence = 1)
@@ -244,18 +242,20 @@ export class TransactionRepository {
       while (unavailable.has(occurrence)) occurrence += 1;
       return { occurrence, matchExistingFallback: false };
     }
-    const unclaimedFallback = stableMatches.find(
+    const incomingHasIdentity =
+      transaction.entry_reference !== null ||
+      transaction.provider_transaction_id !== null;
+    const unclaimedStableMatch = stableMatches.find(
       (match) =>
-        match.entry_reference === null &&
-        match.provider_transaction_id === null &&
+        (!incomingHasIdentity ||
+          (match.entry_reference === null &&
+            match.provider_transaction_id === null)) &&
         !claimedOccurrences.has(match.fallback_occurrence ?? 1)
     );
-    if (unclaimedFallback) {
+    if (unclaimedStableMatch) {
       return {
-        occurrence: unclaimedFallback.fallback_occurrence ?? 1,
-        matchExistingFallback:
-          transaction.entry_reference !== null ||
-          transaction.provider_transaction_id !== null
+        occurrence: unclaimedStableMatch.fallback_occurrence ?? 1,
+        matchExistingFallback: incomingHasIdentity
       };
     }
 
