@@ -29,6 +29,10 @@ describe("desktop authorization callback isolation", () => {
     const activeLock = new SynchronizationLock(database);
     activeLock.acquire();
     const complete = vi.fn().mockResolvedValue(authorized);
+    const completeActiveConnection = vi.fn(
+      (_connectionId: string, completion: () => Promise<AuthorizationCompletionResult>) =>
+        completion()
+    );
 
     await expect(
       completeDesktopAuthorization({
@@ -37,11 +41,12 @@ describe("desktop authorization callback isolation", () => {
           pendingConnectionId: () => "connection",
           complete
         },
-        isConnectionInProgress: (connectionId) => connectionId === "connection",
+        completeActiveConnection,
         callback: { state: "state", code: "code" }
       })
     ).resolves.toEqual(authorized);
     expect(complete).toHaveBeenCalledOnce();
+    expect(completeActiveConnection).toHaveBeenCalledOnce();
     activeLock.release();
     database.close();
   });
@@ -60,7 +65,7 @@ describe("desktop authorization callback isolation", () => {
           pendingConnectionId: () => "connection",
           complete
         },
-        isConnectionInProgress: () => false,
+        completeActiveConnection: () => undefined,
         callback: { state: "state", code: "code" }
       })
     ).rejects.toBeInstanceOf(SyncAlreadyRunningError);
@@ -79,7 +84,7 @@ describe("desktop authorization callback isolation", () => {
         pendingConnectionId: () => "connection",
         complete: vi.fn().mockResolvedValue(authorized)
       },
-      isConnectionInProgress: () => false,
+      completeActiveConnection: () => undefined,
       callback: { state: "state", code: "code" }
     });
 
@@ -100,7 +105,7 @@ describe("desktop authorization callback isolation", () => {
           pendingConnectionId: () => "connection",
           complete: vi.fn().mockRejectedValue(new Error("Invalid callback"))
         },
-        isConnectionInProgress: () => false,
+        completeActiveConnection: () => undefined,
         callback: { state: "state", code: "code" }
       })
     ).rejects.toThrow("Invalid callback");

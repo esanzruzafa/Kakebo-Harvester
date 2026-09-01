@@ -14,14 +14,20 @@ type DesktopAuthorizationService = Pick<
 export async function completeDesktopAuthorization(input: {
   database: SqliteDatabase;
   authorization: DesktopAuthorizationService;
-  isConnectionInProgress: (connectionId: string) => boolean;
+  completeActiveConnection: (
+    connectionId: string,
+    completion: () => Promise<AuthorizationCompletionResult>
+  ) => Promise<AuthorizationCompletionResult> | undefined;
   callback: AuthorizationCompletionInput;
 }): Promise<AuthorizationCompletionResult> {
   const connectionId = input.authorization.pendingConnectionId(
     input.callback.state
   );
-  if (connectionId && input.isConnectionInProgress(connectionId)) {
-    return await input.authorization.complete(input.callback);
+  if (connectionId) {
+    const activeCompletion = input.completeActiveConnection(connectionId, () =>
+      input.authorization.complete(input.callback)
+    );
+    if (activeCompletion) return await activeCompletion;
   }
 
   const lock = new SynchronizationLock(input.database);

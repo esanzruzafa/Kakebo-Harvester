@@ -23,6 +23,41 @@ interface ExistingTransaction {
 
 export const DEFAULT_PENDING_RECONCILIATION_WINDOW_DAYS = 14;
 
+const compatibleProviderDatesSql = `
+  AND (
+    booking_date IS @booking_date
+    OR booking_date IS NULL
+    OR @booking_date IS NULL
+  )
+  AND (
+    value_date IS @value_date
+    OR value_date IS NULL
+    OR @value_date IS NULL
+  )
+  AND (
+    transaction_datetime IS @transaction_datetime
+    OR transaction_datetime IS NULL
+    OR @transaction_datetime IS NULL
+  )
+  AND (
+    (
+      booking_date IS NULL
+      AND value_date IS NULL
+      AND transaction_datetime IS NULL
+    )
+    OR (
+      @booking_date IS NULL
+      AND @value_date IS NULL
+      AND @transaction_datetime IS NULL
+    )
+    OR (booking_date IS NOT NULL AND booking_date IS @booking_date)
+    OR (value_date IS NOT NULL AND value_date IS @value_date)
+    OR (
+      transaction_datetime IS NOT NULL
+      AND transaction_datetime IS @transaction_datetime
+    )
+  )`;
+
 const updateSql = `
   UPDATE transactions SET
     movement_key = CASE
@@ -100,21 +135,7 @@ export class TransactionRepository {
                  OR (fallback_occurrence IS NULL AND @fallback_occurrence = 1)
                )
                AND status = @status
-               AND (
-                 booking_date IS @booking_date
-                 OR booking_date IS NULL
-                 OR @booking_date IS NULL
-               )
-               AND (
-                 value_date IS @value_date
-                 OR value_date IS NULL
-                 OR @value_date IS NULL
-               )
-               AND (
-                 transaction_datetime IS @transaction_datetime
-                 OR transaction_datetime IS NULL
-                 OR @transaction_datetime IS NULL
-               )
+               ${compatibleProviderDatesSql}
                AND amount = @amount
                AND currency = @currency
                AND description_normalized IS @description_normalized
@@ -130,21 +151,7 @@ export class TransactionRepository {
                AND provider_transaction_id IS NULL
                AND fallback_occurrence IS @fallback_occurrence
                AND status = @status
-               AND (
-                 booking_date IS @booking_date
-                 OR booking_date IS NULL
-                 OR @booking_date IS NULL
-               )
-               AND (
-                 value_date IS @value_date
-                 OR value_date IS NULL
-                 OR @value_date IS NULL
-               )
-               AND (
-                 transaction_datetime IS @transaction_datetime
-                 OR transaction_datetime IS NULL
-                 OR @transaction_datetime IS NULL
-               )
+               ${compatibleProviderDatesSql}
                AND amount = @amount
                AND currency = @currency
                AND description_normalized IS @description_normalized
@@ -202,21 +209,7 @@ export class TransactionRepository {
            AND environment = @environment
            AND bank_connection_id = @bank_connection_id
            AND status = @status
-           AND (
-             booking_date IS @booking_date
-             OR booking_date IS NULL
-             OR @booking_date IS NULL
-           )
-           AND (
-             value_date IS @value_date
-             OR value_date IS NULL
-             OR @value_date IS NULL
-           )
-           AND (
-             transaction_datetime IS @transaction_datetime
-             OR transaction_datetime IS NULL
-             OR @transaction_datetime IS NULL
-           )
+           ${compatibleProviderDatesSql}
            AND amount = @amount
            AND currency = @currency
            AND description_normalized IS @description_normalized

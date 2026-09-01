@@ -175,6 +175,7 @@ const execFileAsync = promisify(execFile);
 
 class AuthorizationCoordinator {
   private readonly inProgress = new Set<string>();
+  private readonly completing = new Set<string>();
   private cancelledReason: string | undefined;
   private readonly waiters = new Map<
     string,
@@ -190,29 +191,61 @@ class AuthorizationCoordinator {
     private readonly publish: (result: AuthorizationUiResult) => void
   ) {}
 
-  public isInProgress(connectionId: string): boolean {
-    return this.inProgress.has(connectionId);
+  public completeActiveConnection(
+    connectionId: string,
+    completion: () => Promise<AuthorizationCompletionResult>
+  ): Promise<AuthorizationCompletionResult> | undefined {
+    const waiter = this.waiters.get(connectionId);
+    if (!this.inProgress.has(connectionId) || !waiter) return undefined;
+    clearTimeout(waiter.timeout);
+    this.completing.add(connectionId);
+    return (async () => {
+      try {
+        const result = await completion();
+        this.settleWaiter(result);
+        return result;
+      } catch (error) {
+        this.rejectWaiter(
+          connectionId,
+          error instanceof Error ? error : new Error(safeMessage(error))
+        );
+        throw error;
+      } finally {
+        this.completing.delete(connectionId);
+      }
+    })();
+  }
+
+  private settleWaiter(result: AuthorizationCompletionResult): void {
+    const waiter = this.waiters.get(result.connectionId);
+    if (!waiter) return;
+    clearTimeout(waiter.timeout);
+    this.waiters.delete(result.connectionId);
+    if (result.status === "authorized") {
+      waiter.resolve();
+    } else {
+      waiter.reject(
+        new Error(
+          result.message ??
+            tr(
+              "error.authorizationNotCompleted",
+              "The bank authorization was not completed."
+            )
+        )
+      );
+    }
+  }
+
+  private rejectWaiter(connectionId: string, error: Error): void {
+    const waiter = this.waiters.get(connectionId);
+    if (!waiter) return;
+    clearTimeout(waiter.timeout);
+    this.waiters.delete(connectionId);
+    waiter.reject(error);
   }
 
   public complete(result: AuthorizationCompletionResult): void {
-    const waiter = this.waiters.get(result.connectionId);
-    if (waiter) {
-      clearTimeout(waiter.timeout);
-      this.waiters.delete(result.connectionId);
-      if (result.status === "authorized") {
-        waiter.resolve();
-      } else {
-        waiter.reject(
-          new Error(
-            result.message ??
-              tr(
-                "error.authorizationNotCompleted",
-                "The bank authorization was not completed."
-              )
-          )
-        );
-      }
-    }
+    this.settleWaiter(result);
     this.publish({
       connectionId: result.connectionId,
       bankName: result.bankName,
@@ -338,6 +371,7 @@ class AuthorizationCoordinator {
   public cancelAll(reason: string): void {
     this.cancelledReason = reason;
     for (const [connectionId, waiter] of this.waiters) {
+      if (this.completing.has(connectionId)) continue;
       clearTimeout(waiter.timeout);
       waiter.reject(new Error(reason));
       this.waiters.delete(connectionId);
@@ -458,8 +492,8 @@ async function listenForCallbacks(
         await completeDesktopAuthorization({
           database: application.database,
           authorization: application.authorization,
-          isConnectionInProgress: (connectionId) =>
-            coordinator?.isInProgress(connectionId) === true,
+          completeActiveConnection: (connectionId, completion) =>
+            coordinator?.completeActiveConnection(connectionId, completion),
           callback
         })
     },
