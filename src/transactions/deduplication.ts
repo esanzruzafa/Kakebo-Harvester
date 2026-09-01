@@ -36,7 +36,7 @@ const updateSql = `
     status = @status,
     booking_date = @booking_date,
     value_date = @value_date,
-    transaction_datetime = @transaction_datetime,
+    transaction_datetime = COALESCE(@transaction_datetime, transaction_datetime),
     amount = @amount,
     currency = @currency,
     direction = @direction,
@@ -104,7 +104,13 @@ export class TransactionRepository {
                AND status = @status
                AND booking_date IS @booking_date
                AND value_date IS @value_date
-               AND transaction_datetime IS @transaction_datetime
+               AND (
+                 transaction_datetime IS @transaction_datetime
+                 OR (
+                   transaction_datetime IS NULL
+                   AND @transaction_datetime IS NOT NULL
+                 )
+               )
                AND amount = @amount
                AND currency = @currency
                AND description_normalized IS @description_normalized
@@ -122,7 +128,13 @@ export class TransactionRepository {
                AND status = @status
                AND booking_date IS @booking_date
                AND value_date IS @value_date
-               AND transaction_datetime IS @transaction_datetime
+               AND (
+                 transaction_datetime IS @transaction_datetime
+                 OR (
+                   transaction_datetime IS NULL
+                   AND @transaction_datetime IS NOT NULL
+                 )
+               )
                AND amount = @amount
                AND currency = @currency
                AND description_normalized IS @description_normalized
@@ -182,7 +194,13 @@ export class TransactionRepository {
            AND status = @status
            AND booking_date IS @booking_date
            AND value_date IS @value_date
-           AND transaction_datetime IS @transaction_datetime
+           AND (
+             transaction_datetime IS @transaction_datetime
+             OR (
+               transaction_datetime IS NULL
+               AND @transaction_datetime IS NOT NULL
+             )
+           )
            AND amount = @amount
            AND currency = @currency
            AND description_normalized IS @description_normalized

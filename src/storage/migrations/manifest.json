@@ -20,5 +20,9 @@
   {
     "version": 10,
     "filename": "010_card_import_source_rows.sql"
+  },
+  {
+    "version": 11,
+    "filename": "011_verified_account_identification_hashes.sql"
   }
 ]

@@ -40,6 +40,79 @@ function transaction(overrides: Partial<NormalizedTransaction> = {}): Normalized
 }
 
 describe("transaction idempotency", () => {
+  it("updates an id-less fallback movement when its transaction date is enriched", () => {
+    const database = createDatabase(":memory:");
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', ?, 1, ?, ?)`
+      )
+      .run(createId(), now, now);
+    const repository = new TransactionRepository(database);
+
+    expect(
+      repository.upsert(
+        transaction({
+          movement_key: "fallback-without-date",
+          fallback_occurrence: 1,
+          status: "booked"
+        })
+      )
+    ).toBe("inserted");
+    expect(
+      repository.upsert(
+        transaction({
+          movement_key: "fallback-with-date",
+          fallback_occurrence: 1,
+          status: "booked",
+          transaction_datetime: "2026-07-24T12:34:56.000Z",
+          raw_fingerprint: "raw-enriched"
+        })
+      )
+    ).toBe("updated");
+
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count, movement_key, transaction_datetime
+           FROM transactions`
+        )
+        .get()
+    ).toEqual({
+      count: 1,
+      movement_key: "fallback-without-date",
+      transaction_datetime: "2026-07-24T12:34:56.000Z"
+    });
+
+    expect(
+      repository.upsert(
+        transaction({
+          movement_key: "fallback-without-date",
+          fallback_occurrence: 1,
+          status: "booked",
+          raw_fingerprint: "raw-date-omitted-again"
+        })
+      )
+    ).toBe("updated");
+    expect(
+      database
+        .prepare("SELECT transaction_datetime FROM transactions")
+        .get()
+    ).toEqual({ transaction_datetime: "2026-07-24T12:34:56.000Z" });
+    database.close();
+  });
+
   it("deduplicates identical input and reconciles pending to booked", () => {
     const database = createDatabase(":memory:");
     const now = new Date().toISOString();

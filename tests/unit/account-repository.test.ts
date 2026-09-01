@@ -314,6 +314,75 @@ describe("account synchronization eligibility", () => {
     database.close();
   });
 
+  it("reuses an account when a later response contains only a verified secondary IBAN hash", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-secondary-hash-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo Bank', 'ES',
+                   'personal', 'Demo Bank personal', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    const repository = new AccountRepository(database);
+    const iban = "ES0100000000000000000001";
+    const primaryHash = providerIdentificationHash(
+      [["account", "account_id", "iban"], ["account", "currency"]],
+      "primary"
+    );
+    const secondaryHash = providerIdentificationHash(
+      [["account", "account_id", "iban"]],
+      "secondary"
+    );
+    const originalId = repository.upsert(
+      "connection",
+      {
+        uid: "old-provider-id",
+        identification_hash: primaryHash,
+        identification_hashes: [primaryHash, secondaryHash],
+        account_id: { iban },
+        details: "Household account",
+        currency: "EUR"
+      },
+      null
+    );
+    database
+      .prepare("UPDATE accounts SET account_alias = 'Household' WHERE id = ?")
+      .run(originalId);
+
+    expect(
+      repository.upsert(
+        "connection",
+        {
+          uid: "new-provider-id",
+          identification_hash: secondaryHash,
+          identification_hashes: [secondaryHash],
+          account_id: { iban },
+          details: "Household account",
+          currency: "EUR"
+        },
+        null
+      )
+    ).toBe(originalId);
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count, provider_account_id, account_alias
+           FROM accounts`
+        )
+        .get()
+    ).toEqual({
+      count: 1,
+      provider_account_id: "new-provider-id",
+      account_alias: "Household"
+    });
+    database.close();
+  });
+
   it("keeps distinct IBAN accounts when the provider gives them the same name hash", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-account-name-collision-"));
     const config = testConfig(root);

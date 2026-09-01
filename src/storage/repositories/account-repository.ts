@@ -195,10 +195,20 @@ export class AccountRepository {
          FROM accounts a
          WHERE a.bank_connection_id = ?
            AND a.iban_masked = ?
-           AND a.identification_hash IN (${placeholders})
+           AND (
+             a.identification_hash IN (${placeholders})
+             OR EXISTS (
+               SELECT 1
+               FROM account_identification_hashes aliases
+               WHERE aliases.bank_connection_id = a.bank_connection_id
+                 AND aliases.account_id = a.id
+                 AND aliases.verified = 1
+                 AND aliases.identification_hash IN (${placeholders})
+             )
+           )
          ORDER BY (a.account_alias IS NOT NULL) DESC, a.first_seen_at, a.id`
       )
-      .all(connectionId, maskedIban, ...hashes) as AccountIdentityRow[];
+      .all(connectionId, maskedIban, ...hashes, ...hashes) as AccountIdentityRow[];
   }
 
   private findIdentityByProviderAccountId(
@@ -332,10 +342,10 @@ export class AccountRepository {
       .run(accountId);
     const statement = this.database.prepare(
       `INSERT INTO account_identification_hashes (
-         bank_connection_id, identification_hash, account_id
-       ) VALUES (?, ?, ?)
+         bank_connection_id, identification_hash, account_id, verified
+       ) VALUES (?, ?, ?, 1)
        ON CONFLICT(bank_connection_id, identification_hash)
-       DO UPDATE SET account_id = excluded.account_id`
+       DO UPDATE SET account_id = excluded.account_id, verified = 1`
     );
     for (const hash of hashes) statement.run(connectionId, hash, accountId);
   }

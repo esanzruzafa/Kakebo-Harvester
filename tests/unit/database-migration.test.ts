@@ -17,6 +17,71 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("trusts only the canonical account hash when upgrading legacy aliases", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-verified-account-hashes-"));
+    const config = testConfig(root);
+    const legacy = new Database(config.databasePath);
+    for (const filename of [
+      "001_initial.sql",
+      "002_desktop.sql",
+      "003_audit_and_exports.sql",
+      "004_provider_errors.sql",
+      "005_psu_context.sql",
+      "006_account_sync_errors.sql",
+      "007_correct_legacy_rate_limit_backfill.sql",
+      "008_account_identification_hashes.sql",
+      "009_transaction_fallback_occurrence.sql",
+      "010_card_import_source_rows.sql"
+    ]) {
+      legacy.exec(
+        readFileSync(resolve("src", "storage", "migrations", filename), "utf8")
+      );
+    }
+    legacy.pragma("user_version = 10");
+    const now = new Date().toISOString();
+    legacy
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'production', 'Demo Bank',
+                   'ES', 'personal', 'Demo Bank personal', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    legacy
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, identification_hash,
+           first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider-account', 'primary-hash', ?, ?)`
+      )
+      .run(now, now);
+    legacy
+      .prepare(
+        `INSERT INTO account_identification_hashes (
+           bank_connection_id, identification_hash, account_id
+         ) VALUES ('connection', 'primary-hash', 'account'),
+                  ('connection', 'legacy-secondary-hash', 'account')`
+      )
+      .run();
+    legacy.close();
+
+    const migrated = createDatabase(config.databasePath);
+    expect(
+      migrated
+        .prepare(
+          `SELECT identification_hash, verified
+           FROM account_identification_hashes
+           ORDER BY identification_hash`
+        )
+        .all()
+    ).toEqual([
+      { identification_hash: "legacy-secondary-hash", verified: 0 },
+      { identification_hash: "primary-hash", verified: 1 }
+    ]);
+    migrated.close();
+  });
+
   it(
     "waits for a competing migration and rechecks the schema version",
     async () => {
