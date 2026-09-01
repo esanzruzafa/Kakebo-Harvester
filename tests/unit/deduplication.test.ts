@@ -40,6 +40,101 @@ function transaction(overrides: Partial<NormalizedTransaction> = {}): Normalized
 }
 
 describe("transaction idempotency", () => {
+  it.each([
+    {
+      field: "booking_date" as const,
+      enrichedValue: "2026-07-25",
+      initial: { booking_date: null, value_date: "2026-07-24" }
+    },
+    {
+      field: "value_date" as const,
+      enrichedValue: "2026-07-25",
+      initial: { booking_date: "2026-07-24", value_date: null }
+    }
+  ])("updates an id-less fallback movement when $field is enriched", ({
+    field,
+    enrichedValue,
+    initial
+  }) => {
+    const database = createDatabase(":memory:");
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', ?, 1, ?, ?)`
+      )
+      .run(createId(), now, now);
+    const repository = new TransactionRepository(database);
+
+    expect(
+      repository.upsert(
+        transaction({
+          ...initial,
+          movement_key: `fallback-without-${field}`,
+          fallback_occurrence: 1,
+          status: "booked"
+        })
+      )
+    ).toBe("inserted");
+    expect(
+      repository.upsert(
+        transaction({
+          ...initial,
+          [field]: enrichedValue,
+          movement_key: `fallback-with-${field}`,
+          fallback_occurrence: 1,
+          status: "booked",
+          raw_fingerprint: `raw-enriched-${field}`
+        })
+      )
+    ).toBe("updated");
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count, booking_date, value_date
+           FROM transactions`
+        )
+        .get()
+    ).toEqual({
+      count: 1,
+      booking_date:
+        field === "booking_date" ? enrichedValue : initial.booking_date,
+      value_date: field === "value_date" ? enrichedValue : initial.value_date
+    });
+
+    expect(
+      repository.upsert(
+        transaction({
+          ...initial,
+          movement_key: `fallback-without-${field}`,
+          fallback_occurrence: 1,
+          status: "booked",
+          raw_fingerprint: `raw-${field}-omitted-again`
+        })
+      )
+    ).toBe("updated");
+    expect(
+      database
+        .prepare("SELECT booking_date, value_date FROM transactions")
+        .get()
+    ).toEqual({
+      booking_date:
+        field === "booking_date" ? enrichedValue : initial.booking_date,
+      value_date: field === "value_date" ? enrichedValue : initial.value_date
+    });
+    database.close();
+  });
+
   it("updates an id-less fallback movement when its transaction date is enriched", () => {
     const database = createDatabase(":memory:");
     const now = new Date().toISOString();

@@ -383,6 +383,99 @@ describe("account synchronization eligibility", () => {
     database.close();
   });
 
+  it("retains verified IBAN hashes omitted from intermediate provider responses", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-retained-hashes-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo Bank', 'ES',
+                   'personal', 'Demo Bank personal', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    const repository = new AccountRepository(database);
+    const iban = "ES0100000000000000000001";
+    const hashes = ["primary", "secondary-b", "secondary-c"].map((digest) =>
+      providerIdentificationHash([["account", "account_id", "iban"]], digest)
+    );
+    const [, secondaryBHash, secondaryCHash] = hashes;
+    if (!secondaryBHash || !secondaryCHash) {
+      throw new Error("Expected three account hash fixtures.");
+    }
+    const originalId = repository.upsert(
+      "connection",
+      {
+        uid: "original-provider-id",
+        identification_hashes: hashes,
+        account_id: { iban },
+        details: "Household account",
+        currency: "EUR"
+      },
+      null
+    );
+    database
+      .prepare("UPDATE accounts SET account_alias = 'Household' WHERE id = ?")
+      .run(originalId);
+
+    expect(
+      repository.upsert(
+        "connection",
+        {
+          uid: "original-provider-id",
+          identification_hashes: [secondaryBHash],
+          account_id: { iban },
+          details: "Household account",
+          currency: "EUR"
+        },
+        null
+      )
+    ).toBe(originalId);
+    expect(
+      repository.upsert(
+        "connection",
+        {
+          uid: "changed-provider-id",
+          identification_hashes: [secondaryCHash],
+          account_id: { iban },
+          details: "Household account",
+          currency: "EUR"
+        },
+        null
+      )
+    ).toBe(originalId);
+    expect(
+      database
+        .prepare(
+          `SELECT identification_hash
+           FROM account_identification_hashes
+           WHERE account_id = ? AND verified = 1
+           ORDER BY identification_hash`
+        )
+        .all(originalId)
+    ).toEqual(
+      [...hashes]
+        .sort()
+        .map((identificationHash) => ({ identification_hash: identificationHash }))
+    );
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count, provider_account_id, account_alias
+           FROM accounts`
+        )
+        .get()
+    ).toEqual({
+      count: 1,
+      provider_account_id: "changed-provider-id",
+      account_alias: "Household"
+    });
+    database.close();
+  });
+
   it("keeps distinct IBAN accounts when the provider gives them the same name hash", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-account-name-collision-"));
     const config = testConfig(root);

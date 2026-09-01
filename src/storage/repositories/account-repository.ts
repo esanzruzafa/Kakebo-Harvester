@@ -338,7 +338,10 @@ export class AccountRepository {
   ): void {
     if (hashes.length === 0) return;
     this.database
-      .prepare("DELETE FROM account_identification_hashes WHERE account_id = ?")
+      .prepare(
+        `DELETE FROM account_identification_hashes
+         WHERE account_id = ? AND verified = 0`
+      )
       .run(accountId);
     const statement = this.database.prepare(
       `INSERT INTO account_identification_hashes (

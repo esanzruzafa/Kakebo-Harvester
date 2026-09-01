@@ -34,8 +34,8 @@ const updateSql = `
     entry_reference = @entry_reference,
     fallback_occurrence = @fallback_occurrence,
     status = @status,
-    booking_date = @booking_date,
-    value_date = @value_date,
+    booking_date = COALESCE(@booking_date, booking_date),
+    value_date = COALESCE(@value_date, value_date),
     transaction_datetime = COALESCE(@transaction_datetime, transaction_datetime),
     amount = @amount,
     currency = @currency,
@@ -102,8 +102,14 @@ export class TransactionRepository {
                  OR (fallback_occurrence IS NULL AND @fallback_occurrence = 1)
                )
                AND status = @status
-               AND booking_date IS @booking_date
-               AND value_date IS @value_date
+               AND (
+                 booking_date IS @booking_date
+                 OR (booking_date IS NULL AND @booking_date IS NOT NULL)
+               )
+               AND (
+                 value_date IS @value_date
+                 OR (value_date IS NULL AND @value_date IS NOT NULL)
+               )
                AND (
                  transaction_datetime IS @transaction_datetime
                  OR (
@@ -126,8 +132,14 @@ export class TransactionRepository {
                AND provider_transaction_id IS NULL
                AND fallback_occurrence IS @fallback_occurrence
                AND status = @status
-               AND booking_date IS @booking_date
-               AND value_date IS @value_date
+               AND (
+                 booking_date IS @booking_date
+                 OR (booking_date IS NULL AND @booking_date IS NOT NULL)
+               )
+               AND (
+                 value_date IS @value_date
+                 OR (value_date IS NULL AND @value_date IS NOT NULL)
+               )
                AND (
                  transaction_datetime IS @transaction_datetime
                  OR (
@@ -192,8 +204,14 @@ export class TransactionRepository {
            AND environment = @environment
            AND bank_connection_id = @bank_connection_id
            AND status = @status
-           AND booking_date IS @booking_date
-           AND value_date IS @value_date
+           AND (
+             booking_date IS @booking_date
+             OR (booking_date IS NULL AND @booking_date IS NOT NULL)
+           )
+           AND (
+             value_date IS @value_date
+             OR (value_date IS NULL AND @value_date IS NOT NULL)
+           )
            AND (
              transaction_datetime IS @transaction_datetime
              OR (
