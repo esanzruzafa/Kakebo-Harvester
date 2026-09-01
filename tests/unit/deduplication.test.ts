@@ -40,6 +40,90 @@ function transaction(overrides: Partial<NormalizedTransaction> = {}): Normalized
 }
 
 describe("transaction idempotency", () => {
+  it.each([
+    {
+      field: "booking_date" as const,
+      retainedValue: "2026-07-24",
+      otherDates: { value_date: "2026-07-25", transaction_datetime: null }
+    },
+    {
+      field: "value_date" as const,
+      retainedValue: "2026-07-25",
+      otherDates: { booking_date: "2026-07-24", transaction_datetime: null }
+    },
+    {
+      field: "transaction_datetime" as const,
+      retainedValue: "2026-07-24T12:34:56.000Z",
+      otherDates: { booking_date: "2026-07-24", value_date: "2026-07-25" }
+    }
+  ])("retains $field when a later response omits it", ({
+    field,
+    retainedValue,
+    otherDates
+  }) => {
+    const database = createDatabase(":memory:");
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', ?, 1, ?, ?)`
+      )
+      .run(createId(), now, now);
+    const repository = new TransactionRepository(database);
+
+    expect(
+      repository.upsert(
+        transaction({
+          ...otherDates,
+          [field]: retainedValue,
+          movement_key: `fallback-with-${field}`,
+          fallback_occurrence: 1,
+          status: "booked"
+        })
+      )
+    ).toBe("inserted");
+    expect(
+      repository.upsert(
+        transaction({
+          ...otherDates,
+          [field]: null,
+          movement_key: `fallback-without-${field}`,
+          fallback_occurrence: 1,
+          status: "booked",
+          raw_fingerprint: `raw-without-${field}`
+        })
+      )
+    ).toBe("updated");
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count, booking_date, value_date, transaction_datetime
+           FROM transactions`
+        )
+        .get()
+    ).toEqual({
+      count: 1,
+      booking_date:
+        field === "booking_date" ? retainedValue : otherDates.booking_date,
+      value_date: field === "value_date" ? retainedValue : otherDates.value_date,
+      transaction_datetime:
+        field === "transaction_datetime"
+          ? retainedValue
+          : otherDates.transaction_datetime
+    });
+    database.close();
+  });
+
   it("retains a provider identity when a later response omits it", () => {
     const database = createDatabase(":memory:");
     const now = new Date().toISOString();

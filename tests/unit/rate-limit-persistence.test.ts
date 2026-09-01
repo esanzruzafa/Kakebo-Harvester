@@ -23,6 +23,98 @@ afterEach(async () => {
 });
 
 describe("bank rate-limit persistence", () => {
+  it("returns a warning when a later account on the same connection is rate limited", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T10:00:00.000Z"));
+    root = await mkdtemp(join(tmpdir(), "kakebo-rate-limit-partial-transactions-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at, required_psu_headers_json
+         ) VALUES ('connection', 'enable-banking', ?, 'Demo Bank', 'ES',
+                   'personal', 'Demo personal', 'AUTHORIZED', ?, '[]')`
+      )
+      .run(config.appEnv, now);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext,
+           created_at, status
+         ) VALUES ('session', 'connection', ?, ?, 'AUTHORIZED')`
+      )
+      .run(encryptSecret("provider-session", config.sessionEncryptionKey), now);
+    const insertAccount = database.prepare(
+      `INSERT INTO accounts (
+         id, bank_connection_id, provider_account_id, name, active,
+         first_seen_at, last_seen_at
+       ) VALUES (?, 'connection', ?, ?, 1, ?, ?)`
+    );
+    insertAccount.run("account-a", "provider-a", "A account", now, now);
+    insertAccount.run("account-b", "provider-b", "B account", now, now);
+    const getTransactions = vi.fn((accountId: string) => {
+      if (accountId === "provider-b") {
+        return Promise.reject(
+          new RateLimitError(
+            "Limit reached.",
+            "2026-07-28T16:00:00.000Z",
+            [],
+            "ASPSP_RATE_LIMIT_EXCEEDED"
+          )
+        );
+      }
+      return Promise.resolve({
+        transactions: [
+          {
+            entry_reference: "movement-a",
+            transaction_amount: { currency: "EUR", amount: "10.00" },
+            credit_debit_indicator: "DBIT" as const,
+            status: "BOOK",
+            booking_date: "2026-07-24",
+            remittance_information: "Account A movement"
+          }
+        ],
+        continuation_key: null
+      });
+    });
+    const service = new SyncService(
+      config,
+      database,
+      { getTransactions } as unknown as EnableBankingClient
+    );
+
+    await expect(
+      new SyncRunner(config, database, service).run({
+        steps: ["transactions"],
+        dateFrom: "2026-07-01",
+        dateTo: "2026-07-31"
+      })
+    ).resolves.toMatchObject({
+      transactions: { pages: 1, received: 1, inserted: 1 },
+      skippedRateLimitedConnections: 1
+    });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM transactions").get()).toEqual({
+      count: 1
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT status FROM desktop_runs
+           ORDER BY started_at DESC LIMIT 1`
+        )
+        .get()
+    ).toEqual({ status: "SUCCESS_WITH_WARNINGS" });
+    expect(
+      database
+        .prepare("SELECT last_sync_at FROM bank_connections WHERE id = 'connection'")
+        .get()
+    ).toEqual({ last_sync_at: null });
+    database.close();
+  });
+
   it("stores the provider code and prevents requests until the retry time", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-28T10:00:00.000Z"));

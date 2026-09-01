@@ -102,18 +102,18 @@ export class TransactionRepository {
                AND status = @status
                AND (
                  booking_date IS @booking_date
-                 OR (booking_date IS NULL AND @booking_date IS NOT NULL)
+                 OR booking_date IS NULL
+                 OR @booking_date IS NULL
                )
                AND (
                  value_date IS @value_date
-                 OR (value_date IS NULL AND @value_date IS NOT NULL)
+                 OR value_date IS NULL
+                 OR @value_date IS NULL
                )
                AND (
                  transaction_datetime IS @transaction_datetime
-                 OR (
-                   transaction_datetime IS NULL
-                   AND @transaction_datetime IS NOT NULL
-                 )
+                 OR transaction_datetime IS NULL
+                 OR @transaction_datetime IS NULL
                )
                AND amount = @amount
                AND currency = @currency
@@ -132,18 +132,18 @@ export class TransactionRepository {
                AND status = @status
                AND (
                  booking_date IS @booking_date
-                 OR (booking_date IS NULL AND @booking_date IS NOT NULL)
+                 OR booking_date IS NULL
+                 OR @booking_date IS NULL
                )
                AND (
                  value_date IS @value_date
-                 OR (value_date IS NULL AND @value_date IS NOT NULL)
+                 OR value_date IS NULL
+                 OR @value_date IS NULL
                )
                AND (
                  transaction_datetime IS @transaction_datetime
-                 OR (
-                   transaction_datetime IS NULL
-                   AND @transaction_datetime IS NOT NULL
-                 )
+                 OR transaction_datetime IS NULL
+                 OR @transaction_datetime IS NULL
                )
                AND amount = @amount
                AND currency = @currency
@@ -204,18 +204,18 @@ export class TransactionRepository {
            AND status = @status
            AND (
              booking_date IS @booking_date
-             OR (booking_date IS NULL AND @booking_date IS NOT NULL)
+             OR booking_date IS NULL
+             OR @booking_date IS NULL
            )
            AND (
              value_date IS @value_date
-             OR (value_date IS NULL AND @value_date IS NOT NULL)
+             OR value_date IS NULL
+             OR @value_date IS NULL
            )
            AND (
              transaction_datetime IS @transaction_datetime
-             OR (
-               transaction_datetime IS NULL
-               AND @transaction_datetime IS NOT NULL
-             )
+             OR transaction_datetime IS NULL
+             OR @transaction_datetime IS NULL
            )
            AND amount = @amount
            AND currency = @currency

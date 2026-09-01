@@ -929,6 +929,7 @@ export class SyncService {
     const deferredAuthorizationConnectionIds = new Set<string>();
     let deferredRateLimit: RateLimitError | undefined;
     const completedConnectionIds = new Set<string>();
+    let completedAccountCount = 0;
     for (const account of this.accounts.listActive()) {
       if (context.skippedConnectionIds?.has(account.bank_connection_id)) continue;
       if (context.skippedAccountIds?.has(account.id)) continue;
@@ -951,6 +952,7 @@ export class SyncService {
         for (const key of Object.keys(total) as Array<keyof SyncSummary>) {
           total[key] += summary[key];
         }
+        completedAccountCount += 1;
         completedConnectionIds.add(account.bank_connection_id);
         this.database
           .prepare(
@@ -1021,13 +1023,13 @@ export class SyncService {
       this.accounts.clearLastSyncError(account.id);
       this.clearConnectionError(account.bank_connection_id);
     }
-    if (deferredAuthorization && completedConnectionIds.size === 0) {
+    if (deferredAuthorization && completedAccountCount === 0) {
       throw this.reauthorizationForConnections(
         deferredAuthorization,
         deferredAuthorizationConnectionIds
       );
     }
-    if (deferredRateLimit && completedConnectionIds.size === 0) {
+    if (deferredRateLimit && completedAccountCount === 0) {
       throw deferredRateLimit;
     }
     const successfulConnectionIds = [...completedConnectionIds];
