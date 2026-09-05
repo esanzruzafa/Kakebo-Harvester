@@ -346,7 +346,15 @@ export class SyncService {
         .all(this.config.appEnv) as Array<{ id: string }>;
       for (const row of rows) {
         if (!context.skippedConnectionIds.has(row.id)) {
-          this.connectionPsuHeaders(row.id, context);
+          try {
+            this.connectionPsuHeaders(row.id, context);
+          } catch (error) {
+            if (!(error instanceof PsuHeadersUnavailableError)) throw error;
+            context.skippedConnectionIds.add(row.id);
+            context.skippedUnavailableConnectionIds ??= new Set<string>();
+            context.skippedUnavailableConnectionIds.add(row.id);
+            this.markConnectionError(row.id, error, context);
+          }
         }
       }
     }

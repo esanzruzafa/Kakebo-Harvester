@@ -24,6 +24,77 @@ afterEach(async () => {
 });
 
 describe("account detail synchronization selection", () => {
+  it("skips only a connection whose required PSU header is unavailable", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-psu-connection-isolation-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    const insertConnection = database.prepare(
+      `INSERT INTO bank_connections (
+         id, provider, environment, bank_name, bank_country, psu_type,
+         alias, status, created_at, required_psu_headers_json
+       ) VALUES (?, 'enable-banking', ?, ?, 'ES', 'personal', ?, 'AUTHORIZED', ?, ?)`
+    );
+    const insertSession = database.prepare(
+      `INSERT INTO provider_sessions (
+         id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+       ) VALUES (?, ?, ?, ?, 'AUTHORIZED')`
+    );
+    insertConnection.run(
+      "needs-ip",
+      config.appEnv,
+      "IP Bank",
+      "IP Bank personal",
+      now,
+      JSON.stringify(["psu-ip-address"])
+    );
+    insertConnection.run(
+      "ready",
+      config.appEnv,
+      "Ready Bank",
+      "Ready Bank personal",
+      now,
+      JSON.stringify(["psu-user-agent"])
+    );
+    insertSession.run(
+      "needs-ip-session",
+      "needs-ip",
+      encryptSecret("needs-ip-provider-session", config.sessionEncryptionKey),
+      now
+    );
+    insertSession.run(
+      "ready-session",
+      "ready",
+      encryptSecret("ready-provider-session", config.sessionEncryptionKey),
+      now
+    );
+    const getSession = vi.fn().mockResolvedValue({
+      status: "AUTHORIZED",
+      accounts: []
+    });
+    const service = new SyncService(
+      config,
+      database,
+      { getSession } as unknown as EnableBankingClient
+    );
+
+    const result = await new SyncRunner(config, database, service).run(
+      {
+        steps: ["accounts"],
+        dateFrom: "2026-08-01",
+        dateTo: "2026-08-20"
+      },
+      { psuHeaders: { userAgent: "Kakebo test" } }
+    );
+
+    expect(result).toMatchObject({
+      accounts: 0,
+      skippedUnavailableConnections: 1
+    });
+    expect(getSession).toHaveBeenCalledExactlyOnceWith("ready-provider-session");
+    database.close();
+  });
+
   it("skips an unauthorized connection while synchronizing an eligible bank", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-partial-reauthorization-"));
     const config = testConfig(root);

@@ -4,13 +4,15 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EnableBankingClient } from "../../src/enable-banking/client.js";
 import {
-  PsuHeadersUnavailableError,
   RateLimitError,
   ReauthorizationRequiredError
 } from "../../src/errors.js";
 import { createDatabase } from "../../src/storage/database.js";
 import { SyncRunner } from "../../src/sync/sync-runner.js";
-import { SyncService } from "../../src/sync/sync-service.js";
+import {
+  SyncService,
+  type SyncExecutionContext
+} from "../../src/sync/sync-service.js";
 import { encryptSecret } from "../../src/utils/crypto.js";
 import { testConfig } from "../helpers.js";
 
@@ -218,7 +220,7 @@ describe("bank rate-limit persistence", () => {
     database.close();
   });
 
-  it("rejects an online request when a required PSU header is unavailable", async () => {
+  it("skips an online connection when a required PSU header is unavailable", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-psu-headers-"));
     const config = testConfig(root);
     const database = createDatabase(config.databasePath);
@@ -253,14 +255,16 @@ describe("bank rate-limit persistence", () => {
       { getSession } as unknown as EnableBankingClient
     );
 
-    await expect(
-      service.syncAccounts({
-        psuHeaders: {
-          userAgent: "Kakebo-Harvester/1.0.0 Electron/43",
-          acceptLanguage: "es"
-        }
-      })
-    ).rejects.toBeInstanceOf(PsuHeadersUnavailableError);
+    const context: SyncExecutionContext = {
+      psuHeaders: {
+        userAgent: "Kakebo-Harvester/1.0.0 Electron/43",
+        acceptLanguage: "es"
+      }
+    };
+    await expect(service.syncAccounts(context)).resolves.toBe(0);
+    expect(context.skippedUnavailableConnectionIds).toEqual(
+      new Set(["connection"])
+    );
     expect(getSession).not.toHaveBeenCalled();
     database.close();
   });

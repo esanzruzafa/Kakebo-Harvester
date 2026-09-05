@@ -7,7 +7,11 @@ import type {
   SyncService,
   SyncSummary
 } from "./sync/sync-service.js";
-import { SynchronizationLock, SyncRunner } from "./sync/sync-runner.js";
+import {
+  SynchronizationLock,
+  SyncRunner,
+  type SyncRunResult
+} from "./sync/sync-runner.js";
 import { getSyncWindow } from "./sync/sync-window.js";
 import { CsvExporter } from "./export/csv-exporter.js";
 import { AccountRepository } from "./storage/repositories/account-repository.js";
@@ -84,23 +88,20 @@ function printSummary(summary: SyncSummary): void {
   ]);
 }
 
-function printConnectionWarnings(context: SyncExecutionContext): void {
-  const authorization = context.skippedAuthorizationConnectionIds?.size ?? 0;
-  const rateLimited = context.skippedRateLimitConnectionIds?.size ?? 0;
-  const unavailable = context.skippedUnavailableConnectionIds?.size ?? 0;
-  if (authorization > 0) {
+function printRunWarnings(result: SyncRunResult): void {
+  if ((result.skippedConnections ?? 0) > 0) {
     console.warn(
-      `Warning: ${authorization} bank connection(s) were skipped pending authorization.`
+      `Warning: ${result.skippedConnections} bank connection(s) were skipped pending authorization.`
     );
   }
-  if (rateLimited > 0) {
+  if ((result.skippedRateLimitedConnections ?? 0) > 0) {
     console.warn(
-      `Warning: ${rateLimited} bank connection(s) were skipped because a request limit is active.`
+      `Warning: ${result.skippedRateLimitedConnections} bank connection(s) were skipped because a request limit is active.`
     );
   }
-  if (unavailable > 0) {
+  if ((result.skippedUnavailableConnections ?? 0) > 0) {
     console.warn(
-      `Warning: ${unavailable} bank connection(s) were skipped because the bank is temporarily unavailable.`
+      `Warning: ${result.skippedUnavailableConnections} bank connection(s) were skipped because the bank is temporarily unavailable.`
     );
   }
 }
@@ -247,22 +248,36 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
     }
     case "sync-accounts": {
       const context = cliSyncContext(options, config);
-      const count = await withSynchronizationLock(database, () =>
-        sync.syncAccounts(context)
+      const window = getSyncWindow(config.syncLookbackDays);
+      const result = await syncRunner.run(
+        {
+          steps: ["accounts"],
+          dateFrom: window.dateFrom,
+          dateTo: window.dateTo
+        },
+        context
       );
+      const count = result.accounts ?? 0;
       logger.info({ count }, "Account synchronization completed");
       console.log(`Cuentas sincronizadas: ${count}`);
-      printConnectionWarnings(context);
+      printRunWarnings(result);
       return;
     }
     case "sync-balances": {
       const context = cliSyncContext(options, config);
-      const count = await withSynchronizationLock(database, () =>
-        sync.syncBalances(undefined, context)
+      const window = getSyncWindow(config.syncLookbackDays);
+      const result = await syncRunner.run(
+        {
+          steps: ["balances"],
+          dateFrom: window.dateFrom,
+          dateTo: window.dateTo
+        },
+        context
       );
+      const count = result.balances ?? 0;
       logger.info({ count }, "Balance synchronization completed");
       console.log(`Saldos guardados: ${count}`);
-      printConnectionWarnings(context);
+      printRunWarnings(result);
       return;
     }
     case "sync-transactions": {
@@ -272,16 +287,18 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
         value(options, "to")
       );
       const context = cliSyncContext(options, config);
-      const summary = await withSynchronizationLock(database, () =>
-        sync.syncTransactions(
-          window.dateFrom,
-          window.dateTo,
-          context
-        )
+      const result = await syncRunner.run(
+        {
+          steps: ["transactions"],
+          dateFrom: window.dateFrom,
+          dateTo: window.dateTo
+        },
+        context
       );
+      const summary = result.transactions ?? emptySyncSummary();
       logger.info({ ...summary, ...window }, "Transaction synchronization completed");
       printSummary(summary);
-      printConnectionWarnings(context);
+      printRunWarnings(result);
       return;
     }
     case "initial-sync": {
@@ -372,14 +389,23 @@ export async function runCli(argv: string[], dependencies: CliDependencies): Pro
     case "disconnect": {
       const alias = required(options, "connection");
       const result = await withSynchronizationLock(database, async () => {
-        const connection = database
+        const connections = database
           .prepare(
             `SELECT id FROM bank_connections
              WHERE alias = ? AND environment = ? AND provider = 'enable-banking'
-             ORDER BY created_at DESC LIMIT 1`
+               AND status <> 'REVOKED'
+             ORDER BY created_at DESC, id`
           )
-          .get(alias, config.appEnv) as { id: string } | undefined;
-        if (!connection) throw new Error(`No existe la conexión "${alias}".`);
+          .all(alias, config.appEnv) as Array<{ id: string }>;
+        const connection = connections[0];
+        if (!connection) {
+          throw new Error(`No existe la conexión "${alias}".`);
+        }
+        if (connections.length > 1) {
+          throw new Error(
+            `La conexión "${alias}" es ambigua. Revoca o renombra las conexiones duplicadas desde la aplicación.`
+          );
+        }
         return disconnectBankConnection({
           config,
           database,

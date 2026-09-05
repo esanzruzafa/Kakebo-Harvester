@@ -446,6 +446,85 @@ describe("transaction idempotency", () => {
     database.close();
   });
 
+  it("does not downgrade a booked provider transaction to pending", () => {
+    const database = createDatabase(":memory:");
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', ?, 1, ?, ?)`
+      )
+      .run(createId(), now, now);
+    const repository = new TransactionRepository(database);
+
+    expect(
+      repository.upsert(
+        transaction({
+          status: "booked",
+          provider_transaction_id: "provider-transaction",
+          raw_fingerprint: "booked"
+        })
+      )
+    ).toBe("inserted");
+    expect(
+      repository.upsert(
+        transaction({
+          status: "pending",
+          provider_transaction_id: "provider-transaction",
+          raw_fingerprint: "pending"
+        })
+      )
+    ).toBe("updated");
+    expect(database.prepare("SELECT status FROM transactions").get()).toEqual({
+      status: "booked"
+    });
+    database.close();
+  });
+
+  it("preserves the first import timestamp when a movement is observed again", () => {
+    const database = createDatabase(":memory:");
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', ?, 1, ?, ?)`
+      )
+      .run(createId(), now, now);
+    const repository = new TransactionRepository(database);
+    expect(repository.upsert(transaction())).toBe("inserted");
+    const before = database
+      .prepare("SELECT imported_at FROM transactions")
+      .get() as { imported_at: string };
+
+    expect(
+      repository.upsert(transaction({ raw_fingerprint: "observed-again" }))
+    ).toBe("updated");
+    expect(database.prepare("SELECT imported_at FROM transactions").get()).toEqual(
+      before
+    );
+    database.close();
+  });
+
   it("does not reconcile identical recurring movements outside the date window", () => {
     const database = createDatabase(":memory:");
     const now = new Date().toISOString();

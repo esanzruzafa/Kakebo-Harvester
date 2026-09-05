@@ -68,7 +68,10 @@ const updateSql = `
     provider_transaction_id = COALESCE(@provider_transaction_id, provider_transaction_id),
     entry_reference = COALESCE(@entry_reference, entry_reference),
     fallback_occurrence = @fallback_occurrence,
-    status = @status,
+    status = CASE
+      WHEN status = 'booked' AND @status = 'pending' THEN status
+      ELSE @status
+    END,
     booking_date = COALESCE(@booking_date, booking_date),
     value_date = COALESCE(@value_date, value_date),
     transaction_datetime = COALESCE(@transaction_datetime, transaction_datetime),
@@ -87,7 +90,6 @@ const updateSql = `
     category_auto = CASE WHEN reviewed = 1 THEN category_auto ELSE @category_auto END,
     subcategory_auto = CASE WHEN reviewed = 1 THEN subcategory_auto ELSE @subcategory_auto END,
     last_seen_at = @last_seen_at,
-    imported_at = @imported_at,
     source_raw_file = @source_raw_file,
     raw_fingerprint = @raw_fingerprint
   WHERE id = @id`;
@@ -355,8 +357,7 @@ export class TransactionRepository {
           existing.movement_key !== transaction.movement_key
             ? 1
             : 0,
-        last_seen_at: now,
-        imported_at: now
+        last_seen_at: now
       });
       return existing.raw_fingerprint === transaction.raw_fingerprint
         ? "duplicate"
@@ -379,8 +380,7 @@ export class TransactionRepository {
         ...transaction,
         id: movementMatch.id,
         preserve_movement_key: 0,
-        last_seen_at: now,
-        imported_at: now
+        last_seen_at: now
       });
       return "updated";
     }
@@ -432,8 +432,7 @@ export class TransactionRepository {
           ...transaction,
           id: pending.id,
           preserve_movement_key: 1,
-          last_seen_at: now,
-          imported_at: now
+          last_seen_at: now
         });
         return "reconciled";
       }

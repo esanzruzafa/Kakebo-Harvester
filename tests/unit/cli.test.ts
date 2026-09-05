@@ -14,6 +14,7 @@ import type {
   SyncService
 } from "../../src/sync/sync-service.js";
 import { testConfig } from "../helpers.js";
+import { encryptSecret } from "../../src/utils/crypto.js";
 
 let root: string | undefined;
 
@@ -77,6 +78,120 @@ describe("CLI synchronization commands", () => {
     expect(warning).toHaveBeenCalledWith(
       "Warning: 1 bank connection(s) were skipped because the bank is temporarily unavailable."
     );
+    database.close();
+  });
+
+  it.each([
+    { command: ["sync-accounts"], steps: ["accounts"] },
+    { command: ["sync-balances"], steps: ["balances"] },
+    {
+      command: ["sync-transactions", "--from", "2026-08-01", "--to", "2026-08-20"],
+      steps: ["transactions"]
+    }
+  ])("records an audited run for $command[0]", async ({ command, steps }) => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-cli-audit-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const syncAccounts = vi.fn().mockResolvedValue(2);
+    const syncBalances = vi.fn().mockResolvedValue(3);
+    const syncTransactions = vi.fn().mockResolvedValue({
+      pages: 1,
+      received: 1,
+      inserted: 1,
+      updated: 0,
+      duplicates: 0,
+      pendingReconciled: 0
+    });
+
+    await runCli(command, {
+      config,
+      database,
+      client: {} as never,
+      authorization: {} as never,
+      sync: {
+        syncAccounts,
+        syncBalances,
+        syncTransactions
+      } as unknown as SyncService,
+      logger: { info: vi.fn() } as never
+    });
+
+    const run = database
+      .prepare("SELECT id, status, steps_json FROM desktop_runs")
+      .get() as { id: string; status: string; steps_json: string } | undefined;
+    expect(run).toMatchObject({ status: "SUCCESS", steps_json: JSON.stringify(steps) });
+    if (steps[0] === "balances") {
+      expect(syncBalances).toHaveBeenCalledWith(run?.id, expect.any(Object));
+    }
+    database.close();
+  });
+
+  it("ignores a revoked connection when disconnecting an active alias", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-cli-disconnect-revoked-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    const insertConnection = database.prepare(
+      `INSERT INTO bank_connections (
+         id, provider, environment, bank_name, bank_country, psu_type,
+         alias, status, created_at
+       ) VALUES (?, 'enable-banking', ?, 'Demo Bank', 'ES', 'personal',
+                 'Demo Bank personal', ?, ?)`
+    );
+    insertConnection.run("authorized", config.appEnv, "AUTHORIZED", now);
+    insertConnection.run("revoked", config.appEnv, "REVOKED", now);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('authorized-session', 'authorized', ?, ?, 'AUTHORIZED')`
+      )
+      .run(encryptSecret("authorized-provider-session", config.sessionEncryptionKey), now);
+    const deleteSession = vi.fn().mockResolvedValue(undefined);
+
+    await runCli(["disconnect", "--connection", "Demo Bank personal"], {
+      config,
+      database,
+      client: { deleteSession } as never,
+      authorization: {} as never,
+      sync: {} as SyncService,
+      logger: { warn: vi.fn() } as never
+    });
+
+    expect(deleteSession).toHaveBeenCalledWith("authorized-provider-session");
+    expect(
+      database.prepare("SELECT status FROM bank_connections WHERE id = 'authorized'").get()
+    ).toEqual({ status: "REVOKED" });
+    database.close();
+  });
+
+  it("rejects an ambiguous active connection alias before revoking a consent", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-cli-disconnect-ambiguous-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    const insertConnection = database.prepare(
+      `INSERT INTO bank_connections (
+         id, provider, environment, bank_name, bank_country, psu_type,
+         alias, status, created_at
+       ) VALUES (?, 'enable-banking', ?, 'Demo Bank', 'ES', 'personal',
+                 'Demo Bank personal', 'AUTHORIZED', ?)`
+    );
+    insertConnection.run("first", config.appEnv, now);
+    insertConnection.run("second", config.appEnv, now);
+    const deleteSession = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      runCli(["disconnect", "--connection", "Demo Bank personal"], {
+        config,
+        database,
+        client: { deleteSession } as never,
+        authorization: {} as never,
+        sync: {} as SyncService,
+        logger: { warn: vi.fn() } as never
+      })
+    ).rejects.toThrow('La conexión "Demo Bank personal" es ambigua.');
+    expect(deleteSession).not.toHaveBeenCalled();
     database.close();
   });
 
