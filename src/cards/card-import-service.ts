@@ -181,6 +181,14 @@ function parseAmount(
       .replace(/\p{Sc}/gu, "");
     const negativeParentheses = raw.startsWith("(") && raw.endsWith(")");
     if (negativeParentheses) raw = `-${raw.slice(1, -1)}`;
+    if (
+      profile.decimalSeparator === "auto" &&
+      /^[+-]?[1-9]\d{0,2}[,.]\d{3}$/u.test(raw)
+    ) {
+      throw new Error(
+        `Ambiguous amount "${raw}". Configure a decimal separator explicitly for this card profile.`
+      );
+    }
     const decimal =
       profile.decimalSeparator === "auto"
         ? raw.includes(",") && raw.includes(".")

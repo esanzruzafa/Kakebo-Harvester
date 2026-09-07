@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  balancesResponseSchema,
   sessionResponseSchema,
   startAuthorizationResponseSchema
 } from "../../src/enable-banking/schemas.js";
@@ -41,10 +42,7 @@ describe("provider response schemas", () => {
     expect(result.accounts[0]?.uid).toBe("account");
   });
 
-  it("accepts nullable optional balance dates", async () => {
-    const { balancesResponseSchema } = await import(
-      "../../src/enable-banking/schemas.js"
-    );
+  it("accepts nullable optional balance dates", () => {
     const result = balancesResponseSchema.parse({
       balances: [
         {
@@ -57,6 +55,28 @@ describe("provider response schemas", () => {
     });
 
     expect(result.balances).toHaveLength(1);
+  });
+
+  it("rejects malformed balances and canonicalizes valid balance decimals", () => {
+    expect(() =>
+      balancesResponseSchema.parse({
+        balances: [
+          {
+            balance_amount: { currency: "EUR", amount: "N/A" }
+          }
+        ]
+      })
+    ).toThrow();
+
+    expect(
+      balancesResponseSchema.parse({
+        balances: [
+          {
+            balance_amount: { currency: "EUR", amount: "0012.3400" }
+          }
+        ]
+      }).balances[0]?.balance_amount.amount
+    ).toBe("12.34");
   });
 
   it("accepts nullable optional transaction fields", async () => {

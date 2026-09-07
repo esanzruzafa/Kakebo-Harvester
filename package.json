@@ -45,7 +45,7 @@
   "dependencies": {
     "better-sqlite3": "^12.2.0",
     "dotenv": "^17.2.1",
-    "fastify": "^5.4.0",
+    "fastify": "^5.12.3",
     "jose": "^6.0.12",
     "pino": "^9.7.0",
     "read-excel-file": "^9.3.4",
@@ -65,7 +65,10 @@
     "vitest": "^3.2.4"
   },
   "overrides": {
-    "js-yaml": "4.3.1"
+    "js-yaml": "4.3.1",
+    "@xmldom/xmldom": "0.8.15",
+    "fast-uri@^3.0.0": "3.1.7",
+    "fast-uri@^4.0.0": "4.1.4"
   },
   "build": {
     "appId": "com.kakeboharvester.desktop",

@@ -58,18 +58,45 @@ const compatibleProviderDatesSql = `
     )
   )`;
 
+const compatibleStatusSql = `
+  AND (status IS @status OR status = 'unknown' OR @status = 'unknown')`;
+
+const compatibleCounterpartySql = `
+  AND (merchant_name IS @merchant_name OR merchant_name IS NULL OR @merchant_name IS NULL)
+  AND (creditor_name IS @creditor_name OR creditor_name IS NULL OR @creditor_name IS NULL)
+  AND (debtor_name IS @debtor_name OR debtor_name IS NULL OR @debtor_name IS NULL)
+  AND (
+    counterparty_iban_masked IS @counterparty_iban_masked
+    OR counterparty_iban_masked IS NULL
+    OR @counterparty_iban_masked IS NULL
+  )`;
+
 const updateSql = `
   UPDATE transactions SET
     movement_key = CASE
       WHEN @preserve_movement_key = 1 THEN movement_key
       ELSE @movement_key
     END,
-    reconciliation_key = @reconciliation_key,
+    reconciliation_key = CASE
+      WHEN @merchant_name IS NULL
+        AND @creditor_name IS NULL
+        AND @debtor_name IS NULL
+        AND @counterparty_iban_masked IS NULL
+        AND (
+          merchant_name IS NOT NULL
+          OR creditor_name IS NOT NULL
+          OR debtor_name IS NOT NULL
+          OR counterparty_iban_masked IS NOT NULL
+        )
+      THEN reconciliation_key
+      ELSE @reconciliation_key
+    END,
     provider_transaction_id = COALESCE(@provider_transaction_id, provider_transaction_id),
     entry_reference = COALESCE(@entry_reference, entry_reference),
     fallback_occurrence = @fallback_occurrence,
     status = CASE
-      WHEN status = 'booked' AND @status = 'pending' THEN status
+      WHEN @status = 'unknown' AND status <> 'unknown' THEN status
+      WHEN status = 'booked' AND @status <> 'booked' THEN status
       ELSE @status
     END,
     booking_date = COALESCE(@booking_date, booking_date),
@@ -80,10 +107,13 @@ const updateSql = `
     direction = @direction,
     description_raw = @description_raw,
     description_normalized = @description_normalized,
-    merchant_name = @merchant_name,
-    creditor_name = @creditor_name,
-    debtor_name = @debtor_name,
-    counterparty_iban_masked = @counterparty_iban_masked,
+    merchant_name = COALESCE(@merchant_name, merchant_name),
+    creditor_name = COALESCE(@creditor_name, creditor_name),
+    debtor_name = COALESCE(@debtor_name, debtor_name),
+    counterparty_iban_masked = COALESCE(
+      @counterparty_iban_masked,
+      counterparty_iban_masked
+    ),
     bank_transaction_code = @bank_transaction_code,
     merchant_category_code = @merchant_category_code,
     balance_after = @balance_after,
@@ -136,15 +166,12 @@ export class TransactionRepository {
                  fallback_occurrence IS @fallback_occurrence
                  OR (fallback_occurrence IS NULL AND @fallback_occurrence = 1)
                )
-               AND status = @status
+               ${compatibleStatusSql}
                ${compatibleProviderDatesSql}
                AND amount = @amount
                AND currency = @currency
                AND description_normalized IS @description_normalized
-               AND merchant_name IS @merchant_name
-               AND creditor_name IS @creditor_name
-               AND debtor_name IS @debtor_name
-               AND counterparty_iban_masked IS @counterparty_iban_masked
+               ${compatibleCounterpartySql}
              )
              OR (
                @match_existing_fallback = 1
@@ -152,15 +179,12 @@ export class TransactionRepository {
                AND entry_reference IS NULL
                AND provider_transaction_id IS NULL
                AND fallback_occurrence IS @fallback_occurrence
-               AND status = @status
+               ${compatibleStatusSql}
                ${compatibleProviderDatesSql}
                AND amount = @amount
                AND currency = @currency
                AND description_normalized IS @description_normalized
-               AND merchant_name IS @merchant_name
-               AND creditor_name IS @creditor_name
-               AND debtor_name IS @debtor_name
-               AND counterparty_iban_masked IS @counterparty_iban_masked
+               ${compatibleCounterpartySql}
              )
            )
          ORDER BY reviewed DESC, first_seen_at, id`
@@ -210,15 +234,12 @@ export class TransactionRepository {
            AND provider = @provider
            AND environment = @environment
            AND bank_connection_id = @bank_connection_id
-           AND status = @status
+           ${compatibleStatusSql}
            ${compatibleProviderDatesSql}
            AND amount = @amount
            AND currency = @currency
            AND description_normalized IS @description_normalized
-           AND merchant_name IS @merchant_name
-           AND creditor_name IS @creditor_name
-           AND debtor_name IS @debtor_name
-           AND counterparty_iban_masked IS @counterparty_iban_masked
+           ${compatibleCounterpartySql}
          ORDER BY COALESCE(fallback_occurrence, 1), first_seen_at, id`
       )
       .all(fallbackIdentity) as Array<{
@@ -397,10 +418,14 @@ export class TransactionRepository {
                  amount = ?
                  AND currency = ?
                  AND description_normalized IS ?
-                 AND merchant_name IS ?
-                 AND creditor_name IS ?
-                 AND debtor_name IS ?
-                 AND counterparty_iban_masked IS ?
+                 AND (merchant_name IS ? OR merchant_name IS NULL OR ? IS NULL)
+                 AND (creditor_name IS ? OR creditor_name IS NULL OR ? IS NULL)
+                 AND (debtor_name IS ? OR debtor_name IS NULL OR ? IS NULL)
+                 AND (
+                   counterparty_iban_masked IS ?
+                   OR counterparty_iban_masked IS NULL
+                   OR ? IS NULL
+                 )
                )
              )
              AND ABS(
@@ -420,8 +445,12 @@ export class TransactionRepository {
           transaction.currency,
           transaction.description_normalized,
           transaction.merchant_name,
+          transaction.merchant_name,
+          transaction.creditor_name,
           transaction.creditor_name,
           transaction.debtor_name,
+          transaction.debtor_name,
+          transaction.counterparty_iban_masked,
           transaction.counterparty_iban_masked,
           reconciliationDate,
           this.pendingReconciliationWindowDays,

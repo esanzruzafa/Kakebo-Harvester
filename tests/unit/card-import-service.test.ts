@@ -343,6 +343,31 @@ describe("CardImportService", () => {
     database.close();
   });
 
+  it("rejects a single-separator amount when the profile decimal separator is automatic", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-ambiguous-amount-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const [defaultProfile] = createDefaultCardImportProfiles();
+    if (!defaultProfile) throw new Error("The default card profile is missing.");
+    const profile = { ...defaultProfile, decimalSeparator: "auto" as const };
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save([profile]);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const statementPath = join(root, "ambiguous-amount.xlsx");
+    await writeXlsxFile(
+      workbookRows([["20/07/2026", "Hotel", "21/07/2026", "1,234"]])
+    ).toFile(statementPath);
+
+    try {
+      await expect(
+        new CardImportService(config, database).import({
+          files: [{ path: statementPath, profileId: profile.id }]
+        })
+      ).rejects.toThrow(/ambiguous/i);
+    } finally {
+      database.close();
+    }
+  });
+
   it("keeps an ambiguous identical purchase from a separate statement", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-card-identical-statements-"));
     const config = testConfig(root);

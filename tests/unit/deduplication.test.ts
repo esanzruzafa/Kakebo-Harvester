@@ -491,6 +491,122 @@ describe("transaction idempotency", () => {
     database.close();
   });
 
+  it("upgrades an id-less unknown status to booked without duplicating the movement", () => {
+    const database = createDatabase(":memory:");
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', ?, 1, ?, ?)`
+      )
+      .run(createId(), now, now);
+    const repository = new TransactionRepository(database);
+
+    expect(
+      repository.upsert(
+        transaction({
+          movement_key: "unknown-key",
+          fallback_occurrence: 1,
+          status: "unknown"
+        })
+      )
+    ).toBe("inserted");
+    expect(
+      repository.upsert(
+        transaction({
+          movement_key: "booked-key",
+          fallback_occurrence: 1,
+          status: "booked",
+          raw_fingerprint: "booked-observation"
+        })
+      )
+    ).toBe("updated");
+    expect(
+      repository.upsert(
+        transaction({
+          movement_key: "unknown-key",
+          fallback_occurrence: 1,
+          status: "unknown",
+          raw_fingerprint: "unknown-observation"
+        })
+      )
+    ).toBe("updated");
+    expect(
+      database.prepare("SELECT COUNT(*) AS count, status FROM transactions").get()
+    ).toEqual({ count: 1, status: "booked" });
+    database.close();
+  });
+
+  it("reconciles a pending movement when booked data enriches its counterparty", () => {
+    const database = createDatabase(":memory:");
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', ?, 1, ?, ?)`
+      )
+      .run(createId(), now, now);
+    const repository = new TransactionRepository(database);
+
+    expect(
+      repository.upsert(
+        transaction({
+          movement_key: "pending-without-counterparty",
+          fallback_occurrence: 1,
+          merchant_name: null,
+          creditor_name: null,
+          counterparty_iban_masked: null
+        })
+      )
+    ).toBe("inserted");
+    expect(
+      repository.upsert(
+        transaction({
+          movement_key: "booked-with-counterparty",
+          reconciliation_key: "enriched-counterparty",
+          fallback_occurrence: 1,
+          status: "booked",
+          merchant_name: "Demo",
+          creditor_name: "Demo",
+          raw_fingerprint: "booked-observation"
+        })
+      )
+    ).toBe("reconciled");
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) AS count, status, merchant_name, creditor_name FROM transactions"
+        )
+        .get()
+    ).toEqual({
+      count: 1,
+      status: "booked",
+      merchant_name: "Demo",
+      creditor_name: "Demo"
+    });
+    database.close();
+  });
+
   it("preserves the first import timestamp when a movement is observed again", () => {
     const database = createDatabase(":memory:");
     const now = new Date().toISOString();

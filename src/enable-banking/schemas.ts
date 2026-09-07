@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeDecimal } from "../transactions/transaction-mapper.js";
 
 export const aspspSchema = z
   .object({
@@ -95,7 +96,17 @@ export const balancesResponseSchema = z
           name: z.string().optional(),
           balance_amount: z.object({
             currency: z.string(),
-            amount: z.string()
+            amount: z.string().transform((value, context) => {
+              try {
+                return normalizeDecimal(value).amount;
+              } catch {
+                context.addIssue({
+                  code: "custom",
+                  message: "Balance amount must be a valid decimal."
+                });
+                return z.NEVER;
+              }
+            })
           }),
           balance_type: z.string().optional(),
           last_change_date_time: z.string().nullish(),
