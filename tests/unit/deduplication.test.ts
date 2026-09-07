@@ -192,6 +192,56 @@ describe("transaction idempotency", () => {
     database.close();
   });
 
+  it("does not merge zero-value fallback movements with opposite directions", () => {
+    const database = createDatabase(":memory:");
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', ?, 1, ?, ?)`
+      )
+      .run(createId(), now, now);
+    const repository = new TransactionRepository(database);
+
+    expect(
+      repository.upsert(
+        transaction({
+          movement_key: "zero-expense",
+          fallback_occurrence: 1,
+          status: "booked",
+          amount: "0",
+          direction: "expense"
+        })
+      )
+    ).toBe("inserted");
+    expect(
+      repository.upsert(
+        transaction({
+          movement_key: "zero-income",
+          fallback_occurrence: 1,
+          status: "booked",
+          amount: "0",
+          direction: "income",
+          raw_fingerprint: "zero-income"
+        })
+      )
+    ).toBe("inserted");
+    expect(database.prepare("SELECT COUNT(*) AS count FROM transactions").get()).toEqual({
+      count: 2
+    });
+    database.close();
+  });
+
   it("does not merge id-less movements with unrelated counterparty details", () => {
     const database = createDatabase(":memory:");
     const now = new Date().toISOString();
