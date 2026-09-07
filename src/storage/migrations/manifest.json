@@ -24,5 +24,9 @@
   {
     "version": 11,
     "filename": "011_verified_account_identification_hashes.sql"
+  },
+  {
+    "version": 12,
+    "filename": "012_counterparty_identification_hash.sql"
   }
 ]

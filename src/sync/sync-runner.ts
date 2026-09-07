@@ -9,6 +9,8 @@ import {
 } from "../errors.js";
 import type { SqliteDatabase } from "../storage/database.js";
 import { DesktopRunRepository } from "../storage/repositories/desktop-run-repository.js";
+import { AccountRepository } from "../storage/repositories/account-repository.js";
+import { AccountsConfigStore } from "../settings/accounts-config-store.js";
 import { createId } from "../utils/crypto.js";
 import { assertIsoDate } from "../utils/dates.js";
 import { safeMessage } from "../utils/text.js";
@@ -167,7 +169,7 @@ export class SyncRunner {
   private readonly exporter: CsvExporter;
 
   public constructor(
-    config: AppConfig,
+    private readonly config: AppConfig,
     private readonly database: SqliteDatabase,
     private readonly sync: SyncService
   ) {
@@ -183,6 +185,9 @@ export class SyncRunner {
   ): Promise<void> {
     if (step === "accounts") {
       result.accounts = await this.sync.syncAccounts(context);
+      await new AccountsConfigStore(this.config.accountsConfigPath).save(
+        new AccountRepository(this.database).listEditable()
+      );
     }
     if (step === "balances") {
       result.balances = await this.sync.syncBalances(desktopRunId, context);

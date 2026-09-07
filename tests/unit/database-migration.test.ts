@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { platform } from "node:os";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -17,6 +18,18 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it.runIf(platform() !== "win32")(
+    "restricts newly created SQLite files to their owner on POSIX",
+    async () => {
+      root = await mkdtemp(join(tmpdir(), "kakebo-private-sqlite-"));
+      const config = testConfig(root);
+      const database = createDatabase(config.databasePath);
+      database.close();
+
+      expect((await stat(config.databasePath)).mode & 0o777).toBe(0o600);
+    }
+  );
+
   it("trusts only the canonical account hash when upgrading legacy aliases", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-verified-account-hashes-"));
     const config = testConfig(root);

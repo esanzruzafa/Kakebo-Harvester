@@ -10,6 +10,7 @@ export interface MovementKeyInput {
   transactionDate?: string | null | undefined;
   amount: string;
   currency: string;
+  direction: string;
   descriptionNormalized: string;
   counterparty: string;
   fallbackOccurrence?: number | null | undefined;
@@ -30,6 +31,7 @@ export function createMovementKey(input: MovementKeyInput): string {
     input.valueDate ?? "",
     input.amount,
     input.currency,
+    input.direction,
     input.descriptionNormalized,
     input.counterparty
   ];
@@ -49,6 +51,7 @@ export function createReconciliationKey(input: MovementKeyInput): string {
       input.accountStableKey,
       input.amount,
       input.currency,
+      input.direction,
       input.descriptionNormalized,
       input.counterparty
     ].join("|")

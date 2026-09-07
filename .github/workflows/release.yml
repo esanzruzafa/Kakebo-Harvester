@@ -88,18 +88,18 @@ jobs:
             Set-Content -LiteralPath "$($file.FullName).sha256" -Value "$hash  $($file.Name)" -Encoding ascii
           }
 
-      - name: Create or update GitHub Release
+      - name: Create GitHub Release
         shell: pwsh
         run: |
           gh release view $env:RELEASE_TAG
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $env:RELEASE_TAG --verify-tag --generate-notes --title "Kakebo Harvester $env:RELEASE_TAG"
+          if ($LASTEXITCODE -eq 0) {
+            throw "A release already exists for $env:RELEASE_TAG; refusing to overwrite it. Publish a new version tag instead."
           }
+          gh release create $env:RELEASE_TAG --verify-tag --generate-notes --title "Kakebo Harvester $env:RELEASE_TAG"
           $version = node -p "require('./package.json').version"
           $baseName = "Kakebo-Harvester-$version-x64"
           $executable = "release/portable/$baseName.exe"
           $completePackage = "release/portable/$baseName-complete-package.zip"
           gh release upload $env:RELEASE_TAG `
             $executable "$executable.sha256" `
-            $completePackage "$completePackage.sha256" `
-            --clobber
+            $completePackage "$completePackage.sha256"

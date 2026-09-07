@@ -78,17 +78,24 @@ const compatibleCounterpartySql = `
     OR @counterparty_iban_masked IS NULL
   )
   AND (
+    counterparty_identification_hash IS @counterparty_identification_hash
+    OR counterparty_identification_hash IS NULL
+    OR @counterparty_identification_hash IS NULL
+  )
+  AND (
     (
       merchant_name IS NULL
       AND creditor_name IS NULL
       AND debtor_name IS NULL
       AND counterparty_iban_masked IS NULL
+      AND counterparty_identification_hash IS NULL
     )
     OR (
       @merchant_name IS NULL
       AND @creditor_name IS NULL
       AND @debtor_name IS NULL
       AND @counterparty_iban_masked IS NULL
+      AND @counterparty_identification_hash IS NULL
     )
     OR (merchant_name IS NOT NULL AND merchant_name IS @merchant_name)
     OR (creditor_name IS NOT NULL AND creditor_name IS @creditor_name)
@@ -96,6 +103,10 @@ const compatibleCounterpartySql = `
     OR (
       counterparty_iban_masked IS NOT NULL
       AND counterparty_iban_masked IS @counterparty_iban_masked
+    )
+    OR (
+      counterparty_identification_hash IS NOT NULL
+      AND counterparty_identification_hash IS @counterparty_identification_hash
     )
   )`;
 
@@ -111,11 +122,13 @@ const updateSql = `
         AND @creditor_name IS NULL
         AND @debtor_name IS NULL
         AND @counterparty_iban_masked IS NULL
+        AND @counterparty_identification_hash IS NULL
         AND (
           merchant_name IS NOT NULL
           OR creditor_name IS NOT NULL
           OR debtor_name IS NOT NULL
           OR counterparty_iban_masked IS NOT NULL
+          OR counterparty_identification_hash IS NOT NULL
         )
       )
       OR (
@@ -155,6 +168,10 @@ const updateSql = `
     counterparty_iban_masked = COALESCE(
       @counterparty_iban_masked,
       counterparty_iban_masked
+    ),
+    counterparty_identification_hash = COALESCE(
+      @counterparty_identification_hash,
+      counterparty_identification_hash
     ),
     bank_transaction_code = @bank_transaction_code,
     merchant_category_code = @merchant_category_code,
@@ -212,6 +229,7 @@ export class TransactionRepository {
                ${compatibleProviderDatesSql}
                AND amount = @amount
                AND currency = @currency
+               AND direction = @direction
                ${compatibleDescriptionSql}
                ${compatibleCounterpartySql}
              )
@@ -225,6 +243,7 @@ export class TransactionRepository {
                ${compatibleProviderDatesSql}
                AND amount = @amount
                AND currency = @currency
+               AND direction = @direction
                ${compatibleDescriptionSql}
                ${compatibleCounterpartySql}
              )
@@ -280,6 +299,7 @@ export class TransactionRepository {
            ${compatibleProviderDatesSql}
            AND amount = @amount
            AND currency = @currency
+           AND direction = @direction
            ${compatibleDescriptionSql}
            ${compatibleCounterpartySql}
          ORDER BY COALESCE(fallback_occurrence, 1), first_seen_at, id`
@@ -459,10 +479,12 @@ export class TransactionRepository {
                OR (
                  amount = @amount
                  AND currency = @currency
+                 AND direction = @direction
                  ${compatibleDescriptionSql}
                  ${compatibleCounterpartySql}
                )
              )
+             ${compatibleCounterpartySql}
              AND ABS(
                julianday(COALESCE(booking_date, value_date, substr(transaction_datetime, 1, 10)))
                - julianday(@reconciliation_date)
@@ -497,7 +519,7 @@ export class TransactionRepository {
            fallback_occurrence,
            status, booking_date, value_date, transaction_datetime, amount, currency,
            direction, description_raw, description_normalized, merchant_name,
-           creditor_name, debtor_name, counterparty_iban_masked, bank_transaction_code,
+           creditor_name, debtor_name, counterparty_iban_masked, counterparty_identification_hash, bank_transaction_code,
            merchant_category_code, balance_after, category_auto, subcategory_auto,
            reviewed, first_seen_at, last_seen_at, imported_at, source_raw_file,
            raw_fingerprint
@@ -507,7 +529,7 @@ export class TransactionRepository {
            @fallback_occurrence,
            @status, @booking_date, @value_date, @transaction_datetime, @amount, @currency,
            @direction, @description_raw, @description_normalized, @merchant_name,
-           @creditor_name, @debtor_name, @counterparty_iban_masked, @bank_transaction_code,
+           @creditor_name, @debtor_name, @counterparty_iban_masked, @counterparty_identification_hash, @bank_transaction_code,
            @merchant_category_code, @balance_after, @category_auto, @subcategory_auto,
            0, @first_seen_at, @last_seen_at, @imported_at, @source_raw_file,
            @raw_fingerprint

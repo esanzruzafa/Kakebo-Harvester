@@ -170,4 +170,83 @@ describe("financial amount convention", () => {
     expect(offset.transaction_datetime).toBe("2026-08-21T08:00:00.000Z");
     expect(offset.movement_key).toBe(utc.movement_key);
   });
+
+  it("retains the provider-local calendar date when a timestamp crosses UTC midnight", () => {
+    const account = {
+      id: "account",
+      bank_connection_id: "connection",
+      identification_hash: "stable-account",
+      provider_account_id: "provider-account"
+    } as StoredAccount;
+    const mapped = mapTransaction({
+      transaction: {
+        transaction_amount: { amount: "10.00", currency: "EUR" },
+        status: "BOOK",
+        transaction_date: "2026-08-21T00:30:00+02:00",
+        remittance_information: "Local-calendar movement"
+      },
+      account,
+      environment: "sandbox",
+      rawPath: null
+    });
+
+    expect(mapped).toMatchObject({
+      booking_date: "2026-08-21",
+      transaction_datetime: "2026-08-20T22:30:00.000Z"
+    });
+  });
+
+  it("does not give zero-value credits and debits the same fallback identity", () => {
+    const account = {
+      id: "account",
+      bank_connection_id: "connection",
+      identification_hash: "stable-account",
+      provider_account_id: "provider-account"
+    } as StoredAccount;
+    const mapZero = (creditDebitIndicator: "DBIT" | "CRDT") =>
+      mapTransaction({
+        transaction: {
+          transaction_amount: { amount: "0", currency: "EUR" },
+          credit_debit_indicator: creditDebitIndicator,
+          booking_date: "2026-08-21",
+          status: "BOOK",
+          remittance_information: "Zero movement"
+        },
+        account,
+        environment: "sandbox",
+        rawPath: null
+      });
+
+    expect(mapZero("DBIT").movement_key).not.toBe(mapZero("CRDT").movement_key);
+  });
+
+  it("keeps a non-reversible full counterparty identifier for identity matching", () => {
+    const account = {
+      id: "account",
+      bank_connection_id: "connection",
+      identification_hash: "stable-account",
+      provider_account_id: "provider-account"
+    } as StoredAccount;
+    const mapCounterparty = (iban: string) =>
+      mapTransaction({
+        transaction: {
+          transaction_amount: { amount: "10", currency: "EUR" },
+          credit_debit_indicator: "DBIT",
+          booking_date: "2026-08-21",
+          status: "BOOK",
+          creditor_account: { iban },
+          remittance_information: "Counterparty transfer"
+        },
+        account,
+        environment: "sandbox",
+        rawPath: null
+      });
+
+    const first = mapCounterparty("ES9121000418450200051332");
+    const second = mapCounterparty("ES4221000418450200051332");
+    expect(first.counterparty_identification_hash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(first.counterparty_identification_hash).not.toBe(
+      second.counterparty_identification_hash
+    );
+  });
 });

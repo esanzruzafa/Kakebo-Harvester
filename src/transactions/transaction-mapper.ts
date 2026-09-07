@@ -29,6 +29,7 @@ export interface NormalizedTransaction {
   creditor_name: string | null;
   debtor_name: string | null;
   counterparty_iban_masked: string | null;
+  counterparty_identification_hash: string | null;
   bank_transaction_code: string | null;
   merchant_category_code: string | null;
   balance_after: string | null;
@@ -79,7 +80,7 @@ function validProviderDate(value: string | null | undefined): string | null {
 
 function validProviderDateTime(
   value: string | null | undefined
-): string | null {
+): { value: string; calendarDate: string } | null {
   if (!value) return null;
   const trimmed = value.trim();
   const calendarDate = trimmed.slice(0, 10);
@@ -88,7 +89,7 @@ function validProviderDateTime(
   } catch {
     return null;
   }
-  if (trimmed === calendarDate) return trimmed;
+  if (trimmed === calendarDate) return { value: trimmed, calendarDate };
   if (
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(
       trimmed
@@ -97,7 +98,9 @@ function validProviderDateTime(
     return null;
   }
   const instant = new Date(trimmed);
-  return Number.isNaN(instant.getTime()) ? null : instant.toISOString();
+  return Number.isNaN(instant.getTime())
+    ? null
+    : { value: instant.toISOString(), calendarDate };
 }
 
 function accountIdentifier(
@@ -149,9 +152,10 @@ export function mapTransaction(input: {
   const accountStableKey = input.account.identification_hash ?? input.account.id;
   const entryReference = transaction.entry_reference?.trim() || null;
   const providerTransactionId = transaction.transaction_id?.trim() || null;
-  const bookingDate = validProviderDate(transaction.booking_date);
-  const valueDate = validProviderDate(transaction.value_date);
   const transactionDate = validProviderDateTime(transaction.transaction_date);
+  const bookingDate =
+    validProviderDate(transaction.booking_date) ?? transactionDate?.calendarDate ?? null;
+  const valueDate = validProviderDate(transaction.value_date);
   const keyInput = {
     accountStableKey,
     status,
@@ -159,9 +163,10 @@ export function mapTransaction(input: {
     providerTransactionId,
     bookingDate,
     valueDate,
-    transactionDate,
+    transactionDate: transactionDate?.value ?? null,
     amount: money.amount,
     currency: transaction.transaction_amount.currency,
+    direction: money.direction,
     descriptionNormalized,
     counterparty,
     fallbackOccurrence: input.fallbackOccurrence
@@ -187,7 +192,7 @@ export function mapTransaction(input: {
     status,
     booking_date: bookingDate,
     value_date: valueDate,
-    transaction_datetime: transactionDate,
+    transaction_datetime: transactionDate?.value ?? null,
     amount: money.amount,
     currency: transaction.transaction_amount.currency,
     direction: money.direction,
@@ -197,6 +202,9 @@ export function mapTransaction(input: {
     creditor_name: transaction.creditor?.name ?? null,
     debtor_name: transaction.debtor?.name ?? null,
     counterparty_iban_masked: maskIdentifier(counterpartyAccount),
+    counterparty_identification_hash: counterpartyAccount
+      ? sha256(`counterparty-identifier|${counterpartyAccount}`)
+      : null,
     bank_transaction_code: bankCode || null,
     merchant_category_code: transaction.merchant_category_code ?? null,
     balance_after: transaction.balance_after_transaction?.amount ?? null,

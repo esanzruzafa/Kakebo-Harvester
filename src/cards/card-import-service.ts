@@ -356,6 +356,7 @@ function normalizedTransaction(
     valueDate: row.valueDate,
     amount: row.amount,
     currency: row.profile.currency,
+    direction: row.direction,
     descriptionNormalized,
     counterparty: descriptionNormalized
   };
@@ -382,6 +383,7 @@ function normalizedTransaction(
     creditor_name: row.direction === "expense" ? row.description : null,
     debtor_name: row.direction === "income" ? row.description : null,
     counterparty_iban_masked: null,
+    counterparty_identification_hash: null,
     bank_transaction_code: null,
     merchant_category_code: null,
     balance_after: null,

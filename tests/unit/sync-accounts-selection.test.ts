@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +24,43 @@ afterEach(async () => {
 });
 
 describe("account detail synchronization selection", () => {
+  it("refreshes the editable accounts snapshot after the accounts step", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-accounts-snapshot-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, name, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider-account', 'Fresh account', 1, ?, ?)`
+      )
+      .run(now, now);
+    await writeFile(config.accountsConfigPath, '{"accounts":[{"account":"stale"}]}');
+
+    await new SyncRunner(config, database, {
+      syncAccounts: () => Promise.resolve(1)
+    } as unknown as SyncService).run({
+      steps: ["accounts"],
+      dateFrom: "2026-08-01",
+      dateTo: "2026-08-20"
+    });
+
+    await expect(readFile(config.accountsConfigPath, "utf8")).resolves.toContain(
+      "Fresh account"
+    );
+    database.close();
+  });
+
   it("skips only a connection whose required PSU header is unavailable", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-psu-connection-isolation-"));
     const config = testConfig(root);

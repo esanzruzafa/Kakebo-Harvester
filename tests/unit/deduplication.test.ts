@@ -28,6 +28,7 @@ function transaction(overrides: Partial<NormalizedTransaction> = {}): Normalized
     creditor_name: "Demo",
     debtor_name: null,
     counterparty_iban_masked: null,
+    counterparty_identification_hash: null,
     bank_transaction_code: null,
     merchant_category_code: null,
     balance_after: null,
@@ -95,6 +96,99 @@ describe("transaction idempotency", () => {
     expect(
       database.prepare("SELECT COUNT(*) AS count FROM transactions").get()
     ).toEqual({ count: 2 });
+    database.close();
+  });
+
+  it("does not merge fallback movements whose full counterparties only share a mask", () => {
+    const database = createDatabase(":memory:");
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', ?, 1, ?, ?)`
+      )
+      .run(createId(), now, now);
+    const repository = new TransactionRepository(database);
+    const first = {
+      ...transaction({
+        movement_key: "first-counterparty",
+        fallback_occurrence: 1,
+        counterparty_iban_masked: "ES****************32"
+      }),
+      counterparty_identification_hash: "a".repeat(64)
+    } as NormalizedTransaction;
+    const second = {
+      ...transaction({
+        movement_key: "second-counterparty",
+        fallback_occurrence: 1,
+        counterparty_iban_masked: "ES****************32",
+        raw_fingerprint: "second-counterparty"
+      }),
+      counterparty_identification_hash: "b".repeat(64)
+    } as NormalizedTransaction;
+
+    expect(repository.upsert(first)).toBe("inserted");
+    expect(repository.upsert(second)).toBe("inserted");
+    expect(database.prepare("SELECT COUNT(*) AS count FROM transactions").get()).toEqual({
+      count: 2
+    });
+    database.close();
+  });
+
+  it("does not reconcile pending and booked movements with different full counterparties", () => {
+    const database = createDatabase(":memory:");
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', ?, 1, ?, ?)`
+      )
+      .run(createId(), now, now);
+    const repository = new TransactionRepository(database);
+    const pending = {
+      ...transaction({
+        movement_key: "pending-counterparty",
+        reconciliation_key: "same-short-key",
+        counterparty_iban_masked: "ES****************32"
+      }),
+      counterparty_identification_hash: "a".repeat(64)
+    } as NormalizedTransaction;
+    const booked = {
+      ...transaction({
+        movement_key: "booked-counterparty",
+        reconciliation_key: "same-short-key",
+        status: "booked",
+        counterparty_iban_masked: "ES****************32",
+        raw_fingerprint: "booked-counterparty"
+      }),
+      counterparty_identification_hash: "b".repeat(64)
+    } as NormalizedTransaction;
+
+    expect(repository.upsert(pending)).toBe("inserted");
+    expect(repository.upsert(booked)).toBe("inserted");
+    expect(database.prepare("SELECT COUNT(*) AS count FROM transactions").get()).toEqual({
+      count: 2
+    });
     database.close();
   });
 
