@@ -61,6 +61,13 @@ const compatibleProviderDatesSql = `
 const compatibleStatusSql = `
   AND (status IS @status OR status = 'unknown' OR @status = 'unknown')`;
 
+const compatibleDescriptionSql = `
+  AND (
+    description_normalized IS @description_normalized
+    OR description_normalized = ''
+    OR @description_normalized = ''
+  )`;
+
 const compatibleCounterpartySql = `
   AND (merchant_name IS @merchant_name OR merchant_name IS NULL OR @merchant_name IS NULL)
   AND (creditor_name IS @creditor_name OR creditor_name IS NULL OR @creditor_name IS NULL)
@@ -69,6 +76,27 @@ const compatibleCounterpartySql = `
     counterparty_iban_masked IS @counterparty_iban_masked
     OR counterparty_iban_masked IS NULL
     OR @counterparty_iban_masked IS NULL
+  )
+  AND (
+    (
+      merchant_name IS NULL
+      AND creditor_name IS NULL
+      AND debtor_name IS NULL
+      AND counterparty_iban_masked IS NULL
+    )
+    OR (
+      @merchant_name IS NULL
+      AND @creditor_name IS NULL
+      AND @debtor_name IS NULL
+      AND @counterparty_iban_masked IS NULL
+    )
+    OR (merchant_name IS NOT NULL AND merchant_name IS @merchant_name)
+    OR (creditor_name IS NOT NULL AND creditor_name IS @creditor_name)
+    OR (debtor_name IS NOT NULL AND debtor_name IS @debtor_name)
+    OR (
+      counterparty_iban_masked IS NOT NULL
+      AND counterparty_iban_masked IS @counterparty_iban_masked
+    )
   )`;
 
 const updateSql = `
@@ -78,7 +106,8 @@ const updateSql = `
       ELSE @movement_key
     END,
     reconciliation_key = CASE
-      WHEN @merchant_name IS NULL
+      WHEN (
+        @merchant_name IS NULL
         AND @creditor_name IS NULL
         AND @debtor_name IS NULL
         AND @counterparty_iban_masked IS NULL
@@ -88,6 +117,11 @@ const updateSql = `
           OR debtor_name IS NOT NULL
           OR counterparty_iban_masked IS NOT NULL
         )
+      )
+      OR (
+        @description_normalized = ''
+        AND description_normalized <> ''
+      )
       THEN reconciliation_key
       ELSE @reconciliation_key
     END,
@@ -105,8 +139,16 @@ const updateSql = `
     amount = @amount,
     currency = @currency,
     direction = @direction,
-    description_raw = @description_raw,
-    description_normalized = @description_normalized,
+    description_raw = CASE
+      WHEN @description_normalized = '' AND description_normalized <> ''
+      THEN description_raw
+      ELSE @description_raw
+    END,
+    description_normalized = CASE
+      WHEN @description_normalized = '' AND description_normalized <> ''
+      THEN description_normalized
+      ELSE @description_normalized
+    END,
     merchant_name = COALESCE(@merchant_name, merchant_name),
     creditor_name = COALESCE(@creditor_name, creditor_name),
     debtor_name = COALESCE(@debtor_name, debtor_name),
@@ -170,7 +212,7 @@ export class TransactionRepository {
                ${compatibleProviderDatesSql}
                AND amount = @amount
                AND currency = @currency
-               AND description_normalized IS @description_normalized
+               ${compatibleDescriptionSql}
                ${compatibleCounterpartySql}
              )
              OR (
@@ -183,7 +225,7 @@ export class TransactionRepository {
                ${compatibleProviderDatesSql}
                AND amount = @amount
                AND currency = @currency
-               AND description_normalized IS @description_normalized
+               ${compatibleDescriptionSql}
                ${compatibleCounterpartySql}
              )
            )
@@ -238,7 +280,7 @@ export class TransactionRepository {
            ${compatibleProviderDatesSql}
            AND amount = @amount
            AND currency = @currency
-           AND description_normalized IS @description_normalized
+           ${compatibleDescriptionSql}
            ${compatibleCounterpartySql}
          ORDER BY COALESCE(fallback_occurrence, 1), first_seen_at, id`
       )
@@ -411,56 +453,36 @@ export class TransactionRepository {
       const pending = this.database
         .prepare(
           `SELECT id FROM transactions
-           WHERE account_id = ? AND status = 'pending'
+           WHERE account_id = @account_id AND status = 'pending'
              AND (
-               reconciliation_key = ?
+               reconciliation_key = @reconciliation_key
                OR (
-                 amount = ?
-                 AND currency = ?
-                 AND description_normalized IS ?
-                 AND (merchant_name IS ? OR merchant_name IS NULL OR ? IS NULL)
-                 AND (creditor_name IS ? OR creditor_name IS NULL OR ? IS NULL)
-                 AND (debtor_name IS ? OR debtor_name IS NULL OR ? IS NULL)
-                 AND (
-                   counterparty_iban_masked IS ?
-                   OR counterparty_iban_masked IS NULL
-                   OR ? IS NULL
-                 )
+                 amount = @amount
+                 AND currency = @currency
+                 ${compatibleDescriptionSql}
+                 ${compatibleCounterpartySql}
                )
              )
              AND ABS(
                julianday(COALESCE(booking_date, value_date, substr(transaction_datetime, 1, 10)))
-               - julianday(?)
-             ) <= ?
+               - julianday(@reconciliation_date)
+             ) <= @pending_reconciliation_window_days
            ORDER BY ABS(
              julianday(COALESCE(booking_date, value_date, substr(transaction_datetime, 1, 10)))
-             - julianday(?)
+             - julianday(@reconciliation_date)
            ), first_seen_at DESC
            LIMIT 1`
         )
-        .get(
-          transaction.account_id,
-          transaction.reconciliation_key,
-          transaction.amount,
-          transaction.currency,
-          transaction.description_normalized,
-          transaction.merchant_name,
-          transaction.merchant_name,
-          transaction.creditor_name,
-          transaction.creditor_name,
-          transaction.debtor_name,
-          transaction.debtor_name,
-          transaction.counterparty_iban_masked,
-          transaction.counterparty_iban_masked,
-          reconciliationDate,
-          this.pendingReconciliationWindowDays,
-          reconciliationDate
-        ) as { id: string } | undefined;
+        .get({
+          ...transaction,
+          reconciliation_date: reconciliationDate,
+          pending_reconciliation_window_days: this.pendingReconciliationWindowDays
+        }) as { id: string } | undefined;
       if (pending) {
         this.database.prepare(updateSql).run({
           ...transaction,
           id: pending.id,
-          preserve_movement_key: 1,
+          preserve_movement_key: 0,
           last_seen_at: now
         });
         return "reconciled";

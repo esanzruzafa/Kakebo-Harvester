@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthorizationService } from "../../src/auth/authorization-service.js";
+import { StateStore } from "../../src/auth/state-store.js";
 import type { EnableBankingClient } from "../../src/enable-banking/client.js";
 import { InvalidStateError } from "../../src/errors.js";
 import { createDatabase } from "../../src/storage/database.js";
@@ -174,6 +175,39 @@ describe("bank reauthorization", () => {
     expect(
       database.prepare("SELECT COUNT(*) AS count FROM pending_authorizations").get()
     ).toEqual({ count: 0 });
+    database.close();
+  });
+
+  it("keeps a consumed but unexpired authorization connection during service startup", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-consumed-authorization-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('pending', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'PENDING_AUTHORIZATION', ?)`
+      )
+      .run(now);
+    const states = new StateStore(database);
+    states.save("callback-state", {
+      bankConnectionId: "pending",
+      bankName: "Demo",
+      redirectUrl: config.redirectUrl,
+      environment: config.appEnv,
+      purpose: "connect"
+    });
+    states.consume("callback-state");
+    const client = {} as EnableBankingClient;
+
+    new AuthorizationService(config, database, client);
+
+    expect(
+      database.prepare("SELECT id FROM bank_connections WHERE id = 'pending'").get()
+    ).toEqual({ id: "pending" });
     database.close();
   });
 

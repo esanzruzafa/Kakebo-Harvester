@@ -396,9 +396,13 @@ export class AccountRepository {
             `UPDATE accounts SET
                provider_account_id = ?,
                identification_hash = ?,
-               iban_masked = ?, currency = ?, name = ?, display_name = ?,
-               account_type = ?, product_type = ?, active = 1, last_seen_at = ?,
-               raw_response_path = ?, last_error_at = NULL, last_error_code = NULL,
+               iban_masked = COALESCE(?, iban_masked),
+               currency = COALESCE(?, currency), name = COALESCE(?, name),
+               display_name = COALESCE(?, display_name),
+               account_type = COALESCE(?, account_type),
+               product_type = COALESCE(?, product_type), active = 1, last_seen_at = ?,
+               raw_response_path = COALESCE(?, raw_response_path),
+               last_error_at = NULL, last_error_code = NULL,
                last_error_message_safe = NULL
              WHERE id = ?`
           )

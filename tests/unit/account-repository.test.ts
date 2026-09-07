@@ -95,6 +95,60 @@ describe("account synchronization eligibility", () => {
     database.close();
   });
 
+  it("retains optional account metadata when a later provider response is sparse", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-sparse-account-refresh-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    const repository = new AccountRepository(database);
+    const account = {
+      uid: "provider-account",
+      account_id: { iban: "ES0100000000000000000001" },
+      currency: "EUR",
+      name: "Current account",
+      details: "Current account details",
+      cash_account_type: "CACC",
+      product: "Cash account"
+    };
+    const id = repository.upsert("connection", account, "first.json");
+    repository.upsert(
+      "connection",
+      {
+        uid: account.uid,
+        account_id: account.account_id
+      },
+      "second.json"
+    );
+
+    expect(
+      database
+        .prepare(
+          `SELECT id, currency, name, display_name, account_type, product_type,
+                  raw_response_path
+           FROM accounts`
+        )
+        .get()
+    ).toEqual({
+      id,
+      currency: "EUR",
+      name: "Current account",
+      display_name: "Current account details",
+      account_type: "CACC",
+      product_type: "Cash account",
+      raw_response_path: "second.json"
+    });
+    database.close();
+  });
+
   it("reconciles plural identification hashes without losing account settings", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-account-hashes-"));
     const config = testConfig(root);

@@ -115,7 +115,6 @@ export class AuthorizationService {
            AND NOT EXISTS (
              SELECT 1 FROM pending_authorizations p
              WHERE p.bank_connection_id = c.id
-               AND p.consumed_at IS NULL
                AND p.expires_at > ?
            )`
       )

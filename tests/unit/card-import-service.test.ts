@@ -368,6 +368,31 @@ describe("CardImportService", () => {
     }
   });
 
+  it("rejects an ambiguous text date when the profile date format is automatic", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-ambiguous-date-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const [defaultProfile] = createDefaultCardImportProfiles();
+    if (!defaultProfile) throw new Error("The default card profile is missing.");
+    const profile = { ...defaultProfile, dateFormat: "auto" as const };
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save([profile]);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const statementPath = join(root, "ambiguous-date.xlsx");
+    await writeXlsxFile(
+      workbookRows([["03/04/2026", "Hotel", "03/04/2026", "-12,34"]])
+    ).toFile(statementPath);
+
+    try {
+      await expect(
+        new CardImportService(config, database).import({
+          files: [{ path: statementPath, profileId: profile.id }]
+        })
+      ).rejects.toThrow(/ambiguous date/i);
+    } finally {
+      database.close();
+    }
+  });
+
   it("keeps an ambiguous identical purchase from a separate statement", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-card-identical-statements-"));
     const config = testConfig(root);

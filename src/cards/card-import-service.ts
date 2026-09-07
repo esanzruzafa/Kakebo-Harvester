@@ -149,6 +149,11 @@ function parseDate(value: unknown, format: CardImportProfile["dateFormat"]): str
   const second = Number(separated[2]);
   let year = Number(separated[3]);
   if (year < 100) year += year >= 70 ? 1900 : 2000;
+  if (format === "auto" && first <= 12 && second <= 12) {
+    throw new Error(
+      `Ambiguous date "${text}". Configure the date format explicitly for this card profile.`
+    );
+  }
   const resolvedFormat =
     format === "auto"
       ? first > 12
