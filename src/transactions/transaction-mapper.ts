@@ -89,9 +89,15 @@ function validProviderDateTime(
     return null;
   }
   if (trimmed === calendarDate) return trimmed;
-  return /^\d{4}-\d{2}-\d{2}T/.test(trimmed) && !Number.isNaN(Date.parse(trimmed))
-    ? trimmed
-    : null;
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(
+      trimmed
+    )
+  ) {
+    return null;
+  }
+  const instant = new Date(trimmed);
+  return Number.isNaN(instant.getTime()) ? null : instant.toISOString();
 }
 
 function accountIdentifier(

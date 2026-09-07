@@ -20,12 +20,48 @@ function ibanIdentificationHash(digest: string): string {
 }
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   if (root) await rm(root, { recursive: true, force: true });
   root = undefined;
 });
 
 describe("bank reauthorization", () => {
+  it("starts the callback state lifetime after the authorization URL is ready", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-21T10:00:00.000Z"));
+    root = await mkdtemp(join(tmpdir(), "kakebo-authorization-state-ttl-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const client = {
+      listBanks: vi.fn().mockResolvedValue([
+        {
+          name: "Demo Bank",
+          country: "ES",
+          psu_types: ["personal"],
+          auth_methods: [],
+          maximum_consent_validity: 7_776_000
+        }
+      ]),
+      startAuthorization: vi.fn().mockImplementation(() => {
+        vi.setSystemTime(new Date("2026-08-21T10:10:00.000Z"));
+        return Promise.resolve({ url: "https://bank.example/authorize" });
+      })
+    } as unknown as EnableBankingClient;
+    const service = new AuthorizationService(config, database, client);
+
+    await service.connect({
+      bankSearch: "Demo Bank",
+      country: "ES",
+      psuType: "personal"
+    });
+
+    expect(
+      database.prepare("SELECT expires_at FROM pending_authorizations").get()
+    ).toEqual({ expires_at: "2026-08-21T10:25:00.000Z" });
+    database.close();
+  });
+
   it("rejects a callback created for a different runtime environment", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-callback-environment-"));
     const config = testConfig(root);

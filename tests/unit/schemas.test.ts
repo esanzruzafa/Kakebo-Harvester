@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   balancesResponseSchema,
   sessionResponseSchema,
-  startAuthorizationResponseSchema
+  startAuthorizationResponseSchema,
+  transactionsResponseSchema
 } from "../../src/enable-banking/schemas.js";
 
 describe("provider response schemas", () => {
@@ -79,10 +80,7 @@ describe("provider response schemas", () => {
     ).toBe("12.34");
   });
 
-  it("accepts nullable optional transaction fields", async () => {
-    const { transactionsResponseSchema } = await import(
-      "../../src/enable-banking/schemas.js"
-    );
+  it("accepts nullable optional transaction fields", () => {
     const result = transactionsResponseSchema.parse({
       transactions: [
         {
@@ -100,6 +98,27 @@ describe("provider response schemas", () => {
     });
 
     expect(result.transactions).toHaveLength(1);
+  });
+
+  it("normalizes transaction currency codes before transaction mapping", () => {
+    const result = transactionsResponseSchema.parse({
+      transactions: [
+        {
+          transaction_amount: { currency: " eur ", amount: "10.00" }
+        }
+      ]
+    });
+
+    expect(result.transactions[0]?.transaction_amount.currency).toBe("EUR");
+    expect(
+      transactionsResponseSchema.safeParse({
+        transactions: [
+          {
+            transaction_amount: { currency: "EURO", amount: "10.00" }
+          }
+        ]
+      }).success
+    ).toBe(false);
   });
 
   it("normalizes valid session expiry timestamps to UTC", () => {

@@ -144,4 +144,30 @@ describe("financial amount convention", () => {
       mapAt("2026-08-21T18:00:00Z").movement_key
     );
   });
+
+  it("canonicalizes equivalent provider transaction timestamp offsets", () => {
+    const account = {
+      id: "account",
+      bank_connection_id: "connection",
+      identification_hash: "stable-account",
+      provider_account_id: "provider-account"
+    } as StoredAccount;
+    const mapAt = (transactionDate: string) =>
+      mapTransaction({
+        transaction: {
+          transaction_amount: { amount: "10.00", currency: "EUR" },
+          status: "BOOK",
+          transaction_date: transactionDate,
+          remittance_information: "Equivalent timestamp"
+        },
+        account,
+        environment: "sandbox",
+        rawPath: null
+      });
+
+    const offset = mapAt("2026-08-21T10:00:00+02:00");
+    const utc = mapAt("2026-08-21T08:00:00Z");
+    expect(offset.transaction_datetime).toBe("2026-08-21T08:00:00.000Z");
+    expect(offset.movement_key).toBe(utc.movement_key);
+  });
 });

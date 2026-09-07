@@ -34,6 +34,12 @@ const sessionExpirySchema = z.string().transform((value, context) => {
   return instant.toISOString();
 });
 
+const currencyCodeSchema = z
+  .string()
+  .trim()
+  .transform((value) => value.toUpperCase())
+  .pipe(z.string().regex(/^[A-Z]{3}$/u, "Currency must be a three-letter ISO code."));
+
 export const aspspSchema = z
   .object({
     name: z.string(),
@@ -128,7 +134,7 @@ export const balancesResponseSchema = z
         .object({
           name: z.string().optional(),
           balance_amount: z.object({
-            currency: z.string(),
+            currency: currencyCodeSchema,
             amount: z.string().transform((value, context) => {
               try {
                 return normalizeDecimal(value).amount;
@@ -163,7 +169,7 @@ export const transactionSchema = z
     entry_reference: z.string().nullish(),
     transaction_id: z.string().nullish(),
     transaction_amount: z.object({
-      currency: z.string(),
+      currency: currencyCodeSchema,
       amount: z.string()
     }),
     credit_debit_indicator: z.string().nullish(),
@@ -190,7 +196,7 @@ export const transactionSchema = z
       .nullish(),
     balance_after_transaction: z
       .object({
-        currency: z.string(),
+        currency: currencyCodeSchema,
         amount: z.string()
       })
       .nullish()

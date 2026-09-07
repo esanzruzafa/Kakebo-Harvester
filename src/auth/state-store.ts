@@ -107,6 +107,19 @@ export class StateStore {
     return transaction();
   }
 
+  public renew(state: string, ttlMinutes = 15): boolean {
+    const expiresAt = new Date(Date.now() + ttlMinutes * 60_000).toISOString();
+    return (
+      this.database
+        .prepare(
+          `UPDATE pending_authorizations
+           SET expires_at = ?
+           WHERE state_hash = ? AND consumed_at IS NULL`
+        )
+        .run(expiresAt, sha256(state)).changes === 1
+    );
+  }
+
   public discard(state: string): boolean {
     return (
       this.database

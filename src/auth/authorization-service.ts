@@ -207,6 +207,9 @@ export class AuthorizationService {
       throw error;
     }
     try {
+      if (!this.states.renew(state)) {
+        throw new InvalidStateError();
+      }
       this.database
         .prepare(
           `UPDATE bank_connections SET
