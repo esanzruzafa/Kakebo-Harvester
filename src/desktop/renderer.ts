@@ -789,15 +789,11 @@ function renderSummary(): void {
           { count: authorized.length }
         );
 
-  const lastSync = state.connections
-    .map((connection) => connection.lastSyncAt)
-    .filter((value): value is string => value !== null)
-    .sort()
-    .at(-1);
-  element("summary-last-sync").textContent = lastSync
-    ? localDate(lastSync)
+  const lastCompletedRun = state.lastCompletedRunAt;
+  element("summary-last-sync").textContent = lastCompletedRun
+    ? localDate(lastCompletedRun)
     : t("common.never", "Never");
-  element("summary-last-sync-detail").textContent = lastSync
+  element("summary-last-sync-detail").textContent = lastCompletedRun
     ? t("summary.lastCompleted", "Last completed run")
     : t("summary.noActivity", "No recorded activity");
 

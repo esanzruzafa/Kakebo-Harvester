@@ -643,6 +643,18 @@ describe("transaction idempotency", () => {
     expect(database.prepare("SELECT status FROM transactions").get()).toEqual({
       status: "booked"
     });
+    expect(
+      repository.upsert(
+        transaction({
+          status: "rjct",
+          provider_transaction_id: "provider-transaction",
+          raw_fingerprint: "rejected"
+        })
+      )
+    ).toBe("updated");
+    expect(database.prepare("SELECT status FROM transactions").get()).toEqual({
+      status: "rjct"
+    });
     database.close();
   });
 

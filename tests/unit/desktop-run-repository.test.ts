@@ -14,6 +14,39 @@ afterEach(async () => {
 });
 
 describe("desktop run repository", () => {
+  it("returns the latest successfully completed run independently of connection sync state", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-last-completed-run-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const repository = new DesktopRunRepository(database);
+    const insert = database.prepare(
+      `INSERT INTO desktop_runs (
+         id, started_at, finished_at, status, date_from, date_to, steps_json
+       ) VALUES (?, ?, ?, ?, '2026-01-01', '2026-01-31', '[]')`
+    );
+    insert.run(
+      "successful-export",
+      "2026-08-01T10:00:00.000Z",
+      "2026-08-01T10:01:00.000Z",
+      "SUCCESS"
+    );
+    insert.run(
+      "failed-later-run",
+      "2026-08-02T10:00:00.000Z",
+      "2026-08-02T10:01:00.000Z",
+      "FAILED"
+    );
+    insert.run(
+      "successful-warnings",
+      "2026-08-03T10:00:00.000Z",
+      "2026-08-03T10:01:00.000Z",
+      "SUCCESS_WITH_WARNINGS"
+    );
+
+    expect(repository.lastCompletedAt()).toBe("2026-08-03T10:01:00.000Z");
+    database.close();
+  });
+
   it("persists one selected balance snapshot per account and clears only audit data", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-audit-"));
     const config = testConfig(root);

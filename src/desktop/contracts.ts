@@ -78,6 +78,7 @@ export interface DesktopBootstrap {
   exportSettings: ExportSettings;
   cardImportProfiles: CardImportProfile[];
   recentRuns: AuditRunView[];
+  lastCompletedRunAt: string | null;
   auditHistoryLimit: AuditHistoryLimit;
   runsThisYear: number;
   language: AppLanguage;

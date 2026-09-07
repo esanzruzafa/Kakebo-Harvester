@@ -794,6 +794,7 @@ async function bootstrap(application: KakeboApplication): Promise<DesktopBootstr
     exportSettings,
     cardImportProfiles,
     recentRuns: audit.list(auditHistoryLimit),
+    lastCompletedRunAt: audit.lastCompletedAt(),
     auditHistoryLimit,
     runsThisYear: audit.countBetween(year.start, year.end),
     language: localization?.getLanguage() ?? "en",

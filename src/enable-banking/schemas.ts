@@ -1,5 +1,38 @@
 import { z } from "zod";
 import { normalizeDecimal } from "../transactions/transaction-mapper.js";
+import { assertIsoDate } from "../utils/dates.js";
+
+const sessionExpirySchema = z.string().transform((value, context) => {
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(
+      value
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Session expiry must be an ISO 8601 timestamp with a timezone."
+    });
+    return z.NEVER;
+  }
+  try {
+    assertIsoDate(value.slice(0, 10), "session expiry");
+  } catch {
+    context.addIssue({
+      code: "custom",
+      message: "Session expiry must contain a real calendar date."
+    });
+    return z.NEVER;
+  }
+  const instant = new Date(value);
+  if (Number.isNaN(instant.getTime())) {
+    context.addIssue({
+      code: "custom",
+      message: "Session expiry must be a valid timestamp."
+    });
+    return z.NEVER;
+  }
+  return instant.toISOString();
+});
 
 export const aspspSchema = z
   .object({
@@ -66,7 +99,7 @@ export const sessionResponseSchema = z
   .object({
     session_id: z.string(),
     accounts: z.array(accountSchema),
-    access: z.object({ valid_until: z.string() }).loose().optional()
+    access: z.object({ valid_until: sessionExpirySchema }).loose().optional()
   })
   .loose();
 
@@ -84,7 +117,7 @@ export const getSessionResponseSchema = z
           .loose()
       )
       .default([]),
-    access: z.object({ valid_until: z.string() }).loose().optional()
+    access: z.object({ valid_until: sessionExpirySchema }).loose().optional()
   })
   .loose();
 

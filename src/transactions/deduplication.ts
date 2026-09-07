@@ -130,7 +130,7 @@ const updateSql = `
     fallback_occurrence = @fallback_occurrence,
     status = CASE
       WHEN @status = 'unknown' AND status <> 'unknown' THEN status
-      WHEN status = 'booked' AND @status <> 'booked' THEN status
+      WHEN status = 'booked' AND @status = 'pending' THEN status
       ELSE @status
     END,
     booking_date = COALESCE(@booking_date, booking_date),

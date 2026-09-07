@@ -144,21 +144,33 @@ function formatDate(value: string | null, format: ExportSettings["csv"]["dateFor
   return value;
 }
 
-function currencySymbol(currency: string): string {
+function currencyCode(currency: string): string | undefined {
   const normalized = currency.trim().toUpperCase();
-  if (!/^[A-Z]{3}$/u.test(normalized)) return "¤";
+  return /^[A-Z]{3}$/u.test(normalized) ? normalized : undefined;
+}
+
+function currencySymbol(currency: string): string {
+  const code = currencyCode(currency);
+  if (!code) return "¤";
   try {
     const symbol = new Intl.NumberFormat(undefined, {
       style: "currency",
-      currency: normalized,
+      currency: code,
       currencyDisplay: "narrowSymbol"
     })
       .formatToParts(0)
       .find((part) => part.type === "currency")?.value;
-    return symbol && !/["\r\n]/u.test(symbol) ? symbol : normalized;
+    return symbol && !/["\r\n]/u.test(symbol) ? symbol : code;
   } catch {
-    return normalized;
+    return code;
   }
+}
+
+function currencyDisplay(currency: string): string {
+  const code = currencyCode(currency);
+  if (!code) return "¤";
+  const symbol = currencySymbol(code);
+  return symbol === code ? code : `${symbol} ${code}`;
 }
 
 interface ArchivedOutput {
@@ -168,7 +180,7 @@ interface ArchivedOutput {
 
 export function spreadsheetCurrencyFormat(currency: string): string {
   const fractionDigits = currencyFractionDigits(currency);
-  return `"${currencySymbol(currency)}" #,##0${
+  return `"${currencyDisplay(currency)}" #,##0${
     fractionDigits > 0 ? `.${"0".repeat(fractionDigits)}` : ""
   }`;
 }
@@ -196,10 +208,12 @@ function formatMoney(
 ): string {
   const negative = value.startsWith("-");
   const absolute = negative ? value.slice(1) : value;
-  return `${negative ? "-" : ""}${currencySymbol(currency)}${absolute.replace(
+  const symbol = currencySymbol(currency);
+  const code = currencyCode(currency);
+  return `${negative ? "-" : ""}${symbol}${absolute.replace(
     ".",
     decimalSeparator
-  )}`;
+  )}${code && code !== symbol ? ` ${code}` : ""}`;
 }
 
 export function spreadsheetDate(value: string): Date | null {

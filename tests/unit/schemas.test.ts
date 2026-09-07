@@ -101,4 +101,24 @@ describe("provider response schemas", () => {
 
     expect(result.transactions).toHaveLength(1);
   });
+
+  it("normalizes valid session expiry timestamps to UTC", () => {
+    expect(
+      sessionResponseSchema.parse({
+        session_id: "session",
+        accounts: [],
+        access: { valid_until: "2026-10-01T02:00:00+02:00" }
+      }).access?.valid_until
+    ).toBe("2026-10-01T00:00:00.000Z");
+  });
+
+  it("rejects malformed session expiry timestamps", () => {
+    expect(
+      sessionResponseSchema.safeParse({
+        session_id: "session",
+        accounts: [],
+        access: { valid_until: "not-a-timestamp" }
+      }).success
+    ).toBe(false);
+  });
 });

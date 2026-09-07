@@ -39,6 +39,7 @@ describe("CSV export", () => {
     expect(spreadsheetCurrencyFormat("JPY")).toMatch(/#,##0$/u);
     expect(spreadsheetCurrencyFormat("EUR")).toMatch(/#,##0\.00$/u);
     expect(spreadsheetCurrencyFormat("KWD")).toMatch(/#,##0\.000$/u);
+    expect(spreadsheetCurrencyFormat("USD")).toContain("USD");
   });
 
   it("uses a safe neutral symbol for malformed provider currency values", () => {
@@ -156,7 +157,7 @@ describe("CSV export", () => {
     const content = await readFile(result.path, "utf8");
     expect(content.charCodeAt(0)).toBe(0xfeff);
     expect(content).toContain('"Compra; demo"');
-    expect(content).toContain("-€12,34");
+    expect(content).toContain("-€12,34 EUR");
     expect(content).not.toContain("ES********12");
     expect(content.replace(/^\uFEFF/, "").split(/\r?\n/)[0]).not.toContain(
       "Currency"

@@ -301,6 +301,20 @@ export class DesktopRunRepository {
     return row.total;
   }
 
+  public lastCompletedAt(): string | null {
+    const row = this.database
+      .prepare(
+        `SELECT finished_at
+         FROM desktop_runs
+         WHERE status IN ('SUCCESS', 'SUCCESS_WITH_WARNINGS')
+           AND finished_at IS NOT NULL
+         ORDER BY finished_at DESC
+         LIMIT 1`
+      )
+      .get() as { finished_at: string } | undefined;
+    return row?.finished_at ?? null;
+  }
+
   public clear(): number {
     return this.database.transaction(() => {
       this.database.prepare("DELETE FROM desktop_run_accounts").run();
