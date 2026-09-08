@@ -85,7 +85,8 @@ describe("transaction idempotency", () => {
     );
     expect(resolution).toEqual({
       occurrence: 1,
-      matchExistingFallback: false
+      matchExistingFallback: false,
+      matchedExactIdentity: false
     });
     expect(
       repository.upsert({

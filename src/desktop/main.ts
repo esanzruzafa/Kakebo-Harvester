@@ -960,11 +960,12 @@ function registerIpc(application: KakeboApplication): void {
   ipcMain.handle("cards:profiles:save", async (event, input: unknown) => {
     assertTrustedSender(event);
     return await trackOperation(
-      withSynchronizationLock(application, async () =>
-        await cardProfilesStore.save(
-          z.array(cardImportProfileSchema).parse(input)
-        )
-      )
+      withSynchronizationLock(application, async () => {
+        const profiles = z.array(cardImportProfileSchema).parse(input);
+        await cardProfilesStore.save(profiles);
+        for (const profile of profiles) cardImport.refreshStoredProfile(profile);
+        await accountsStore.save(accountRepository.listEditable());
+      })
     );
   });
   ipcMain.handle("cards:files:select", async (event) => {

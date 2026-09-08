@@ -844,6 +844,55 @@ export class SyncService {
     }
 
     const databaseTransaction = this.database.transaction(() => {
+      const reservedIdentifiedFallbacks = new Map<
+        string,
+        ReturnType<TransactionRepository["resolveFallbackIdentity"]>
+      >();
+      for (const fetchedPage of fetchedPages) {
+        for (const providerTransaction of fetchedPage.response.transactions) {
+          const normalized = mapTransaction({
+            transaction: providerTransaction,
+            account,
+            environment: this.config.appEnv,
+            rawPath: fetchedPage.raw.path,
+            fallbackOccurrence: 1
+          });
+          const movementDate = firstValidMovementDate(
+            normalized.booking_date,
+            normalized.transaction_datetime,
+            normalized.value_date
+          );
+          if (!movementDate || movementDate < dateFrom || movementDate > dateTo) continue;
+          const identityKey = normalized.entry_reference
+            ? `entry:${normalized.entry_reference}`
+            : normalized.provider_transaction_id
+              ? `provider:${normalized.provider_transaction_id}`
+              : null;
+          if (!identityKey) continue;
+          if (reservedIdentifiedFallbacks.has(identityKey)) continue;
+          const fallbackTransaction = { ...providerTransaction };
+          delete fallbackTransaction.entry_reference;
+          delete fallbackTransaction.transaction_id;
+          const fallbackIdentity = mapTransaction({
+            transaction: fallbackTransaction,
+            account,
+            environment: this.config.appEnv,
+            rawPath: fetchedPage.raw.path,
+            fallbackOccurrence: 1
+          });
+          const claimed =
+            fallbackOccurrences.get(fallbackIdentity.movement_key) ?? new Set<number>();
+          const resolution = this.transactions.resolveFallbackIdentity(
+            normalized,
+            fallbackIdentity,
+            claimed
+          );
+          if (!resolution.matchedExactIdentity) continue;
+          claimed.add(resolution.occurrence);
+          fallbackOccurrences.set(fallbackIdentity.movement_key, claimed);
+          reservedIdentifiedFallbacks.set(identityKey, resolution);
+        }
+      }
       for (const fetchedPage of fetchedPages) {
         this.database
           .prepare(
@@ -892,27 +941,38 @@ export class SyncService {
             rawPath: raw.path,
             fallbackOccurrence: 1
           });
-          const claimed = fallbackOccurrences.get(fallbackIdentity.movement_key) ?? new Set<number>();
-          const resolution = this.transactions.resolveFallbackIdentity(
-            normalized,
-            fallbackIdentity,
-            claimed
-          );
-          claimed.add(resolution.occurrence);
+          const claimed =
+            fallbackOccurrences.get(fallbackIdentity.movement_key) ?? new Set<number>();
+          const identityKey = normalized.entry_reference
+            ? `entry:${normalized.entry_reference}`
+            : normalized.provider_transaction_id
+              ? `provider:${normalized.provider_transaction_id}`
+              : null;
+          const resolution = identityKey
+            ? reservedIdentifiedFallbacks.get(identityKey)
+            : undefined;
+          const resolved =
+            resolution ??
+            this.transactions.resolveFallbackIdentity(
+              normalized,
+              fallbackIdentity,
+              claimed
+            );
+          claimed.add(resolved.occurrence);
           fallbackOccurrences.set(fallbackIdentity.movement_key, claimed);
           normalized = mapTransaction({
             transaction: providerTransaction,
             account,
             environment: this.config.appEnv,
             rawPath: raw.path,
-            fallbackOccurrence: resolution.occurrence
+            fallbackOccurrence: resolved.occurrence
           });
           summary.received += 1;
           const category = this.categorizer.categorize(normalized.description_normalized);
           normalized.category_auto = category.category;
           normalized.subcategory_auto = category.subcategory;
           const outcome = this.transactions.upsert(normalized, {
-            matchExistingFallback: resolution.matchExistingFallback
+            matchExistingFallback: resolved.matchExistingFallback
           });
           if (outcome === "inserted") summary.inserted += 1;
           if (outcome === "updated") summary.updated += 1;

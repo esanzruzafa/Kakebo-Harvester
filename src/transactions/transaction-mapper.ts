@@ -118,6 +118,13 @@ function accountIdentifier(
   return typeof account?.other === "string" ? account.other : null;
 }
 
+function canonicalCounterpartyIdentifier(
+  account: ProviderTransaction["creditor_account"] | null | undefined
+): string | null {
+  if (account?.iban) return account.iban.replace(/\s/gu, "").toUpperCase();
+  return accountIdentifier(account);
+}
+
 export function mapTransaction(input: {
   transaction: ProviderTransaction;
   account: StoredAccount;
@@ -134,20 +141,20 @@ export function mapTransaction(input: {
   const remittance = Array.isArray(transaction.remittance_information)
     ? transaction.remittance_information.join(" ")
     : transaction.remittance_information;
-  const description =
-    remittance ??
-    transaction.note ??
-    transaction.bank_transaction_code?.description ??
-    transaction.creditor?.name ??
-    transaction.debtor?.name ??
-    "";
+  const description = [
+    remittance,
+    transaction.note,
+    transaction.bank_transaction_code?.description,
+    transaction.creditor?.name,
+    transaction.debtor?.name
+  ].find((candidate): candidate is string => Boolean(candidate?.trim()))?.trim() ?? "";
   const descriptionNormalized = normalizeText(description);
   const counterpartyName =
     money.direction === "expense" ? transaction.creditor?.name : transaction.debtor?.name;
   const counterpartyAccount =
     money.direction === "expense"
-      ? accountIdentifier(transaction.creditor_account)
-      : accountIdentifier(transaction.debtor_account);
+      ? canonicalCounterpartyIdentifier(transaction.creditor_account)
+      : canonicalCounterpartyIdentifier(transaction.debtor_account);
   const counterparty = normalizeText(counterpartyName ?? counterpartyAccount ?? "");
   const accountStableKey = input.account.identification_hash ?? input.account.id;
   const entryReference = transaction.entry_reference?.trim() || null;

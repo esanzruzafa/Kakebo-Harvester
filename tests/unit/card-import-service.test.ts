@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CardImportService } from "../../src/cards/card-import-service.js";
 import {
   CardImportProfilesStore,
-  createDefaultCardImportProfiles
+  createDefaultCardImportProfiles,
+  type CardImportProfile
 } from "../../src/settings/card-import-profiles-store.js";
 import { CategorizationRulesStore } from "../../src/settings/categorization-rules-store.js";
 import { createDatabase } from "../../src/storage/database.js";
@@ -90,6 +91,44 @@ describe("CardImportService", () => {
     expect(
       database.prepare("SELECT COUNT(*) AS total FROM card_import_source_rows").get()
     ).toEqual({ total: 2 });
+    database.close();
+  });
+
+  it("updates the stored local account labels when an imported card profile is renamed", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-profile-labels-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const profiles = createDefaultCardImportProfiles();
+    const profile = profiles[0];
+    if (!profile) throw new Error("The default card profile is missing.");
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save(profiles);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const statementPath = join(root, "card-labels.xlsx");
+    await writeXlsxFile(
+      workbookRows([["20/06/2026", "Coffee shop", "20/06/2026", "-4,50"]])
+    ).toFile(statementPath);
+    const importer = new CardImportService(config, database);
+    await importer.import({ files: [{ path: statementPath, profileId: profile.id }] });
+
+    importer.refreshStoredProfile({
+      ...profile,
+      bankName: "Renamed Bank",
+      cardName: "Renamed Card"
+    } satisfies CardImportProfile);
+
+    expect(
+      database
+        .prepare(
+          `SELECT c.bank_name, a.name, a.display_name
+           FROM accounts a JOIN bank_connections c ON c.id = a.bank_connection_id
+           WHERE a.provider_account_id = ?`
+        )
+        .get(profile.id)
+    ).toEqual({
+      bank_name: "Renamed Bank",
+      name: "Renamed Card",
+      display_name: "Renamed Card"
+    });
     database.close();
   });
 

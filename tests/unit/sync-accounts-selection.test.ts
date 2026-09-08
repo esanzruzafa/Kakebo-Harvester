@@ -1001,4 +1001,94 @@ describe("account detail synchronization selection", () => {
     ).toEqual({ last_error_code: "RESOURCE_EXPIRED" });
     database.close();
   });
+
+  it("keeps a new ID-less duplicate when it precedes an existing identified movement", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-reserved-fallback-occurrence-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', ?, 'Demo', 'ES', 'personal',
+                   'Demo personal', 'AUTHORIZED', ?)`
+      )
+      .run(config.appEnv, now);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('session', 'connection', ?, ?, 'AUTHORIZED')`
+      )
+      .run(encryptSecret("provider-session", config.sessionEncryptionKey), now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, name, sync_enabled,
+           active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider-account', 'Account', 1, 1, ?, ?)`
+      )
+      .run(now, now);
+    database
+      .prepare(
+        `INSERT INTO transactions (
+           id, movement_key, reconciliation_key, provider, environment,
+           bank_connection_id, account_id, provider_transaction_id, fallback_occurrence,
+           status, booking_date, amount, currency, direction, description_raw,
+           description_normalized, reviewed, first_seen_at, last_seen_at, imported_at,
+           raw_fingerprint
+         ) VALUES ('old', 'old-key', 'old-reconciliation', 'enable-banking', ?,
+                   'connection', 'account', 'old-provider-id', 1, 'booked', '2026-08-20',
+                   '-10', 'EUR', 'expense', 'Repeated payment', 'REPEATED PAYMENT', 0, ?, ?, ?, 'old')`
+      )
+      .run(config.appEnv, now, now, now);
+    const getTransactions = vi
+      .fn()
+      .mockResolvedValueOnce({
+        transactions: [
+          {
+            transaction_amount: { amount: "10", currency: "EUR" },
+            credit_debit_indicator: "DBIT",
+            booking_date: "2026-08-20",
+            status: "BOOK",
+            remittance_information: "Repeated payment"
+          }
+        ],
+        continuation_key: "second-page"
+      })
+      .mockResolvedValueOnce({
+        transactions: [
+          {
+            transaction_id: "old-provider-id",
+            transaction_amount: { amount: "10", currency: "EUR" },
+            credit_debit_indicator: "DBIT",
+            booking_date: "2026-08-20",
+            status: "BOOK",
+            remittance_information: "Repeated payment"
+          }
+        ],
+        continuation_key: null
+      });
+
+    await new SyncService(
+      config,
+      database,
+      { getTransactions } as unknown as EnableBankingClient
+    ).syncTransactions("2026-08-01", "2026-08-31");
+
+    expect(
+      database
+        .prepare(
+          `SELECT provider_transaction_id, fallback_occurrence
+           FROM transactions ORDER BY fallback_occurrence`
+        )
+        .all()
+    ).toEqual([
+      { provider_transaction_id: "old-provider-id", fallback_occurrence: 1 },
+      { provider_transaction_id: null, fallback_occurrence: 2 }
+    ]);
+    database.close();
+  });
 });

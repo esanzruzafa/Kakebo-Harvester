@@ -7,6 +7,7 @@ export type UpsertOutcome = "inserted" | "updated" | "duplicate" | "reconciled";
 export interface FallbackIdentityResolution {
   occurrence: number;
   matchExistingFallback: boolean;
+  matchedExactIdentity: boolean;
 }
 
 interface ExistingTransaction {
@@ -283,7 +284,8 @@ export class TransactionRepository {
     if (exactIdentity?.fallback_occurrence !== null && exactIdentity !== undefined) {
       return {
         occurrence: exactIdentity.fallback_occurrence,
-        matchExistingFallback: false
+        matchExistingFallback: false,
+        matchedExactIdentity: true
       };
     }
 
@@ -318,7 +320,7 @@ export class TransactionRepository {
       }
       let occurrence = 1;
       while (unavailable.has(occurrence)) occurrence += 1;
-      return { occurrence, matchExistingFallback: false };
+      return { occurrence, matchExistingFallback: false, matchedExactIdentity: false };
     }
     const incomingHasIdentity =
       transaction.entry_reference !== null ||
@@ -333,7 +335,8 @@ export class TransactionRepository {
     if (unclaimedStableMatch) {
       return {
         occurrence: unclaimedStableMatch.fallback_occurrence ?? 1,
-        matchExistingFallback: incomingHasIdentity
+        matchExistingFallback: incomingHasIdentity,
+        matchedExactIdentity: false
       };
     }
 
@@ -345,7 +348,7 @@ export class TransactionRepository {
     }
     let occurrence = 1;
     while (unavailable.has(occurrence)) occurrence += 1;
-    return { occurrence, matchExistingFallback: false };
+    return { occurrence, matchExistingFallback: false, matchedExactIdentity: false };
   }
 
   private consolidateIdentityMatches(

@@ -459,6 +459,31 @@ function ensureLocalAccount(
     );
 }
 
+function refreshStoredLocalAccount(
+  database: SqliteDatabase,
+  config: AppConfig,
+  profile: CardImportProfile
+): void {
+  const ids = localIds(profile);
+  const now = new Date().toISOString();
+  database.transaction(() => {
+    database
+      .prepare(
+        `UPDATE bank_connections
+         SET bank_name = ?, alias = ?
+         WHERE id = ? AND provider = 'manual-card' AND environment = ?`
+      )
+      .run(profile.bankName, profile.name, ids.connectionId, config.appEnv);
+    database
+      .prepare(
+        `UPDATE accounts
+         SET name = ?, display_name = ?, last_seen_at = ?
+         WHERE id = ? AND bank_connection_id = ?`
+      )
+      .run(profile.cardName, profile.cardName, now, ids.accountId, ids.connectionId);
+  })();
+}
+
 function existingCardTransactions(
   database: SqliteDatabase,
   row: ParsedCardRow
@@ -557,6 +582,10 @@ export class CardImportService {
     this.profilesStore = new CardImportProfilesStore(
       config.cardImportProfilesPath
     );
+  }
+
+  public refreshStoredProfile(profile: CardImportProfile): void {
+    refreshStoredLocalAccount(this.database, this.config, profile);
   }
 
   public async import(input: CardImportRequest): Promise<CardImportResult> {

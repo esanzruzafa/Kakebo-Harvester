@@ -249,4 +249,56 @@ describe("financial amount convention", () => {
       second.counterparty_identification_hash
     );
   });
+
+  it("canonicalizes equivalent IBAN formatting before hashing counterparties", () => {
+    const account = {
+      id: "account",
+      bank_connection_id: "connection",
+      identification_hash: "stable-account",
+      provider_account_id: "provider-account"
+    } as StoredAccount;
+    const mapCounterparty = (iban: string) =>
+      mapTransaction({
+        transaction: {
+          transaction_amount: { amount: "10", currency: "EUR" },
+          credit_debit_indicator: "DBIT",
+          booking_date: "2026-08-21",
+          status: "BOOK",
+          creditor_account: { iban },
+          remittance_information: "Counterparty transfer"
+        },
+        account,
+        environment: "sandbox",
+        rawPath: null
+      });
+
+    expect(
+      mapCounterparty("es91 2100 0418 4502 0005 1332").counterparty_identification_hash
+    ).toBe(
+      mapCounterparty("ES9121000418450200051332").counterparty_identification_hash
+    );
+  });
+
+  it("uses a non-empty provider description when remittance is blank", () => {
+    const account = {
+      id: "account",
+      bank_connection_id: "connection",
+      identification_hash: "stable-account",
+      provider_account_id: "provider-account"
+    } as StoredAccount;
+    const mapped = mapTransaction({
+      transaction: {
+        transaction_amount: { amount: "10", currency: "EUR" },
+        booking_date: "2026-08-21",
+        status: "BOOK",
+        remittance_information: [],
+        note: "Useful provider note"
+      },
+      account,
+      environment: "sandbox",
+      rawPath: null
+    });
+
+    expect(mapped.description_raw).toBe("Useful provider note");
+  });
 });

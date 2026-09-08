@@ -7,10 +7,13 @@ const releaseWorkflowPath = fileURLToPath(
 );
 
 describe("release workflow", () => {
-  it("does not overwrite assets of an existing release", async () => {
+  it("publishes release assets atomically without overwriting existing releases", async () => {
     const workflow = await readFile(releaseWorkflowPath, "utf8");
 
     expect(workflow).not.toContain("--clobber");
     expect(workflow).toContain("refusing to overwrite it");
+    expect(workflow).toMatch(
+      /gh release create \$env:RELEASE_TAG `\r?\n\s+\$executable/u
+    );
   });
 });

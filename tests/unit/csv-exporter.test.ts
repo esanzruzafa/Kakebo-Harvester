@@ -1,5 +1,6 @@
 import {
   access,
+  stat,
   mkdir,
   mkdtemp,
   readFile,
@@ -8,7 +9,7 @@ import {
   symlink,
   writeFile
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { unzipSync } from "fflate";
@@ -35,6 +36,23 @@ afterEach(async () => {
 });
 
 describe("CSV export", () => {
+  it.runIf(platform() !== "win32")(
+    "creates XLSX exports with owner-only permissions on POSIX",
+    async () => {
+      root = await mkdtemp(join(tmpdir(), "kakebo-private-xlsx-"));
+      const config = testConfig(root);
+      const database = createDatabase(config.databasePath);
+      const settings = createDefaultExportSettings(",", ";");
+      settings.format = "xlsx";
+      await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+
+      const output = await new CsvExporter(config, database).export();
+
+      expect((await stat(output.path)).mode & 0o777).toBe(0o600);
+      database.close();
+    }
+  );
+
   it("uses each currency's fraction digits in spreadsheet formats", () => {
     expect(spreadsheetCurrencyFormat("JPY")).toMatch(/#,##0$/u);
     expect(spreadsheetCurrencyFormat("EUR")).toMatch(/#,##0\.00$/u);

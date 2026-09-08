@@ -1,5 +1,6 @@
 import {
   copyFile,
+  chmod,
   lstat,
   mkdir,
   readFile,
@@ -614,6 +615,7 @@ export class CsvExporter {
         await this.writeCsv(temporary, rows, settings);
       } else {
         await this.writeXlsx(temporary, rows, settings, highlighted);
+        if (process.platform !== "win32") await chmod(temporary, 0o600);
       }
       if (compatible) {
         backupPath = await backupCurrentOutput(
