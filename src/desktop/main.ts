@@ -965,6 +965,7 @@ function registerIpc(application: KakeboApplication): void {
         await cardProfilesStore.save(profiles);
         for (const profile of profiles) cardImport.refreshStoredProfile(profile);
         await accountsStore.save(accountRepository.listEditable());
+        return profiles;
       })
     );
   });

@@ -887,7 +887,12 @@ export class SyncService {
             fallbackIdentity,
             claimed
           );
-          if (!resolution.matchedExactIdentity) continue;
+          // A newly identified observation must reserve a fallback occurrence before an
+          // otherwise identical ID-less observation can claim it. Existing ID-less rows
+          // take precedence so a later provider-ID enrichment retains its prior identity.
+          if (!resolution.matchedExactIdentity && resolution.matchExistingFallback) {
+            continue;
+          }
           claimed.add(resolution.occurrence);
           fallbackOccurrences.set(fallbackIdentity.movement_key, claimed);
           reservedIdentifiedFallbacks.set(identityKey, resolution);

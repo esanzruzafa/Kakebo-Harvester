@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { DatabaseError } from "../errors.js";
 import { latestDatabaseVersion, migrations } from "./migration-manifest.js";
+import { normalizeText } from "../utils/text.js";
 
 export type SqliteDatabase = Database.Database;
 
@@ -54,6 +55,12 @@ export function createDatabase(databasePath: string): SqliteDatabase {
       restrictDatabasePermissions(databasePath);
     }
     database = new Database(databasePath);
+    database.function(
+      "kakebo_normalize_text",
+      { deterministic: true },
+      (value: string | null): string | null =>
+        value === null ? null : normalizeText(value)
+    );
     database.pragma("busy_timeout = 30000");
     database.pragma("journal_mode = WAL");
     database.pragma("foreign_keys = ON");

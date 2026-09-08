@@ -19,4 +19,13 @@ describe("text utilities", () => {
       /abc|ES1212|es1212|csrf-secret|session-secret|refresh-secret|code=secret/u
     );
   });
+
+  it("redacts IBANs formatted with spaces or hyphens from user-facing errors", () => {
+    const message = safeMessage(
+      "Provider error for ES91 2100-0418 4502-0005 1332 and es91-2100 0418-4502 0005-1332"
+    );
+
+    expect(message).not.toMatch(/ES91|2100|1332/iu);
+    expect(message).toContain("[MASKED_ACCOUNT]");
+  });
 });

@@ -70,9 +70,21 @@ const compatibleDescriptionSql = `
   )`;
 
 const compatibleCounterpartySql = `
-  AND (merchant_name IS @merchant_name OR merchant_name IS NULL OR @merchant_name IS NULL)
-  AND (creditor_name IS @creditor_name OR creditor_name IS NULL OR @creditor_name IS NULL)
-  AND (debtor_name IS @debtor_name OR debtor_name IS NULL OR @debtor_name IS NULL)
+  AND (
+    merchant_name IS NULL
+    OR @merchant_name IS NULL
+    OR kakebo_normalize_text(merchant_name) = kakebo_normalize_text(@merchant_name)
+  )
+  AND (
+    creditor_name IS NULL
+    OR @creditor_name IS NULL
+    OR kakebo_normalize_text(creditor_name) = kakebo_normalize_text(@creditor_name)
+  )
+  AND (
+    debtor_name IS NULL
+    OR @debtor_name IS NULL
+    OR kakebo_normalize_text(debtor_name) = kakebo_normalize_text(@debtor_name)
+  )
   AND (
     counterparty_iban_masked IS @counterparty_iban_masked
     OR counterparty_iban_masked IS NULL
@@ -98,9 +110,21 @@ const compatibleCounterpartySql = `
       AND @counterparty_iban_masked IS NULL
       AND @counterparty_identification_hash IS NULL
     )
-    OR (merchant_name IS NOT NULL AND merchant_name IS @merchant_name)
-    OR (creditor_name IS NOT NULL AND creditor_name IS @creditor_name)
-    OR (debtor_name IS NOT NULL AND debtor_name IS @debtor_name)
+    OR (
+      merchant_name IS NOT NULL
+      AND @merchant_name IS NOT NULL
+      AND kakebo_normalize_text(merchant_name) = kakebo_normalize_text(@merchant_name)
+    )
+    OR (
+      creditor_name IS NOT NULL
+      AND @creditor_name IS NOT NULL
+      AND kakebo_normalize_text(creditor_name) = kakebo_normalize_text(@creditor_name)
+    )
+    OR (
+      debtor_name IS NOT NULL
+      AND @debtor_name IS NOT NULL
+      AND kakebo_normalize_text(debtor_name) = kakebo_normalize_text(@debtor_name)
+    )
     OR (
       counterparty_iban_masked IS NOT NULL
       AND counterparty_iban_masked IS @counterparty_iban_masked

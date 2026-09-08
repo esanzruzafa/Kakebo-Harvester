@@ -433,4 +433,71 @@ describe("paginated transaction synchronization", () => {
     ]);
     database.close();
   });
+
+  it("keeps a new ID-less movement distinct from a new identified duplicate in one response", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-new-identified-duplicate-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Banco Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('session', 'connection', 'encrypted-session', ?, 'AUTHORIZED')`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, identification_hash,
+           name, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider-account', 'stable-account',
+                   'Cuenta Demo', 1, ?, ?)`
+      )
+      .run(now, now);
+    const idless = {
+      transaction_amount: { currency: "EUR", amount: "2.50" },
+      credit_debit_indicator: "DBIT" as const,
+      status: "BOOK",
+      booking_date: "2026-07-24",
+      remittance_information: "Identical transit fare"
+    };
+    const identified = { ...idless, transaction_id: "new-provider-id" };
+    const client = {
+      getTransactions: vi.fn().mockResolvedValue(
+        transactionsResponseSchema.parse({
+          transactions: [idless, identified],
+          continuation_key: null
+        })
+      )
+    } as unknown as EnableBankingClient;
+
+    const result = await new SyncService(config, database, client).syncTransactions(
+      "2026-07-01",
+      "2026-07-31"
+    );
+
+    expect(result).toMatchObject({ received: 2, inserted: 2 });
+    expect(
+      database
+        .prepare(
+          `SELECT provider_transaction_id, fallback_occurrence
+           FROM transactions ORDER BY fallback_occurrence`
+        )
+        .all()
+    ).toEqual([
+      { provider_transaction_id: "new-provider-id", fallback_occurrence: 1 },
+      { provider_transaction_id: null, fallback_occurrence: 2 }
+    ]);
+    database.close();
+  });
 });

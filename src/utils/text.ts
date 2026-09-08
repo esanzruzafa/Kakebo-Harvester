@@ -20,6 +20,10 @@ export function safeMessage(value: unknown): string {
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
     .replace(/\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/gi, "[MASKED_ACCOUNT]")
     .replace(
+      /\b[A-Z]{2}\d{2}(?:[ -][A-Z0-9]{4}){3,7}\b/gi,
+      "[MASKED_ACCOUNT]"
+    )
+    .replace(
       /\b(code|state|session_id|token|access_token|refresh_token)=([^&\s]+)/gi,
       "$1=[REDACTED]"
     )
