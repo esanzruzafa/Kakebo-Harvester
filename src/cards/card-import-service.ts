@@ -524,24 +524,35 @@ function existingSourceMappings(
   database: SqliteDatabase,
   profileId: string,
   sourcePath: string
-): Map<string, string> {
+): { bySemanticKey: Map<string, string>; bySourceRow: Map<number, string> } {
   const rows = database
     .prepare(
-      `SELECT semantic_key_hash, occurrence, provider_transaction_id
+      `SELECT semantic_key_hash, occurrence, source_row, provider_transaction_id
        FROM card_import_source_rows
        WHERE profile_id = ? AND source_path_hash = ?`
     )
     .all(profileId, sourcePathHash(sourcePath)) as Array<{
       semantic_key_hash: string;
       occurrence: number;
+      source_row: number | null;
       provider_transaction_id: string;
     }>;
-  return new Map(
-    rows.map((row) => [
-      `${row.semantic_key_hash}:${row.occurrence}`,
-      row.provider_transaction_id
-    ])
-  );
+  return {
+    bySemanticKey: new Map(
+      rows.map((row) => [
+        `${row.semantic_key_hash}:${row.occurrence}`,
+        row.provider_transaction_id
+      ])
+    ),
+    bySourceRow: new Map(
+      rows
+        .filter(
+          (row): row is typeof row & { source_row: number } =>
+            row.source_row !== null
+        )
+        .map((row) => [row.source_row, row.provider_transaction_id])
+    )
+  };
 }
 
 function saveSourceMapping(
@@ -550,22 +561,49 @@ function saveSourceMapping(
   providerTransactionId: string
 ): void {
   const now = new Date().toISOString();
+  const pathHash = sourcePathHash(row.sourcePath);
+  const existingBySourceRow = database
+    .prepare(
+      `SELECT 1 FROM card_import_source_rows
+       WHERE profile_id = ? AND source_path_hash = ? AND source_row = ?`
+    )
+    .get(row.profile.id, pathHash, row.sourceRow);
+  if (existingBySourceRow) {
+    database
+      .prepare(
+        `UPDATE card_import_source_rows
+         SET semantic_key_hash = ?, occurrence = ?, provider_transaction_id = ?, last_seen_at = ?
+         WHERE profile_id = ? AND source_path_hash = ? AND source_row = ?`
+      )
+      .run(
+        cardSemanticKeyHash(row),
+        row.occurrence,
+        providerTransactionId,
+        now,
+        row.profile.id,
+        pathHash,
+        row.sourceRow
+      );
+    return;
+  }
   database
     .prepare(
       `INSERT INTO card_import_source_rows (
          profile_id, source_path_hash, semantic_key_hash, occurrence,
-         provider_transaction_id, first_seen_at, last_seen_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?)
+         source_row, provider_transaction_id, first_seen_at, last_seen_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(profile_id, source_path_hash, semantic_key_hash, occurrence)
-       DO UPDATE SET
-         provider_transaction_id = excluded.provider_transaction_id,
+        DO UPDATE SET
+          provider_transaction_id = excluded.provider_transaction_id,
+         source_row = excluded.source_row,
          last_seen_at = excluded.last_seen_at`
     )
     .run(
       row.profile.id,
-      sourcePathHash(row.sourcePath),
+      pathHash,
       cardSemanticKeyHash(row),
       row.occurrence,
+      row.sourceRow,
       providerTransactionId,
       now,
       now
@@ -668,7 +706,8 @@ export class CardImportService {
               comparableSourcePath(candidate.sourcePath) === comparableFilePath
           );
           const existingProviderTransactionId =
-            sourceMappings.get(sourceMappingKey(row)) ??
+            sourceMappings.bySemanticKey.get(sourceMappingKey(row)) ??
+            sourceMappings.bySourceRow.get(row.sourceRow) ??
             sameSourceCandidates[row.occurrence - 1]?.providerTransactionId ??
             (overlapsExistingStatement
               ? candidates[row.occurrence - 1]?.providerTransactionId

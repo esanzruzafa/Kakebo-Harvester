@@ -22,7 +22,7 @@ import {
 import { Categorizer } from "../transactions/categorization.js";
 import { TransactionRepository } from "../transactions/deduplication.js";
 import { mapTransaction } from "../transactions/transaction-mapper.js";
-import { createId, decryptSecret } from "../utils/crypto.js";
+import { createId, decryptSecret, stableJson } from "../utils/crypto.js";
 import { assertIsoDate } from "../utils/dates.js";
 import { safeMessage } from "../utils/text.js";
 
@@ -85,6 +85,22 @@ function emptySummary(): SyncSummary {
     duplicates: 0,
     pendingReconciled: 0
   };
+}
+
+function fallbackClaimKey(transaction: ReturnType<typeof mapTransaction>): string {
+  // The repository can treat missing dates, descriptions, status, and
+  // counterparties as compatible enrichment. Reserve all same-account monetary
+  // observations together so an enriched response cannot overwrite an earlier
+  // compatible ID-less observation in the same payload.
+  return stableJson({
+    provider: transaction.provider,
+    environment: transaction.environment,
+    bankConnectionId: transaction.bank_connection_id,
+    accountId: transaction.account_id,
+    amount: transaction.amount,
+    currency: transaction.currency,
+    direction: transaction.direction
+  });
 }
 
 interface FetchedTransactionPage {
@@ -880,8 +896,8 @@ export class SyncService {
             rawPath: fetchedPage.raw.path,
             fallbackOccurrence: 1
           });
-          const claimed =
-            fallbackOccurrences.get(fallbackIdentity.movement_key) ?? new Set<number>();
+          const claimKey = fallbackClaimKey(fallbackIdentity);
+          const claimed = fallbackOccurrences.get(claimKey) ?? new Set<number>();
           const resolution = this.transactions.resolveFallbackIdentity(
             normalized,
             fallbackIdentity,
@@ -894,7 +910,7 @@ export class SyncService {
             continue;
           }
           claimed.add(resolution.occurrence);
-          fallbackOccurrences.set(fallbackIdentity.movement_key, claimed);
+          fallbackOccurrences.set(claimKey, claimed);
           reservedIdentifiedFallbacks.set(identityKey, resolution);
         }
       }
@@ -946,8 +962,8 @@ export class SyncService {
             rawPath: raw.path,
             fallbackOccurrence: 1
           });
-          const claimed =
-            fallbackOccurrences.get(fallbackIdentity.movement_key) ?? new Set<number>();
+          const claimKey = fallbackClaimKey(fallbackIdentity);
+          const claimed = fallbackOccurrences.get(claimKey) ?? new Set<number>();
           const identityKey = normalized.entry_reference
             ? `entry:${normalized.entry_reference}`
             : normalized.provider_transaction_id
@@ -964,7 +980,7 @@ export class SyncService {
               claimed
             );
           claimed.add(resolved.occurrence);
-          fallbackOccurrences.set(fallbackIdentity.movement_key, claimed);
+          fallbackOccurrences.set(claimKey, claimed);
           normalized = mapTransaction({
             transaction: providerTransaction,
             account,

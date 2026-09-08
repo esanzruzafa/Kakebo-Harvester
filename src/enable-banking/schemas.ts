@@ -87,9 +87,11 @@ const accountIdentificationSchema = z
   })
   .loose();
 
+const providerAccountIdentifierSchema = z.string().trim().min(1);
+
 export const accountSchema = z
   .object({
-    uid: z.string(),
+    uid: providerAccountIdentifierSchema,
     identification_hash: z.string().nullish(),
     identification_hashes: z.array(z.string()).nullish(),
     account_id: accountIdentificationSchema.nullish(),
@@ -112,12 +114,12 @@ export const sessionResponseSchema = z
 export const getSessionResponseSchema = z
   .object({
     status: z.string(),
-    accounts: z.array(z.string()),
+    accounts: z.array(providerAccountIdentifierSchema),
     accounts_data: z
       .array(
         z
           .object({
-            uid: z.string(),
+            uid: providerAccountIdentifierSchema,
             identification_hash: z.string().nullish()
           })
           .loose()
@@ -157,6 +159,11 @@ export const balancesResponseSchema = z
   .loose();
 
 const partySchema = z.object({ name: z.string().nullish() }).loose();
+const creditDebitIndicatorSchema = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .pipe(z.enum(["DBIT", "CRDT"]));
 const partyAccountSchema = z
   .object({
     iban: z.string().nullish(),
@@ -172,7 +179,7 @@ export const transactionSchema = z
       currency: currencyCodeSchema,
       amount: z.string()
     }),
-    credit_debit_indicator: z.string().nullish(),
+    credit_debit_indicator: creditDebitIndicatorSchema.nullish(),
     status: z.string().nullish(),
     booking_date: z.string().nullish(),
     value_date: z.string().nullish(),

@@ -500,4 +500,62 @@ describe("paginated transaction synchronization", () => {
     ]);
     database.close();
   });
+
+  it("keeps compatible ID-less movements distinct when only one has a description", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-compatible-idless-description-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Banco Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('session', 'connection', 'encrypted-session', ?, 'AUTHORIZED')`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, identification_hash,
+           name, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider-account', 'stable-account',
+                   'Cuenta Demo', 1, ?, ?)`
+      )
+      .run(now, now);
+    const shared = {
+      transaction_amount: { currency: "EUR", amount: "2.50" },
+      credit_debit_indicator: "DBIT" as const,
+      status: "BOOK",
+      booking_date: "2026-07-24",
+      creditor_account: { iban: "ES9121000418450200051332" }
+    };
+    const client = {
+      getTransactions: vi.fn().mockResolvedValue(
+        transactionsResponseSchema.parse({
+          transactions: [shared, { ...shared, note: "Transit fare" }],
+          continuation_key: null
+        })
+      )
+    } as unknown as EnableBankingClient;
+
+    const result = await new SyncService(config, database, client).syncTransactions(
+      "2026-07-01",
+      "2026-07-31"
+    );
+
+    expect(result).toMatchObject({ received: 2, inserted: 2, updated: 0 });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM transactions").get()
+    ).toEqual({ count: 2 });
+    database.close();
+  });
 });

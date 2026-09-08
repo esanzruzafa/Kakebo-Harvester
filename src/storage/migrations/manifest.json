@@ -28,5 +28,9 @@
   {
     "version": 12,
     "filename": "012_counterparty_identification_hash.sql"
+  },
+  {
+    "version": 13,
+    "filename": "013_card_import_source_row_identity.sql"
   }
 ]

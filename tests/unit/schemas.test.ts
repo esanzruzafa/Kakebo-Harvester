@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   balancesResponseSchema,
+  getSessionResponseSchema,
   sessionResponseSchema,
   startAuthorizationResponseSchema,
   transactionsResponseSchema
@@ -41,6 +42,22 @@ describe("provider response schemas", () => {
     });
 
     expect(result.accounts[0]?.uid).toBe("account");
+  });
+
+  it("rejects blank provider account identifiers", () => {
+    expect(
+      sessionResponseSchema.safeParse({
+        session_id: "session",
+        accounts: [{ uid: "   " }]
+      }).success
+    ).toBe(false);
+    expect(
+      getSessionResponseSchema.safeParse({
+        status: "AUTHORIZED",
+        accounts: ["\t"],
+        accounts_data: [{ uid: "" }]
+      }).success
+    ).toBe(false);
   });
 
   it("accepts nullable optional balance dates", () => {
@@ -115,6 +132,29 @@ describe("provider response schemas", () => {
         transactions: [
           {
             transaction_amount: { currency: "EURO", amount: "10.00" }
+          }
+        ]
+      }).success
+    ).toBe(false);
+  });
+
+  it("canonicalizes supported debit and credit indicators and rejects other values", () => {
+    expect(
+      transactionsResponseSchema.parse({
+        transactions: [
+          {
+            transaction_amount: { currency: "EUR", amount: "10.00" },
+            credit_debit_indicator: " dbit "
+          }
+        ]
+      }).transactions[0]?.credit_debit_indicator
+    ).toBe("DBIT");
+    expect(
+      transactionsResponseSchema.safeParse({
+        transactions: [
+          {
+            transaction_amount: { currency: "EUR", amount: "10.00" },
+            credit_debit_indicator: "DEBIT"
           }
         ]
       }).success
