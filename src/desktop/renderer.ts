@@ -2793,16 +2793,6 @@ function setupActions(): void {
   onClick(element<HTMLButtonElement>("import-card-files"), async () => {
     if (rejectConcurrentOperation()) return;
     const importButton = element<HTMLButtonElement>("import-card-files");
-    const files = selectedCardFiles
-      .filter((file) => file.included)
-      .map((file) => ({ path: file.path, profileId: file.profileId }));
-    if (files.length === 0) {
-      showToast(
-        t("cards.selectAtLeastOne", "Select at least one workbook to import."),
-        true
-      );
-      return;
-    }
     activeOperationCount += 1;
     element<HTMLElement>("view-cards").inert = true;
     importButton.disabled = true;
@@ -2811,7 +2801,29 @@ function setupActions(): void {
       state.cardImportProfiles = await window.kakebo.saveCardImportProfiles(
         cardProfileValues()
       );
+      renderCardProfiles();
+      renderCardFiles();
       rememberSavedTab("cards");
+      const files = selectedCardFiles
+        .filter((file) => file.included)
+        .map((file) => ({ path: file.path, profileId: file.profileId }));
+      if (files.length === 0) {
+        showToast(
+          t("cards.selectAtLeastOne", "Select at least one workbook to import."),
+          true
+        );
+        return;
+      }
+      if (files.some((file) => file.profileId.length === 0)) {
+        showToast(
+          t(
+            "cards.noEnabledProfiles",
+            "Enable and save at least one card profile first."
+          ),
+          true
+        );
+        return;
+      }
       const result = await window.kakebo.importCardFiles({ files });
       const summary = element<HTMLElement>("card-import-result");
       summary.textContent = tf(

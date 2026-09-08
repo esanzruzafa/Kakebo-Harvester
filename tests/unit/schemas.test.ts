@@ -170,6 +170,19 @@ describe("provider response schemas", () => {
     ).toBe(false);
   });
 
+  it("canonicalizes transaction statuses before transaction mapping", () => {
+    const result = transactionsResponseSchema.parse({
+      transactions: [
+        {
+          transaction_amount: { currency: "EUR", amount: "10.00" },
+          status: " pdng "
+        }
+      ]
+    });
+
+    expect(result.transactions[0]?.status).toBe("PDNG");
+  });
+
   it("normalizes valid session expiry timestamps to UTC", () => {
     expect(
       sessionResponseSchema.parse({

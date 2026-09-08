@@ -94,7 +94,7 @@ describe("CardImportService", () => {
     database.close();
   });
 
-  it("updates a corrected statement row in place without retaining its obsolete movement", async () => {
+  it("preserves existing movements when a statement path is replaced without an anchor", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-card-corrected-source-row-"));
     const config = testConfig(root);
     const database = createDatabase(config.databasePath);
@@ -113,19 +113,24 @@ describe("CardImportService", () => {
     await writeXlsxFile(
       workbookRows([["21/06/2026", "Corrected coffee shop", "21/06/2026", "-5,00"]])
     ).toFile(statementPath);
-    const corrected = await importer.import({
+    const replaced = await importer.import({
       files: [{ path: statementPath, profileId: profile.id }]
     });
 
-    expect(corrected).toMatchObject({ rows: 1, updated: 1, inserted: 0 });
+    expect(replaced).toMatchObject({ rows: 1, updated: 0, inserted: 1 });
     expect(
       database
         .prepare(
           `SELECT booking_date, description_raw, amount
-           FROM transactions WHERE provider = 'manual-card'`
+           FROM transactions WHERE provider = 'manual-card' ORDER BY booking_date`
         )
         .all()
     ).toEqual([
+      {
+        booking_date: "2026-06-20",
+        description_raw: "Coffee shop",
+        amount: "-4.5"
+      },
       {
         booking_date: "2026-06-21",
         description_raw: "Corrected coffee shop",

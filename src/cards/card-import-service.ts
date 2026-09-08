@@ -577,7 +577,7 @@ function sourceRowOffset(
       offsets.add(mapping.sourceRow - row.sourceRow);
     }
   }
-  if (offsets.size === 0) return 0;
+  if (offsets.size === 0) return null;
   if (offsets.size !== 1) return null;
 
   return offsets.values().next().value ?? null;

@@ -164,6 +164,7 @@ const creditDebitIndicatorSchema = z
   .trim()
   .toUpperCase()
   .pipe(z.enum(["DBIT", "CRDT"]));
+const transactionStatusSchema = z.string().trim().toUpperCase();
 const partyAccountSchema = z
   .object({
     iban: z.string().nullish(),
@@ -180,7 +181,7 @@ export const transactionSchema = z
       amount: z.string()
     }),
     credit_debit_indicator: creditDebitIndicatorSchema.nullish(),
-    status: z.string().nullish(),
+    status: transactionStatusSchema.nullish(),
     booking_date: z.string().nullish(),
     value_date: z.string().nullish(),
     transaction_date: z.string().nullish(),
