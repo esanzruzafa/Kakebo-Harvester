@@ -183,6 +183,19 @@ describe("provider response schemas", () => {
     expect(result.transactions[0]?.status).toBe("PDNG");
   });
 
+  it("maps blank transaction statuses to unknown", () => {
+    const result = transactionsResponseSchema.parse({
+      transactions: [
+        {
+          transaction_amount: { currency: "EUR", amount: "10.00" },
+          status: "   "
+        }
+      ]
+    });
+
+    expect(result.transactions[0]?.status).toBe("unknown");
+  });
+
   it("normalizes valid session expiry timestamps to UTC", () => {
     expect(
       sessionResponseSchema.parse({

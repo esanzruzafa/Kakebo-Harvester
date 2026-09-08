@@ -24,7 +24,7 @@ import { TransactionRepository } from "../transactions/deduplication.js";
 import { mapTransaction } from "../transactions/transaction-mapper.js";
 import { createId, decryptSecret, stableJson } from "../utils/crypto.js";
 import { assertIsoDate } from "../utils/dates.js";
-import { safeMessage } from "../utils/text.js";
+import { normalizeText, safeMessage } from "../utils/text.js";
 
 interface ActiveSession {
   connection_id: string;
@@ -101,6 +101,114 @@ function fallbackClaimKey(transaction: ReturnType<typeof mapTransaction>): strin
     currency: transaction.currency,
     direction: transaction.direction
   });
+}
+
+interface FallbackOccurrenceClaim {
+  identity: ReturnType<typeof mapTransaction>;
+  occurrence: number;
+}
+
+function sameOrMissing(
+  left: string | null,
+  right: string | null
+): boolean {
+  return left === null || right === null || left === right;
+}
+
+function compatibleDates(
+  left: ReturnType<typeof mapTransaction>,
+  right: ReturnType<typeof mapTransaction>
+): boolean {
+  const leftDates = [
+    left.booking_date,
+    left.value_date,
+    left.transaction_datetime
+  ];
+  const rightDates = [
+    right.booking_date,
+    right.value_date,
+    right.transaction_datetime
+  ];
+  if (
+    !leftDates.every((date, index) =>
+      sameOrMissing(date, rightDates[index] ?? null)
+    )
+  ) {
+    return false;
+  }
+  if (leftDates.every((date) => date === null)) return true;
+  if (rightDates.every((date) => date === null)) return true;
+  return leftDates.some(
+    (date, index) => date !== null && date === rightDates[index]
+  );
+}
+
+function compatibleCounterparties(
+  left: ReturnType<typeof mapTransaction>,
+  right: ReturnType<typeof mapTransaction>
+): boolean {
+  const leftFields = [
+    left.merchant_name ? normalizeText(left.merchant_name) : null,
+    left.creditor_name ? normalizeText(left.creditor_name) : null,
+    left.debtor_name ? normalizeText(left.debtor_name) : null,
+    left.counterparty_iban_masked,
+    left.counterparty_identification_hash
+  ];
+  const rightFields = [
+    right.merchant_name ? normalizeText(right.merchant_name) : null,
+    right.creditor_name ? normalizeText(right.creditor_name) : null,
+    right.debtor_name ? normalizeText(right.debtor_name) : null,
+    right.counterparty_iban_masked,
+    right.counterparty_identification_hash
+  ];
+  if (
+    !leftFields.every((field, index) =>
+      sameOrMissing(field, rightFields[index] ?? null)
+    )
+  ) {
+    return false;
+  }
+  if (leftFields.every((field) => field === null)) return true;
+  if (rightFields.every((field) => field === null)) return true;
+  return leftFields.some(
+    (field, index) => field !== null && field === rightFields[index]
+  );
+}
+
+function compatibleFallbackClaims(
+  left: ReturnType<typeof mapTransaction>,
+  right: ReturnType<typeof mapTransaction>
+): boolean {
+  return (
+    (left.status === right.status || left.status === "unknown" || right.status === "unknown") &&
+    compatibleDates(left, right) &&
+    (left.description_normalized === right.description_normalized ||
+      left.description_normalized === "" ||
+      right.description_normalized === "") &&
+    compatibleCounterparties(left, right)
+  );
+}
+
+function claimedFallbackOccurrences(
+  claims: ReadonlyMap<string, FallbackOccurrenceClaim[]>,
+  fallbackIdentity: ReturnType<typeof mapTransaction>
+): Set<number> {
+  return new Set(
+    (claims.get(fallbackClaimKey(fallbackIdentity)) ?? [])
+      .filter((claim) => compatibleFallbackClaims(claim.identity, fallbackIdentity))
+      .map((claim) => claim.occurrence)
+  );
+}
+
+function claimFallbackOccurrence(
+  claims: Map<string, FallbackOccurrenceClaim[]>,
+  fallbackIdentity: ReturnType<typeof mapTransaction>,
+  occurrence: number
+): void {
+  const key = fallbackClaimKey(fallbackIdentity);
+  const claimed = claims.get(key) ?? [];
+  claimed.push({ identity: fallbackIdentity, occurrence });
+  claims.set(key, claimed);
 }
 
 interface FetchedTransactionPage {
@@ -804,7 +912,7 @@ export class SyncService {
   ): Promise<SyncSummary> {
     const summary = emptySummary();
     const seenKeys = new Set<string>();
-    const fallbackOccurrences = new Map<string, Set<number>>();
+    const fallbackOccurrences = new Map<string, FallbackOccurrenceClaim[]>();
     const fetchedPages: FetchedTransactionPage[] = [];
     let continuationKey: string | undefined;
     let page = 1;
@@ -896,8 +1004,10 @@ export class SyncService {
             rawPath: fetchedPage.raw.path,
             fallbackOccurrence: 1
           });
-          const claimKey = fallbackClaimKey(fallbackIdentity);
-          const claimed = fallbackOccurrences.get(claimKey) ?? new Set<number>();
+          const claimed = claimedFallbackOccurrences(
+            fallbackOccurrences,
+            fallbackIdentity
+          );
           const resolution = this.transactions.resolveFallbackIdentity(
             normalized,
             fallbackIdentity,
@@ -909,8 +1019,11 @@ export class SyncService {
           if (!resolution.matchedExactIdentity && resolution.matchExistingFallback) {
             continue;
           }
-          claimed.add(resolution.occurrence);
-          fallbackOccurrences.set(claimKey, claimed);
+          claimFallbackOccurrence(
+            fallbackOccurrences,
+            fallbackIdentity,
+            resolution.occurrence
+          );
           reservedIdentifiedFallbacks.set(identityKey, resolution);
         }
       }
@@ -962,8 +1075,10 @@ export class SyncService {
             rawPath: raw.path,
             fallbackOccurrence: 1
           });
-          const claimKey = fallbackClaimKey(fallbackIdentity);
-          const claimed = fallbackOccurrences.get(claimKey) ?? new Set<number>();
+          const claimed = claimedFallbackOccurrences(
+            fallbackOccurrences,
+            fallbackIdentity
+          );
           const identityKey = normalized.entry_reference
             ? `entry:${normalized.entry_reference}`
             : normalized.provider_transaction_id
@@ -979,8 +1094,11 @@ export class SyncService {
               fallbackIdentity,
               claimed
             );
-          claimed.add(resolved.occurrence);
-          fallbackOccurrences.set(claimKey, claimed);
+          claimFallbackOccurrence(
+            fallbackOccurrences,
+            fallbackIdentity,
+            resolved.occurrence
+          );
           normalized = mapTransaction({
             transaction: providerTransaction,
             account,

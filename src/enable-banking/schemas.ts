@@ -164,7 +164,11 @@ const creditDebitIndicatorSchema = z
   .trim()
   .toUpperCase()
   .pipe(z.enum(["DBIT", "CRDT"]));
-const transactionStatusSchema = z.string().trim().toUpperCase();
+const transactionStatusSchema = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .transform((status) => status || "unknown");
 const partyAccountSchema = z
   .object({
     iban: z.string().nullish(),

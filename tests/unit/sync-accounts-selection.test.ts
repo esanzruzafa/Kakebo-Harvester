@@ -1091,4 +1091,87 @@ describe("account detail synchronization selection", () => {
     ]);
     database.close();
   });
+
+  it("does not let an incompatible fallback observation claim an existing occurrence", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-compatible-fallback-claims-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', ?, 'Demo', 'ES', 'personal',
+                   'Demo personal', 'AUTHORIZED', ?)`
+      )
+      .run(config.appEnv, now);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('session', 'connection', ?, ?, 'AUTHORIZED')`
+      )
+      .run(encryptSecret("provider-session", config.sessionEncryptionKey), now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, name, sync_enabled,
+           active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider-account', 'Account', 1, 1, ?, ?)`
+      )
+      .run(now, now);
+    database
+      .prepare(
+        `INSERT INTO transactions (
+           id, movement_key, reconciliation_key, provider, environment,
+           bank_connection_id, account_id, fallback_occurrence,
+           status, booking_date, amount, currency, direction, description_raw,
+           description_normalized, reviewed, first_seen_at, last_seen_at, imported_at,
+           raw_fingerprint
+         ) VALUES ('july', 'july-key', 'july-reconciliation', 'enable-banking', ?,
+                   'connection', 'account', 1, 'booked', '2026-07-15', '-10', 'EUR',
+                   'expense', 'July movement', 'JULY MOVEMENT', 0, ?, ?, ?, 'july')`
+      )
+      .run(config.appEnv, now, now, now);
+    const getTransactions = vi.fn().mockResolvedValue({
+      transactions: [
+        {
+          transaction_amount: { amount: "10", currency: "EUR" },
+          credit_debit_indicator: "DBIT",
+          booking_date: "2026-06-15",
+          status: "BOOK",
+          remittance_information: "June movement"
+        },
+        {
+          transaction_amount: { amount: "10", currency: "EUR" },
+          credit_debit_indicator: "DBIT",
+          booking_date: "2026-07-15",
+          status: "BOOK",
+          remittance_information: "July movement"
+        }
+      ],
+      continuation_key: null
+    });
+
+    const result = await new SyncService(
+      config,
+      database,
+      { getTransactions } as unknown as EnableBankingClient
+    ).syncTransactions("2026-06-01", "2026-07-31");
+
+    expect(result).toMatchObject({ inserted: 1, updated: 1, duplicates: 0 });
+    expect(
+      database
+        .prepare(
+          `SELECT booking_date, fallback_occurrence FROM transactions
+           ORDER BY booking_date`
+        )
+        .all()
+    ).toEqual([
+      { booking_date: "2026-06-15", fallback_occurrence: 1 },
+      { booking_date: "2026-07-15", fallback_occurrence: 1 }
+    ]);
+    database.close();
+  });
 });
