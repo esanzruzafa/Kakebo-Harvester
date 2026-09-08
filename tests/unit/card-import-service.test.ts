@@ -135,6 +135,51 @@ describe("CardImportService", () => {
     database.close();
   });
 
+  it("keeps a new row inserted above an existing statement movement", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-inserted-source-row-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const profiles = createDefaultCardImportProfiles();
+    const profile = profiles[0];
+    if (!profile) throw new Error("The default card profile is missing.");
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save(profiles);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const statementPath = join(root, "card-inserted-row.xlsx");
+    const original: [string, string, string, string] = [
+      "20/06/2026",
+      "Existing movement",
+      "20/06/2026",
+      "-4,50"
+    ];
+    await writeXlsxFile(workbookRows([original])).toFile(statementPath);
+    const importer = new CardImportService(config, database);
+    await importer.import({ files: [{ path: statementPath, profileId: profile.id }] });
+
+    await writeXlsxFile(
+      workbookRows([
+        ["19/06/2026", "Inserted movement", "19/06/2026", "-3,00"],
+        original
+      ])
+    ).toFile(statementPath);
+    const updated = await importer.import({
+      files: [{ path: statementPath, profileId: profile.id }]
+    });
+
+    expect(updated).toMatchObject({ rows: 2, inserted: 1, duplicates: 1 });
+    expect(
+      database
+        .prepare(
+          `SELECT description_raw FROM transactions
+           WHERE provider = 'manual-card' ORDER BY booking_date`
+        )
+        .all()
+    ).toEqual([
+      { description_raw: "Inserted movement" },
+      { description_raw: "Existing movement" }
+    ]);
+    database.close();
+  });
+
   it("updates the stored local account labels when an imported card profile is renamed", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-card-profile-labels-"));
     const config = testConfig(root);

@@ -160,6 +160,49 @@ describe("desktop run repository", () => {
     database.close();
   });
 
+  it("selects the latest reference date when balances share a preferred type", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-audit-reference-date-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo Bank', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, name, active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider', 'Account', 1, ?, ?)`
+      )
+      .run(now, now);
+    const repository = new DesktopRunRepository(database);
+    const runId = repository.begin({
+      dateFrom: "2026-01-01",
+      dateTo: "2026-01-31",
+      steps: ["balances"]
+    });
+    const insert = database.prepare(
+      `INSERT INTO balances (
+         id, account_id, balance_type, amount, currency, reference_date, extracted_at, desktop_run_id
+       ) VALUES (?, 'account', 'CLBD', ?, 'EUR', ?, ?, ?)`
+    );
+    insert.run("a-older", "100", "2026-01-30", now, runId);
+    insert.run("z-newer", "200", "2026-01-31", now, runId);
+
+    repository.finish(runId, "SUCCESS");
+
+    expect(repository.list()[0]?.accounts).toMatchObject([
+      { amount: "200", referenceDate: "2026-01-31" }
+    ]);
+    database.close();
+  });
+
   it("rolls back balance snapshots when a run cannot be finalized", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-audit-rollback-"));
     const config = testConfig(root);

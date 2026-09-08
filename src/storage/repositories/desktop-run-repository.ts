@@ -219,14 +219,16 @@ export class DesktopRunRepository {
          ORDER BY
            CASE WHEN candidate.desktop_run_id = ? THEN 0 ELSE 1 END,
            candidate.extracted_at DESC,
-           CASE candidate.balance_type
+            CASE candidate.balance_type
              WHEN 'CLBD' THEN 0
              WHEN 'ITAV' THEN 1
              WHEN 'closingBooked' THEN 2
-             WHEN 'interimAvailable' THEN 3
-             ELSE 9
-           END,
-           candidate.id
+              WHEN 'interimAvailable' THEN 3
+              ELSE 9
+            END,
+            CASE WHEN date(candidate.reference_date) IS NULL THEN 1 ELSE 0 END,
+            date(candidate.reference_date) DESC,
+            candidate.id
          LIMIT 1
        )
        WHERE a.active = 1

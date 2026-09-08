@@ -149,6 +149,51 @@ describe("account synchronization eligibility", () => {
     database.close();
   });
 
+  it("preserves an account when its provider ID rotates and its IBAN casing changes", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-iban-casing-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    const repository = new AccountRepository(database);
+    const hash = providerIdentificationHash(
+      [["account", "account_id", "iban"]],
+      "stable-iban-hash"
+    );
+    const originalId = repository.upsert(
+      "connection",
+      {
+        uid: "original-provider-id",
+        identification_hash: hash,
+        account_id: { iban: "ES9121000418450200051332" }
+      },
+      null
+    );
+    const refreshedId = repository.upsert(
+      "connection",
+      {
+        uid: "rotated-provider-id",
+        identification_hash: hash,
+        account_id: { iban: "es91 2100 0418 4502 0005 1332" }
+      },
+      null
+    );
+
+    expect(refreshedId).toBe(originalId);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM accounts").get()).toEqual({
+      count: 1
+    });
+    database.close();
+  });
+
   it("reconciles plural identification hashes without losing account settings", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-account-hashes-"));
     const config = testConfig(root);

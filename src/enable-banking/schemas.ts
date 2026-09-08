@@ -105,7 +105,7 @@ export const accountSchema = z
 
 export const sessionResponseSchema = z
   .object({
-    session_id: z.string(),
+    session_id: providerAccountIdentifierSchema,
     accounts: z.array(accountSchema),
     access: z.object({ valid_until: sessionExpirySchema }).loose().optional()
   })

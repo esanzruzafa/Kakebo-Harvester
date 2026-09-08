@@ -60,6 +60,15 @@ describe("provider response schemas", () => {
     ).toBe(false);
   });
 
+  it("rejects blank provider session identifiers", () => {
+    expect(
+      sessionResponseSchema.safeParse({
+        session_id: "  ",
+        accounts: []
+      }).success
+    ).toBe(false);
+  });
+
   it("accepts nullable optional balance dates", () => {
     const result = balancesResponseSchema.parse({
       balances: [

@@ -92,6 +92,10 @@ function stableIdentificationHashes(account: AccountResource): string[] {
   );
 }
 
+function canonicalIban(value: string | null | undefined): string | null {
+  return value ? value.replace(/[\s-]/gu, "").toUpperCase() : null;
+}
+
 function providerText(value: unknown): string | null {
   if (typeof value === "string") return value;
   if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
@@ -361,7 +365,7 @@ export class AccountRepository {
     const execute = this.database.transaction(() => {
       const now = new Date().toISOString();
       const hashes = stableIdentificationHashes(account);
-      const iban = account.account_id?.iban;
+      const iban = canonicalIban(account.account_id?.iban);
       const maskedIban = maskIdentifier(iban);
       const matchesByHash = this.findByIdentificationHashes(
         connectionId,

@@ -70,6 +70,11 @@ interface ExistingCardTransaction {
   sourcePath: string | null;
 }
 
+interface SourceRowMapping {
+  providerTransactionId: string;
+  sourceRow: number | null;
+}
+
 function cardSemanticKey(row: ParsedCardRow): string {
   return stableJson({
     profileId: row.profile.id,
@@ -524,7 +529,10 @@ function existingSourceMappings(
   database: SqliteDatabase,
   profileId: string,
   sourcePath: string
-): { bySemanticKey: Map<string, string>; bySourceRow: Map<number, string> } {
+): {
+  bySemanticKey: Map<string, SourceRowMapping>;
+  bySourceRow: Map<number, string>;
+} {
   const rows = database
     .prepare(
       `SELECT semantic_key_hash, occurrence, source_row, provider_transaction_id
@@ -541,7 +549,10 @@ function existingSourceMappings(
     bySemanticKey: new Map(
       rows.map((row) => [
         `${row.semantic_key_hash}:${row.occurrence}`,
-        row.provider_transaction_id
+        {
+          providerTransactionId: row.provider_transaction_id,
+          sourceRow: row.source_row
+        }
       ])
     ),
     bySourceRow: new Map(
@@ -555,6 +566,36 @@ function existingSourceMappings(
   };
 }
 
+function sourceRowOffset(
+  rows: ParsedCardRow[],
+  mappings: ReturnType<typeof existingSourceMappings>
+): number | null {
+  const offsets = new Set<number>();
+  for (const row of rows) {
+    const mapping = mappings.bySemanticKey.get(sourceMappingKey(row));
+    if (mapping && mapping.sourceRow !== null) {
+      offsets.add(mapping.sourceRow - row.sourceRow);
+    }
+  }
+  if (offsets.size === 0) return 0;
+  if (offsets.size !== 1) return null;
+
+  return offsets.values().next().value ?? null;
+}
+
+function clearSourceRowPositions(
+  database: SqliteDatabase,
+  profileId: string,
+  sourcePath: string
+): void {
+  database
+    .prepare(
+      `UPDATE card_import_source_rows SET source_row = NULL
+       WHERE profile_id = ? AND source_path_hash = ?`
+    )
+    .run(profileId, sourcePathHash(sourcePath));
+}
+
 function saveSourceMapping(
   database: SqliteDatabase,
   row: ParsedCardRow,
@@ -562,27 +603,29 @@ function saveSourceMapping(
 ): void {
   const now = new Date().toISOString();
   const pathHash = sourcePathHash(row.sourcePath);
-  const existingBySourceRow = database
+  const existingByProviderTransactionId = database
     .prepare(
       `SELECT 1 FROM card_import_source_rows
-       WHERE profile_id = ? AND source_path_hash = ? AND source_row = ?`
+       WHERE profile_id = ? AND source_path_hash = ? AND provider_transaction_id = ?`
     )
-    .get(row.profile.id, pathHash, row.sourceRow);
-  if (existingBySourceRow) {
+    .get(row.profile.id, pathHash, providerTransactionId);
+  if (existingByProviderTransactionId) {
     database
       .prepare(
         `UPDATE card_import_source_rows
-         SET semantic_key_hash = ?, occurrence = ?, provider_transaction_id = ?, last_seen_at = ?
-         WHERE profile_id = ? AND source_path_hash = ? AND source_row = ?`
+         SET semantic_key_hash = ?, occurrence = ?, source_row = ?,
+             provider_transaction_id = ?, last_seen_at = ?
+         WHERE profile_id = ? AND source_path_hash = ? AND provider_transaction_id = ?`
       )
       .run(
         cardSemanticKeyHash(row),
         row.occurrence,
+        row.sourceRow,
         providerTransactionId,
         now,
         row.profile.id,
         pathHash,
-        row.sourceRow
+        providerTransactionId
       );
     return;
   }
@@ -679,6 +722,8 @@ export class CardImportService {
           file.profile.id,
           file.path
         );
+        const stableSourceRowOffset = sourceRowOffset(file.rows, sourceMappings);
+        clearSourceRowPositions(this.database, file.profile.id, file.path);
         const comparableFilePath = comparableSourcePath(file.path);
         // Two independent matching movements are strong evidence that this is
         // an overlapping export from another source. A persisted source-row
@@ -697,6 +742,10 @@ export class CardImportService {
           duplicates: 0,
           reconciled: 0
         };
+        const sourceRowsToSave: Array<{
+          row: ParsedCardRow;
+          providerTransactionId: string;
+        }> = [];
         for (const row of file.rows) {
           const candidates =
             existingBySemanticKey.get(cardSemanticKey(row)) ?? [];
@@ -706,8 +755,13 @@ export class CardImportService {
               comparableSourcePath(candidate.sourcePath) === comparableFilePath
           );
           const existingProviderTransactionId =
-            sourceMappings.bySemanticKey.get(sourceMappingKey(row)) ??
-            sourceMappings.bySourceRow.get(row.sourceRow) ??
+            sourceMappings.bySemanticKey.get(sourceMappingKey(row))
+              ?.providerTransactionId ??
+            (stableSourceRowOffset === null
+              ? undefined
+              : sourceMappings.bySourceRow.get(
+                  row.sourceRow + stableSourceRowOffset
+                )) ??
             sameSourceCandidates[row.occurrence - 1]?.providerTransactionId ??
             (overlapsExistingStatement
               ? candidates[row.occurrence - 1]?.providerTransactionId
@@ -724,11 +778,10 @@ export class CardImportService {
           transaction.subcategory_auto = category.subcategory;
           const outcome = repository.upsert(transaction);
           if (transaction.provider_transaction_id) {
-            saveSourceMapping(
-              this.database,
+            sourceRowsToSave.push({
               row,
-              transaction.provider_transaction_id
-            );
+              providerTransactionId: transaction.provider_transaction_id
+            });
           }
           const resultField =
             outcome === "duplicate"
@@ -737,6 +790,13 @@ export class CardImportService {
                 ? "reconciled"
                 : outcome;
           fileResult[resultField] += 1;
+        }
+        for (const mapping of sourceRowsToSave) {
+          saveSourceMapping(
+            this.database,
+            mapping.row,
+            mapping.providerTransactionId
+          );
         }
         result.files.push(fileResult);
         result.rows += fileResult.rows;
