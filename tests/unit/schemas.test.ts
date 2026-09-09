@@ -201,9 +201,9 @@ describe("provider response schemas", () => {
       sessionResponseSchema.parse({
         session_id: "session",
         accounts: [],
-        access: { valid_until: "2026-10-01T02:00:00+02:00" }
+        access: { valid_until: "2099-10-01T02:00:00+02:00" }
       }).access?.valid_until
-    ).toBe("2026-10-01T00:00:00.000Z");
+    ).toBe("2099-10-01T00:00:00.000Z");
   });
 
   it("rejects malformed session expiry timestamps", () => {
@@ -212,6 +212,16 @@ describe("provider response schemas", () => {
         session_id: "session",
         accounts: [],
         access: { valid_until: "not-a-timestamp" }
+      }).success
+    ).toBe(false);
+  });
+
+  it("rejects an already-expired session grant during session creation", () => {
+    expect(
+      sessionResponseSchema.safeParse({
+        session_id: "session",
+        accounts: [],
+        access: { valid_until: "2020-01-01T00:00:00Z" }
       }).success
     ).toBe(false);
   });

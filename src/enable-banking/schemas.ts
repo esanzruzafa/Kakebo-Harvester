@@ -34,6 +34,11 @@ const sessionExpirySchema = z.string().transform((value, context) => {
   return instant.toISOString();
 });
 
+const futureSessionExpirySchema = sessionExpirySchema.refine(
+  (value) => Date.parse(value) > Date.now(),
+  "Session expiry must be in the future."
+);
+
 const currencyCodeSchema = z
   .string()
   .trim()
@@ -107,7 +112,7 @@ export const sessionResponseSchema = z
   .object({
     session_id: providerAccountIdentifierSchema,
     accounts: z.array(accountSchema),
-    access: z.object({ valid_until: sessionExpirySchema }).loose().optional()
+    access: z.object({ valid_until: futureSessionExpirySchema }).loose().optional()
   })
   .loose();
 

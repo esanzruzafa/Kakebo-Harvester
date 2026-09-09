@@ -42,6 +42,12 @@ const envSchema = z.object({
     .min(1)
     .max(1_000_000)
     .default(10_000),
+  MAX_BUFFERED_TRANSACTION_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1_024)
+    .max(1_000_000_000)
+    .default(50_000_000),
   HTTP_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]),
   RETAIN_RAW_DATA: booleanString,
@@ -86,6 +92,7 @@ export interface AppConfig {
   pendingReconciliationWindowDays: number;
   maxTransactionPages: number;
   maxBufferedTransactionRows: number;
+  maxBufferedTransactionBytes: number;
   httpTimeoutMs: number;
   logLevel: string;
   retainRawData: boolean;
@@ -352,6 +359,7 @@ export function loadConfig(
     pendingReconciliationWindowDays: env.PENDING_RECONCILIATION_WINDOW_DAYS,
     maxTransactionPages: env.MAX_TRANSACTION_PAGES,
     maxBufferedTransactionRows: env.MAX_BUFFERED_TRANSACTION_ROWS,
+    maxBufferedTransactionBytes: env.MAX_BUFFERED_TRANSACTION_BYTES,
     httpTimeoutMs: env.HTTP_TIMEOUT_MS,
     logLevel: env.LOG_LEVEL,
     retainRawData: env.RETAIN_RAW_DATA,
