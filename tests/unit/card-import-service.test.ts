@@ -140,6 +140,66 @@ describe("CardImportService", () => {
     database.close();
   });
 
+  it("reuses the corrected row identity when two unchanged rows anchor an updated statement", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-anchored-correction-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const [profile] = createDefaultCardImportProfiles();
+    if (!profile) throw new Error("The default card profile is missing.");
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save([profile]);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const statementPath = join(root, "card-corrected.xlsx");
+    const firstAnchor: [string, string, string, string] = [
+      "20/06/2026",
+      "First anchor",
+      "20/06/2026",
+      "-1,00"
+    ];
+    const original: [string, string, string, string] = [
+      "21/06/2026",
+      "Original movement",
+      "21/06/2026",
+      "-2,00"
+    ];
+    const secondAnchor: [string, string, string, string] = [
+      "22/06/2026",
+      "Second anchor",
+      "22/06/2026",
+      "-3,00"
+    ];
+    await writeXlsxFile(workbookRows([firstAnchor, original, secondAnchor])).toFile(
+      statementPath
+    );
+    const importer = new CardImportService(config, database);
+    await importer.import({ files: [{ path: statementPath, profileId: profile.id }] });
+
+    await writeXlsxFile(
+      workbookRows([
+        firstAnchor,
+        ["21/06/2026", "Corrected movement", "21/06/2026", "-2,50"],
+        secondAnchor
+      ])
+    ).toFile(statementPath);
+    const updated = await importer.import({
+      files: [{ path: statementPath, profileId: profile.id }]
+    });
+
+    expect(updated).toMatchObject({ inserted: 0, updated: 1, duplicates: 2 });
+    expect(
+      database
+        .prepare(
+          `SELECT description_raw, amount FROM transactions
+           WHERE provider = 'manual-card' ORDER BY booking_date`
+        )
+        .all()
+    ).toEqual([
+      { description_raw: "First anchor", amount: "-1" },
+      { description_raw: "Corrected movement", amount: "-2.5" },
+      { description_raw: "Second anchor", amount: "-3" }
+    ]);
+    database.close();
+  });
+
   it("keeps a new row inserted above an existing statement movement", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-card-inserted-source-row-"));
     const config = testConfig(root);
@@ -571,6 +631,37 @@ describe("CardImportService", () => {
         )
         .get()
     ).toEqual({ count: 2 });
+    database.close();
+  });
+
+  it("rejects a multi-file import before retaining more rows than its request limit", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-request-row-limit-"));
+    const config = { ...testConfig(root), maxCardImportRows: 1 };
+    const database = createDatabase(config.databasePath);
+    const [profile] = createDefaultCardImportProfiles();
+    if (!profile) throw new Error("The default card profile is missing.");
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save([profile]);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const firstPath = join(root, "first.xlsx");
+    const secondPath = join(root, "second.xlsx");
+    await writeXlsxFile(
+      workbookRows([["20/06/2026", "First movement", "20/06/2026", "-1,00"]])
+    ).toFile(firstPath);
+    await writeXlsxFile(
+      workbookRows([["21/06/2026", "Second movement", "21/06/2026", "-2,00"]])
+    ).toFile(secondPath);
+
+    await expect(
+      new CardImportService(config, database).import({
+        files: [
+          { path: firstPath, profileId: profile.id },
+          { path: secondPath, profileId: profile.id }
+        ]
+      })
+    ).rejects.toThrow("MAX_CARD_IMPORT_ROWS=1");
+    expect(database.prepare("SELECT COUNT(*) AS count FROM transactions").get()).toEqual({
+      count: 0
+    });
     database.close();
   });
 });

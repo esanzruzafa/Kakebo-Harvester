@@ -699,4 +699,31 @@ describe("account synchronization eligibility", () => {
       { provider_account_id: "provider-second", display_name: "Second account" }
     ]);
   });
+
+  it("uses a nonblank account name when provider details are blank", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-blank-details-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    const repository = new AccountRepository(database);
+    const id = repository.upsert(
+      "connection",
+      { uid: "provider-account", name: "Current account", details: "   " },
+      null
+    );
+
+    expect(
+      database.prepare("SELECT name, display_name FROM accounts WHERE id = ?").get(id)
+    ).toEqual({ name: "Current account", display_name: "Current account" });
+    database.close();
+  });
 });

@@ -96,6 +96,15 @@ function canonicalIban(value: string | null | undefined): string | null {
   return value ? value.replace(/[\s-]/gu, "").toUpperCase() : null;
 }
 
+function nonBlankProviderText(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
+function accountDisplayName(account: AccountResource): string | null {
+  return nonBlankProviderText(account.details) ?? nonBlankProviderText(account.name);
+}
+
 function providerText(value: unknown): string | null {
   if (typeof value === "string") return value;
   if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
@@ -416,7 +425,7 @@ export class AccountRepository {
             maskedIban,
             account.currency ?? null,
             account.name ?? null,
-            account.details ?? account.name ?? null,
+            accountDisplayName(account),
             account.cash_account_type ?? null,
             providerText(account.product),
             now,
@@ -444,7 +453,7 @@ export class AccountRepository {
           maskedIban,
           account.currency ?? null,
           account.name ?? null,
-          account.details ?? account.name ?? null,
+          accountDisplayName(account),
           account.cash_account_type ?? null,
           providerText(account.product),
           now,

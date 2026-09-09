@@ -571,13 +571,15 @@ function sourceRowOffset(
   mappings: ReturnType<typeof existingSourceMappings>
 ): number | null {
   const offsets = new Set<number>();
+  let matchingAnchors = 0;
   for (const row of rows) {
     const mapping = mappings.bySemanticKey.get(sourceMappingKey(row));
     if (mapping && mapping.sourceRow !== null) {
+      matchingAnchors += 1;
       offsets.add(mapping.sourceRow - row.sourceRow);
     }
   }
-  if (offsets.size < 2) return null;
+  if (matchingAnchors < 2) return null;
   if (offsets.size !== 1) return null;
 
   return offsets.values().next().value ?? null;
@@ -678,15 +680,23 @@ export class CardImportService {
       profile: CardImportProfile;
       rows: ParsedCardRow[];
     }> = [];
+    let parsedRows = 0;
     for (const file of request.files) {
       const profile = byId.get(file.profileId);
       if (!profile || !profile.enabled) {
         throw new Error(`Unknown or disabled card profile: ${file.profileId}`);
       }
+      const rows = await parseFile(file.path, profile);
+      parsedRows += rows.length;
+      if (parsedRows > this.config.maxCardImportRows) {
+        throw new Error(
+          `Se alcanzó MAX_CARD_IMPORT_ROWS=${this.config.maxCardImportRows}; importación detenida.`
+        );
+      }
       parsedFiles.push({
         path: file.path,
         profile,
-        rows: await parseFile(file.path, profile)
+        rows
       });
     }
 

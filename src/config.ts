@@ -48,6 +48,12 @@ const envSchema = z.object({
     .min(1_024)
     .max(1_000_000_000)
     .default(50_000_000),
+  MAX_CARD_IMPORT_ROWS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(1_000_000)
+    .default(250_000),
   HTTP_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]),
   RETAIN_RAW_DATA: booleanString,
@@ -93,6 +99,7 @@ export interface AppConfig {
   maxTransactionPages: number;
   maxBufferedTransactionRows: number;
   maxBufferedTransactionBytes: number;
+  maxCardImportRows: number;
   httpTimeoutMs: number;
   logLevel: string;
   retainRawData: boolean;
@@ -360,6 +367,7 @@ export function loadConfig(
     maxTransactionPages: env.MAX_TRANSACTION_PAGES,
     maxBufferedTransactionRows: env.MAX_BUFFERED_TRANSACTION_ROWS,
     maxBufferedTransactionBytes: env.MAX_BUFFERED_TRANSACTION_BYTES,
+    maxCardImportRows: env.MAX_CARD_IMPORT_ROWS,
     httpTimeoutMs: env.HTTP_TIMEOUT_MS,
     logLevel: env.LOG_LEVEL,
     retainRawData: env.RETAIN_RAW_DATA,
