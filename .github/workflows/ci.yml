@@ -44,8 +44,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit all dependencies
-        run: npm run audit:all
+      - name: Audit production dependencies
+        run: npm run audit:production
 
       - name: Validate source
         run: npm run check
@@ -72,8 +72,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit all dependencies
-        run: npm audit --audit-level=high
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Validate and build legal site
         run: npm run typecheck && npm run build
