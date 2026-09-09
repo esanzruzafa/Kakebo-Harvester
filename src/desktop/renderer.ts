@@ -13,6 +13,10 @@ import { onlineRetryDecision, rateLimitPlan } from "./rate-limit-plan.js";
 import { formatExactCurrencyDecimal } from "../utils/currency.js";
 import type { CardImportProfile } from "../settings/card-import-profiles-store.js";
 import type { CategoryDefinition } from "../settings/categories-store.js";
+import {
+  applyCategoryDefinitionChange,
+  removeCategoryDefinition
+} from "./category-definition-change.js";
 import type {
   CategorizationExclusion,
   CategorizationRule
@@ -1735,6 +1739,23 @@ function renderCategories(): void {
       "Groceries, Restaurants, Transport"
     );
     valuesCell.append(values);
+    const synchronizeDefinition = () => {
+      const pendingCategories = categoryValues();
+      const replacement = pendingCategories[index];
+      if (!replacement) return;
+      const updated = applyCategoryDefinitionChange({
+        categories: state.categories,
+        rules: ruleValues(),
+        index,
+        replacement
+      });
+      state.categories = updated.categories;
+      state.rules = updated.rules;
+      renderCategories();
+      renderRules();
+    };
+    name.addEventListener("change", synchronizeDefinition);
+    values.addEventListener("change", synchronizeDefinition);
     const deleteCell = row.insertCell();
     const remove = button("×", "icon-button");
     remove.setAttribute(
@@ -1745,9 +1766,15 @@ function renderCategories(): void {
     );
     remove.addEventListener("click", () => {
       const pending = categoryValues();
-      pending.splice(index, 1);
-      state.categories = pending;
+      const updated = removeCategoryDefinition({
+        categories: pending,
+        rules: ruleValues(),
+        index
+      });
+      state.categories = updated.categories;
+      state.rules = updated.rules;
       renderCategories();
+      renderRules();
     });
     deleteCell.append(remove);
   });

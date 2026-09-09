@@ -15,9 +15,9 @@ import type { NormalizedTransaction } from "../transactions/transaction-mapper.j
 import { normalizeDecimal } from "../transactions/transaction-mapper.js";
 import { sha256, stableJson } from "../utils/crypto.js";
 import { normalizeText } from "../utils/text.js";
+import { assertWorkbookCanBeParsed } from "./xlsx-limits.js";
 
 const MAX_CARD_FILE_BYTES = 25 * 1024 * 1024;
-const MAX_CARD_ROWS = 100_000;
 
 export const cardImportRequestSchema = z.object({
   files: z
@@ -242,7 +242,8 @@ function mappedCells(row: unknown[], profile: CardImportProfile): unknown[] {
 
 async function parseFile(
   path: string,
-  profile: CardImportProfile
+  profile: CardImportProfile,
+  maxRows: number
 ): Promise<ParsedCardRow[]> {
   if (extname(path).toLowerCase() !== ".xlsx") {
     throw new Error(`Only .xlsx card statements are supported: ${path}`);
@@ -252,10 +253,8 @@ async function parseFile(
   if (details.size > MAX_CARD_FILE_BYTES) {
     throw new Error(`Card statement exceeds the 25 MB limit: ${path}`);
   }
+  await assertWorkbookCanBeParsed(path, profile.sheet || undefined, maxRows);
   const rows = await readSheet(path, profile.sheet || undefined);
-  if (rows.length > MAX_CARD_ROWS) {
-    throw new Error(`Card statement exceeds the ${MAX_CARD_ROWS} row limit: ${path}`);
-  }
   const parsed: ParsedCardRow[] = [];
   const occurrences = new Map<string, number>();
   for (let index = profile.startRow - 1; index < rows.length; index += 1) {
@@ -570,19 +569,21 @@ function sourceRowOffset(
   rows: ParsedCardRow[],
   mappings: ReturnType<typeof existingSourceMappings>
 ): number | null {
-  const offsets = new Set<number>();
-  let matchingAnchors = 0;
+  const offsets = new Map<number, number>();
   for (const row of rows) {
     const mapping = mappings.bySemanticKey.get(sourceMappingKey(row));
     if (mapping && mapping.sourceRow !== null) {
-      matchingAnchors += 1;
-      offsets.add(mapping.sourceRow - row.sourceRow);
+      const offset = mapping.sourceRow - row.sourceRow;
+      offsets.set(offset, (offsets.get(offset) ?? 0) + 1);
     }
   }
-  if (matchingAnchors < 2) return null;
-  if (offsets.size !== 1) return null;
+  const candidates = [...offsets.entries()].sort((left, right) => right[1] - left[1]);
+  const [offset, matches] = candidates[0] ?? [];
+  const secondMatches = candidates[1]?.[1] ?? 0;
+  if (offset === undefined || matches === undefined || matches < 2) return null;
+  if (matches <= secondMatches) return null;
 
-  return offsets.values().next().value ?? null;
+  return offset;
 }
 
 function clearSourceRowPositions(
@@ -686,7 +687,7 @@ export class CardImportService {
       if (!profile || !profile.enabled) {
         throw new Error(`Unknown or disabled card profile: ${file.profileId}`);
       }
-      const rows = await parseFile(file.path, profile);
+      const rows = await parseFile(file.path, profile, this.config.maxCardImportRows);
       parsedRows += rows.length;
       if (parsedRows > this.config.maxCardImportRows) {
         throw new Error(
@@ -764,14 +765,24 @@ export class CardImportService {
               candidate.sourcePath !== null &&
               comparableSourcePath(candidate.sourcePath) === comparableFilePath
           );
-          const existingProviderTransactionId =
-            sourceMappings.bySemanticKey.get(sourceMappingKey(row))
-              ?.providerTransactionId ??
-            (stableSourceRowOffset === null
+          const anchoredSourceRow =
+            stableSourceRowOffset === null
               ? undefined
-              : sourceMappings.bySourceRow.get(
-                  row.sourceRow + stableSourceRowOffset
-                )) ??
+              : row.sourceRow + stableSourceRowOffset;
+          const semanticMapping = sourceMappings.bySemanticKey.get(
+            sourceMappingKey(row)
+          );
+          const semanticProviderTransactionId =
+            semanticMapping &&
+            (anchoredSourceRow === undefined ||
+              semanticMapping.sourceRow === anchoredSourceRow)
+              ? semanticMapping.providerTransactionId
+              : undefined;
+          const existingProviderTransactionId =
+            (anchoredSourceRow === undefined
+              ? undefined
+              : sourceMappings.bySourceRow.get(anchoredSourceRow)) ??
+            semanticProviderTransactionId ??
             sameSourceCandidates[row.occurrence - 1]?.providerTransactionId ??
             (overlapsExistingStatement
               ? candidates[row.occurrence - 1]?.providerTransactionId

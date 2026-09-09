@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import safeRegex from "safe-regex2";
 import { z } from "zod";
 import { ConfigurationError } from "../errors.js";
 import { writeJsonAtomically } from "./atomic-json-file.js";
@@ -51,6 +52,9 @@ function validateAndSort<T extends { priority: number; operator: string; value: 
     priorities.add(value.priority);
     if (value.operator === "regex") {
       new RegExp(value.value, "iu");
+      if (!safeRegex(value.value)) {
+        throw new Error("The regular expression may cause excessive backtracking.");
+      }
     }
   }
   return values.sort((left, right) => left.priority - right.priority);

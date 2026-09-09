@@ -84,6 +84,24 @@ describe("categorization rule settings", () => {
     ).rejects.toBeInstanceOf(ConfigurationError);
   });
 
+  it("rejects a regex with nested quantifiers that can block categorization", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-rules-"));
+    const store = new CategorizationRulesStore(join(root, "rules.json"));
+
+    await expect(
+      store.save([
+        {
+          enabled: true,
+          priority: 10,
+          field: "descriptionNormalized",
+          operator: "regex",
+          value: "^(a+)+$",
+          category: "Other"
+        }
+      ])
+    ).rejects.toBeInstanceOf(ConfigurationError);
+  });
+
   it("normalizes a blank optional subcategory to no subcategory", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-rules-"));
     const store = new CategorizationRulesStore(join(root, "rules.json"));

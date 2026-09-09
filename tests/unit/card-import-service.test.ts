@@ -200,6 +200,67 @@ describe("CardImportService", () => {
     database.close();
   });
 
+  it("keeps distinct identities when an anchored duplicate movement changes occurrence", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-anchored-duplicate-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const [profile] = createDefaultCardImportProfiles();
+    if (!profile) throw new Error("The default card profile is missing.");
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save([profile]);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const statementPath = join(root, "card-duplicate.xlsx");
+    const firstAnchor: [string, string, string, string] = [
+      "20/06/2026",
+      "First anchor",
+      "20/06/2026",
+      "-1,00"
+    ];
+    const duplicate: [string, string, string, string] = [
+      "21/06/2026",
+      "Repeated purchase",
+      "21/06/2026",
+      "-2,00"
+    ];
+    const secondAnchor: [string, string, string, string] = [
+      "22/06/2026",
+      "Second anchor",
+      "22/06/2026",
+      "-3,00"
+    ];
+    await writeXlsxFile(
+      workbookRows([firstAnchor, duplicate, duplicate, secondAnchor])
+    ).toFile(statementPath);
+    const importer = new CardImportService(config, database);
+    await importer.import({ files: [{ path: statementPath, profileId: profile.id }] });
+
+    await writeXlsxFile(
+      workbookRows([
+        firstAnchor,
+        ["21/06/2026", "Corrected purchase", "21/06/2026", "-2,50"],
+        duplicate,
+        secondAnchor
+      ])
+    ).toFile(statementPath);
+
+    await expect(
+      importer.import({ files: [{ path: statementPath, profileId: profile.id }] })
+    ).resolves.toMatchObject({ inserted: 0, updated: 1, duplicates: 3 });
+    expect(
+      database
+        .prepare(
+          `SELECT description_raw, amount FROM transactions
+           WHERE provider = 'manual-card' ORDER BY description_raw`
+        )
+        .all()
+    ).toEqual([
+      { description_raw: "Corrected purchase", amount: "-2.5" },
+      { description_raw: "First anchor", amount: "-1" },
+      { description_raw: "Repeated purchase", amount: "-2" },
+      { description_raw: "Second anchor", amount: "-3" }
+    ]);
+    database.close();
+  });
+
   it("keeps a new row inserted above an existing statement movement", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-card-inserted-source-row-"));
     const config = testConfig(root);
