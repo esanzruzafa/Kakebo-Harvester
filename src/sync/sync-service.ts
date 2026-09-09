@@ -914,6 +914,7 @@ export class SyncService {
     const seenKeys = new Set<string>();
     const fallbackOccurrences = new Map<string, FallbackOccurrenceClaim[]>();
     const fetchedPages: FetchedTransactionPage[] = [];
+    let bufferedTransactionRows = 0;
     let continuationKey: string | undefined;
     let page = 1;
     let strategy: "longest" | undefined;
@@ -940,6 +941,12 @@ export class SyncService {
           continue;
         }
         throw error;
+      }
+      bufferedTransactionRows += response.transactions.length;
+      if (bufferedTransactionRows > this.config.maxBufferedTransactionRows) {
+        throw new Error(
+          `Se alcanzó MAX_BUFFERED_TRANSACTION_ROWS=${this.config.maxBufferedTransactionRows}; sincronización detenida.`
+        );
       }
       const raw = await this.rawStore.write("transactions", account.id, response, String(page));
       fetchedPages.push({

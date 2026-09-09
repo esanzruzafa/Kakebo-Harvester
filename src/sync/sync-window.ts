@@ -8,7 +8,7 @@ export function getSyncWindow(
   const resolvedTo = dateTo ? assertIsoDate(dateTo, "--to") : todayIso();
   const resolvedFrom = dateFrom
     ? assertIsoDate(dateFrom, "--from")
-    : daysAgoIso(lookbackDays);
+    : daysAgoIso(lookbackDays, new Date(`${resolvedTo}T12:00:00.000Z`));
   if (resolvedFrom > resolvedTo) {
     throw new Error("--from no puede ser posterior a --to.");
   }

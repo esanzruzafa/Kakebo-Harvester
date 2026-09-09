@@ -131,6 +131,34 @@ describe("Enable Banking client", () => {
     );
   });
 
+  it("rejects account details returned for another account identifier", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-client-"));
+    const config = testConfig(root);
+    const pair = generateKeyPairSync("rsa", {
+      modulusLength: 2_048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(config.privateKeyPath, pair.privateKey);
+    const client = new EnableBankingClient(
+      config,
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            uid: "another-account",
+            currency: "EUR",
+            account_id: { iban: "ES1200000000000000000000" }
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      )
+    );
+
+    await expect(client.getAccount("account-id")).rejects.toThrow(
+      "no coincide con la cuenta solicitada"
+    );
+  });
+
   it("accepts a successful session deletion without a JSON response body", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-client-"));
     const config = testConfig(root);

@@ -80,6 +80,36 @@ describe("financial amount convention", () => {
     expect(secondOccurrence.fallback_occurrence).toBe(2);
   });
 
+  it("canonicalizes hyphenated counterparty IBANs before fallback matching", () => {
+    const account = {
+      id: "account",
+      bank_connection_id: "connection",
+      identification_hash: "stable-account",
+      provider_account_id: "provider-account"
+    } as StoredAccount;
+    const mapCounterparty = (iban: string) =>
+      mapTransaction({
+        transaction: {
+          transaction_amount: { amount: "10", currency: "EUR" },
+          credit_debit_indicator: "DBIT",
+          booking_date: "2026-08-21",
+          status: "BOOK",
+          creditor_account: { iban }
+        },
+        account,
+        environment: "sandbox",
+        rawPath: null
+      });
+
+    const hyphenated = mapCounterparty("ES91-2100-0418-4502-0005-1332");
+    const compact = mapCounterparty("ES9121000418450200051332");
+
+    expect(hyphenated.counterparty_iban_masked).toBe(compact.counterparty_iban_masked);
+    expect(hyphenated.counterparty_identification_hash).toBe(
+      compact.counterparty_identification_hash
+    );
+  });
+
   it("discards malformed provider dates before storing or keying movements", () => {
     const account = {
       id: "account",

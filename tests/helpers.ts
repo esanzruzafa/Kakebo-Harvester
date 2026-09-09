@@ -22,6 +22,7 @@ export function testConfig(root: string): AppConfig {
     syncLookbackDays: 15,
     pendingReconciliationWindowDays: 14,
     maxTransactionPages: 10,
+    maxBufferedTransactionRows: 10_000,
     httpTimeoutMs: 1_000,
     logLevel: "silent",
     retainRawData: false,

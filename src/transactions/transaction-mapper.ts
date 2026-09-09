@@ -121,7 +121,7 @@ function accountIdentifier(
 function canonicalCounterpartyIdentifier(
   account: ProviderTransaction["creditor_account"] | null | undefined
 ): string | null {
-  if (account?.iban) return account.iban.replace(/\s/gu, "").toUpperCase();
+  if (account?.iban) return account.iban.replace(/[\s-]/gu, "").toUpperCase();
   return accountIdentifier(account);
 }
 

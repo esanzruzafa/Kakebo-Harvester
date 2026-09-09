@@ -1174,4 +1174,60 @@ describe("account detail synchronization selection", () => {
     ]);
     database.close();
   });
+
+  it("stops transaction pagination before the configured in-memory row limit", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-transaction-row-limit-"));
+    const config = { ...testConfig(root), maxBufferedTransactionRows: 1 };
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', ?, 'Demo', 'ES', 'personal',
+                   'Demo personal', 'AUTHORIZED', ?)`
+      )
+      .run(config.appEnv, now);
+    database
+      .prepare(
+        `INSERT INTO provider_sessions (
+           id, bank_connection_id, provider_session_id_ciphertext, created_at, status
+         ) VALUES ('session', 'connection', ?, ?, 'AUTHORIZED')`
+      )
+      .run(encryptSecret("provider-session", config.sessionEncryptionKey), now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, name, sync_enabled,
+           active, first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider-account', 'Account', 1, 1, ?, ?)`
+      )
+      .run(now, now);
+    const transaction = {
+      transaction_amount: { amount: "10", currency: "EUR" },
+      credit_debit_indicator: "DBIT" as const,
+      booking_date: "2026-07-15",
+      status: "BOOK",
+      remittance_information: "Bounded movement"
+    };
+    const getTransactions = vi
+      .fn()
+      .mockResolvedValueOnce({ transactions: [transaction], continuation_key: "next" })
+      .mockResolvedValueOnce({ transactions: [transaction], continuation_key: null });
+
+    await expect(
+      new SyncService(
+        config,
+        database,
+        { getTransactions } as unknown as EnableBankingClient
+      ).syncTransactions("2026-07-01", "2026-07-31")
+    ).rejects.toThrow("MAX_BUFFERED_TRANSACTION_ROWS=1");
+
+    expect(getTransactions).toHaveBeenCalledTimes(2);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM transactions").get()).toEqual({
+      count: 0
+    });
+    database.close();
+  });
 });

@@ -465,12 +465,19 @@ export class EnableBankingClient {
   }
 
   public async getAccount(accountId: string, psuHeaders?: PsuHeaders) {
+    const requestedAccountId = accountId.trim();
     const value = await this.request(
-      `/accounts/${encodeURIComponent(accountId)}/details`,
+      `/accounts/${encodeURIComponent(requestedAccountId)}/details`,
       { ...(psuHeaders ? { psuHeaders } : {}) }
     );
     const { accountSchema } = await import("./schemas.js");
-    return this.parse(accountSchema, value, "la cuenta");
+    const account = this.parse(accountSchema, value, "la cuenta");
+    if (account.uid !== requestedAccountId) {
+      throw new Error(
+        "La respuesta de detalles no coincide con la cuenta solicitada."
+      );
+    }
+    return account;
   }
 
   public async getBalances(accountId: string, psuHeaders?: PsuHeaders) {
