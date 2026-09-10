@@ -11,6 +11,15 @@ export function daysAgoIso(days: number, now = new Date()): string {
   return todayIso(date);
 }
 
+export function daysBeforeIso(value: string, days: number): string {
+  const date = new Date(`${assertIsoDate(value, "date")}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() - days);
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export function monthsAgoIso(months: number, now = new Date()): string {
   const date = new Date(now);
   const originalDay = date.getDate();

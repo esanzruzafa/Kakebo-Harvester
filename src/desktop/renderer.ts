@@ -1690,7 +1690,7 @@ function renderRules(): void {
         t("rules.noSubcategory", "No subcategory")
       );
       replacement.dataset["field"] = "subcategory";
-      subcategory.replaceWith(replacement);
+      subcategoryCell.replaceChildren(replacement);
     });
 
     const deleteCell = row.insertCell();
