@@ -8,7 +8,7 @@ export default function TermsPage() {
     <div className="legal-shell" lang="en">
       <aside className="legal-aside">
         <p className="eyebrow">Document 02</p>
-        <p>Version: 25 July 2026</p>
+        <p>Version: 21 August 2026</p>
         <p>Jurisdiction: Spain</p>
         <p>
           Contact:{" "}
@@ -22,8 +22,8 @@ export default function TermsPage() {
         <h1>Terms of use</h1>
 
         <div className="notice">
-          By using Kakebo Harvester, you accept these terms for personal,
-          private and non-commercial use.
+          Use Kakebo Harvester lawfully and connect only accounts you are
+          authorised to access.
         </div>
 
         <h2>1. Owner</h2>
@@ -48,8 +48,16 @@ export default function TermsPage() {
         </p>
 
         <h2>3. Permitted use</h2>
+        <p>
+          The Kakebo Harvester source code is distributed under the{" "}
+          <a href="https://github.com/esanzruzafa/Kakebo-Harvester/blob/main/LICENSE">
+            MIT License
+          </a>
+          , which governs the rights to use, copy, modify and distribute the
+          software.
+        </p>
         <ul>
-          <li>Personal and non-commercial use by the account holder.</li>
+          <li>Lawful use in accordance with the MIT License.</li>
           <li>
             Authorisation only for accounts the user is legally entitled to
             access.
@@ -90,10 +98,9 @@ export default function TermsPage() {
 
         <h2>7. Availability and liability</h2>
         <p>
-          The application is provided for personal use and may contain errors or
-          be affected by changes to banking APIs. Continuous availability and
-          access to every product or transaction through PSD2 are not
-          guaranteed.
+          The application is provided as-is and may contain errors or be
+          affected by changes to banking APIs. Continuous availability and
+          access to every product or transaction through PSD2 are not guaranteed.
         </p>
         <p>
           Nothing in these terms limits rights granted by applicable law or

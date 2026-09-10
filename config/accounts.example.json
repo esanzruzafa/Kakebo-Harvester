@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "accounts": [
+    {
+      "identificationHash": "example-non-reversible-account-hash",
+      "bank": "Demo Bank",
+      "account": "Current account",
+      "masked": "ES************00",
+      "alias": "Shared account",
+      "syncEnabled": true,
+      "exportEnabled": true
+    }
+  ]
+}

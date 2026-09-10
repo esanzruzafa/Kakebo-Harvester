@@ -8,7 +8,7 @@ export default function SpanishPrivacyPage() {
     <div className="legal-shell" lang="es">
       <aside className="legal-aside">
         <p className="eyebrow">Documento 01</p>
-        <p>Versión: 25 de julio de 2026</p>
+        <p>Versión: 31 de agosto de 2026</p>
         <p>Ámbito: España</p>
         <p>
           Contacto:{" "}
@@ -22,8 +22,8 @@ export default function SpanishPrivacyPage() {
         <h1>Política de privacidad</h1>
 
         <div className="notice">
-          Kakebo Harvester es una aplicación personal, no comercial y de solo
-          lectura. No inicia pagos, transferencias ni operaciones financieras.
+          Kakebo Harvester es una aplicación local y de solo lectura. No inicia
+          pagos, transferencias ni operaciones financieras.
         </div>
 
         <h2>1. Responsable</h2>
@@ -80,9 +80,17 @@ export default function SpanishPrivacyPage() {
         <p>
           Kakebo Harvester se ejecuta localmente. La base de datos, los
           movimientos y las exportaciones se conservan en el equipo del usuario.
-          Los identificadores de sesión se cifran localmente, los identificadores
-          de cuenta se enmascaran y los archivos con datos financieros se
+          Los identificadores de sesión se cifran localmente, los números de
+          cuenta y las referencias de cuenta de las contrapartes se enmascaran en
+          los registros normalizados, y los archivos con datos financieros se
           excluyen del repositorio de código.
+        </p>
+        <p>
+          Si se activa la conservación opcional de respuestas raw, esos archivos
+          locales de diagnóstico pueden contener la respuesta del proveedor y no
+          están cifrados. El identificador de la sesión de autorización se
+          elimina de ellos. La conservación puede desactivarse y los archivos se
+          pueden borrar desde la aplicación.
         </p>
         <p>
           La aplicación no vende datos, no incorpora publicidad y no envía
@@ -94,8 +102,7 @@ export default function SpanishPrivacyPage() {
           Las sesiones se mantienen mientras el consentimiento siga vigente o
           hasta su revocación. Los movimientos históricos pueden conservarse
           localmente para mantener el registro Kakebo hasta que el usuario decida
-          eliminarlos. Las respuestas técnicas de diagnóstico opcionales pueden
-          desactivarse y eliminarse desde el equipo.
+          eliminarlos.
         </p>
 
         <h2>7. Derechos y retirada del consentimiento</h2>

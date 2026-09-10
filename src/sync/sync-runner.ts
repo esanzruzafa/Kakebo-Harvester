@@ -1,0 +1,372 @@
+import type { AppConfig } from "../config.js";
+import type { PsuHeaders } from "../enable-banking/client.js";
+import { CsvExporter } from "../export/csv-exporter.js";
+import {
+  KakeboError,
+  ReauthorizationRequiredError,
+  SyncAlreadyRunningError,
+  providerErrorCode
+} from "../errors.js";
+import type { SqliteDatabase } from "../storage/database.js";
+import { DesktopRunRepository } from "../storage/repositories/desktop-run-repository.js";
+import { AccountRepository } from "../storage/repositories/account-repository.js";
+import { AccountsConfigStore } from "../settings/accounts-config-store.js";
+import { createId } from "../utils/crypto.js";
+import { assertIsoDate } from "../utils/dates.js";
+import { safeMessage } from "../utils/text.js";
+import type {
+  AccountFailureDecision,
+  AccountSyncFailure,
+  SyncExecutionContext,
+  SyncService,
+  SyncSummary
+} from "./sync-service.js";
+
+export type SyncStep = "accounts" | "balances" | "transactions" | "export";
+
+export interface SyncRequest {
+  steps: SyncStep[];
+  dateFrom: string;
+  dateTo: string;
+  allowRateLimitOverride?: boolean;
+}
+
+export interface SyncRunResult {
+  accounts?: number;
+  balances?: number;
+  transactions?: SyncSummary;
+  export?: { path: string; rows: number };
+  accountFailures?: number;
+  skippedConnections?: number;
+  skippedRateLimitedConnections?: number;
+  skippedUnavailableConnections?: number;
+}
+
+export interface SyncProgressEvent {
+  type:
+    | "run-started"
+    | "step-started"
+    | "step-completed"
+    | "account-failed"
+    | "reauthorization-required"
+    | "run-completed"
+    | "run-failed";
+  step?: SyncStep;
+  completedSteps: number;
+  totalSteps: number;
+  message: string;
+  accountFailure?: AccountSyncFailure;
+}
+
+export interface SyncRunOptions {
+  onProgress?: (event: SyncProgressEvent) => void;
+  onAccountFailure?: (
+    failure: AccountSyncFailure
+  ) => Promise<AccountFailureDecision>;
+  onReauthorization?: (connectionIds: readonly string[]) => Promise<void>;
+  psuHeaders?: PsuHeaders;
+  allowRateLimitOverride?: boolean;
+}
+
+const orderedSteps: SyncStep[] = [
+  "accounts",
+  "balances",
+  "transactions",
+  "export"
+];
+
+export const SYNCHRONIZATION_LOCK_STALE_AFTER_MS = 6 * 60 * 60 * 1_000;
+
+export class SynchronizationLock {
+  private static readonly staleAfterMs = SYNCHRONIZATION_LOCK_STALE_AFTER_MS;
+  private static readonly heartbeatIntervalMs = 5 * 60 * 1_000;
+  private readonly owner = createId();
+  private acquired = false;
+  private heartbeat: NodeJS.Timeout | undefined;
+  private renewalError: Error | undefined;
+
+  public constructor(private readonly database: SqliteDatabase) {}
+
+  public acquire(): void {
+    const staleBefore = new Date(
+      Date.now() - SynchronizationLock.staleAfterMs
+    ).toISOString();
+    const transaction = this.database.transaction(() => {
+      this.database
+        .prepare(
+          `DELETE FROM application_locks
+           WHERE name = 'synchronization' AND acquired_at < ?`
+        )
+        .run(staleBefore);
+      this.database
+        .prepare(
+          `INSERT INTO application_locks (name, owner, acquired_at)
+           VALUES ('synchronization', ?, ?)`
+        )
+        .run(this.owner, new Date().toISOString());
+    });
+    try {
+      transaction();
+      this.acquired = true;
+      this.heartbeat = setInterval(() => {
+        try {
+          this.renew();
+        } catch (error) {
+          this.renewalError =
+            error instanceof Error ? error : new Error(String(error));
+        }
+      }, SynchronizationLock.heartbeatIntervalMs);
+      this.heartbeat.unref();
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        String(error.code).startsWith("SQLITE_CONSTRAINT")
+      ) {
+        throw new SyncAlreadyRunningError();
+      }
+      throw error;
+    }
+  }
+
+  public renew(): void {
+    if (!this.acquired) return;
+    const result = this.database
+      .prepare(
+        `UPDATE application_locks SET acquired_at = ?
+         WHERE name = 'synchronization' AND owner = ?`
+      )
+      .run(new Date().toISOString(), this.owner);
+    if (result.changes !== 1) {
+      this.acquired = false;
+      throw new Error("The synchronization lock lease was lost.");
+    }
+  }
+
+  public assertActive(): void {
+    if (this.renewalError) throw this.renewalError;
+    if (!this.acquired) {
+      throw new Error("The synchronization lock lease is no longer active.");
+    }
+  }
+
+  public release(): void {
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.heartbeat = undefined;
+    if (!this.acquired) return;
+    this.database
+      .prepare(
+        `DELETE FROM application_locks
+         WHERE name = 'synchronization' AND owner = ?`
+      )
+      .run(this.owner);
+    this.acquired = false;
+  }
+}
+
+export class SyncRunner {
+  private readonly exporter: CsvExporter;
+
+  public constructor(
+    private readonly config: AppConfig,
+    private readonly database: SqliteDatabase,
+    private readonly sync: SyncService
+  ) {
+    this.exporter = new CsvExporter(config, database);
+  }
+
+  private async executeStep(
+    step: SyncStep,
+    request: SyncRequest,
+    result: SyncRunResult,
+    desktopRunId: string,
+    context: SyncExecutionContext
+  ): Promise<void> {
+    if (step === "accounts") {
+      result.accounts = await this.sync.syncAccounts(context);
+      await new AccountsConfigStore(this.config.accountsConfigPath).save(
+        new AccountRepository(this.database).listEditable()
+      );
+    }
+    if (step === "balances") {
+      result.balances = await this.sync.syncBalances(desktopRunId, context);
+    }
+    if (step === "transactions") {
+      result.transactions = await this.sync.syncTransactions(
+        request.dateFrom,
+        request.dateTo,
+        context
+      );
+    }
+    if (step === "export") result.export = await this.exporter.export({ highlightSource: "banking" });
+  }
+
+  public async run(
+    request: SyncRequest,
+    options: SyncRunOptions = {}
+  ): Promise<SyncRunResult> {
+    const dateFrom = assertIsoDate(request.dateFrom, "dateFrom");
+    const dateTo = assertIsoDate(request.dateTo, "dateTo");
+    if (dateFrom > dateTo) {
+      throw new Error("The start date cannot be later than the end date.");
+    }
+    const selected = new Set(request.steps);
+    const steps = orderedSteps.filter((step) => selected.has(step));
+    if (steps.length === 0) throw new Error("Select at least one synchronization step.");
+
+    const lock = new SynchronizationLock(this.database);
+    const audit = new DesktopRunRepository(this.database);
+    const result: SyncRunResult = {};
+    let accountFailures = 0;
+    let completedSteps = 0;
+    const progress = (
+      type: SyncProgressEvent["type"],
+      message: string,
+      step?: SyncStep,
+      accountFailure?: AccountSyncFailure
+    ): void => {
+      try {
+        options.onProgress?.({
+          type,
+          ...(step ? { step } : {}),
+          ...(accountFailure ? { accountFailure } : {}),
+          completedSteps,
+          totalSteps: steps.length,
+          message
+        });
+      } catch {
+        // Progress observers must not change the synchronization outcome.
+      }
+    };
+    const context: SyncExecutionContext = {
+      ...(options.psuHeaders ? { psuHeaders: options.psuHeaders } : {}),
+      ...(options.allowRateLimitOverride
+        ? { allowRateLimitOverride: true }
+        : {}),
+      skippedAccountIds: new Set<string>(),
+      skippedAuthorizationConnectionIds: new Set<string>(),
+      skippedRateLimitConnectionIds: new Set<string>(),
+      skippedUnavailableConnectionIds: new Set<string>(),
+      onAccountFailure: async (failure) => {
+        accountFailures += 1;
+        progress("account-failed", failure.message, failure.phase, failure);
+        return options.onAccountFailure
+          ? await options.onAccountFailure(failure)
+          : "stop";
+      }
+    };
+
+    lock.acquire();
+    let desktopRunId: string | undefined;
+    try {
+      desktopRunId = audit.begin({
+        dateFrom,
+        dateTo,
+        steps
+      });
+      progress("run-started", "Synchronization started.");
+      for (const step of steps) {
+        lock.assertActive();
+        progress("step-started", `Running ${step}.`, step);
+        let reauthorizationAttempts = 0;
+        for (;;) {
+          try {
+            await this.executeStep(
+              step,
+              request,
+              result,
+              desktopRunId,
+              context
+            );
+            lock.assertActive();
+            break;
+          } catch (error) {
+            if (
+              error instanceof ReauthorizationRequiredError &&
+              options.onReauthorization &&
+              reauthorizationAttempts < 5
+            ) {
+              const connectionIds =
+                error.connectionIds.length > 0
+                  ? error.connectionIds
+                  : this.sync.listConnectionsRequiringAuthorization();
+              if (connectionIds.length === 0) throw error;
+              progress(
+                "reauthorization-required",
+                "Bank authorization is required before synchronization can continue.",
+                step
+              );
+              await options.onReauthorization(connectionIds);
+              lock.assertActive();
+              reauthorizationAttempts += 1;
+              continue;
+            }
+            throw error;
+          }
+        }
+        completedSteps += 1;
+        progress("step-completed", `${step} completed.`, step);
+      }
+      if (accountFailures > 0) result.accountFailures = accountFailures;
+      const skippedConnections =
+        context.skippedAuthorizationConnectionIds?.size ?? 0;
+      if (skippedConnections > 0) {
+        result.skippedConnections = skippedConnections;
+      }
+      const skippedRateLimitedConnections =
+        context.skippedRateLimitConnectionIds?.size ?? 0;
+      if (skippedRateLimitedConnections > 0) {
+        result.skippedRateLimitedConnections = skippedRateLimitedConnections;
+      }
+      const skippedUnavailableConnections =
+        context.skippedUnavailableConnectionIds?.size ?? 0;
+      if (skippedUnavailableConnections > 0) {
+        result.skippedUnavailableConnections = skippedUnavailableConnections;
+      }
+      const warningSummary = [
+        accountFailures > 0
+          ? `${accountFailures} account operation(s) failed.`
+          : null,
+        skippedConnections > 0
+          ? `${skippedConnections} connection(s) were skipped pending authorization.`
+          : null,
+        skippedRateLimitedConnections > 0
+          ? `${skippedRateLimitedConnections} connection(s) were skipped due to an active request limit.`
+          : null,
+        skippedUnavailableConnections > 0
+          ? `${skippedUnavailableConnections} connection(s) were skipped because the bank was temporarily unavailable.`
+          : null
+      ].filter((message): message is string => message !== null);
+      audit.finish(
+        desktopRunId,
+        warningSummary.length > 0 ? "SUCCESS_WITH_WARNINGS" : "SUCCESS",
+        warningSummary.length > 0 ? warningSummary.join(" ") : undefined,
+        warningSummary.length > 0 ? "SYNC_WARNINGS" : undefined
+      );
+      progress("run-completed", "Synchronization completed.");
+      return result;
+    } catch (error) {
+      if (desktopRunId) {
+        try {
+          audit.finish(
+            desktopRunId,
+            "FAILED",
+            safeMessage(error),
+            providerErrorCode(error) ??
+              (error instanceof KakeboError ? error.code : "SYNC_ERROR")
+          );
+        } catch (auditError) {
+          throw new AggregateError(
+            [error, auditError],
+            "Synchronization failed and its audit record could not be finalized."
+          );
+        }
+      }
+      progress("run-failed", error instanceof Error ? error.message : String(error));
+      throw error;
+    } finally {
+      lock.release();
+    }
+  }
+}

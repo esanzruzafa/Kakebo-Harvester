@@ -8,7 +8,7 @@ export default function PrivacyPage() {
     <div className="legal-shell" lang="en">
       <aside className="legal-aside">
         <p className="eyebrow">Document 01</p>
-        <p>Version: 25 July 2026</p>
+        <p>Version: 31 August 2026</p>
         <p>Jurisdiction: Spain</p>
         <p>
           Contact:{" "}
@@ -22,9 +22,8 @@ export default function PrivacyPage() {
         <h1>Privacy policy</h1>
 
         <div className="notice">
-          Kakebo Harvester is a personal, non-commercial and read-only
-          application. It cannot initiate payments, transfers or other financial
-          operations.
+          Kakebo Harvester is a local and read-only application. It cannot
+          initiate payments, transfers or other financial operations.
         </div>
 
         <h2>1. Data controller</h2>
@@ -80,8 +79,15 @@ export default function PrivacyPage() {
         <p>
           Kakebo Harvester runs locally. Its database, transactions and exports
           remain on the user&apos;s computer. Session identifiers are encrypted
-          locally, account identifiers are masked and files containing financial
-          data are excluded from the source-code repository.
+          locally, account numbers and counterparty account references in the
+          normalised records are masked, and files containing financial data are
+          excluded from the source-code repository.
+        </p>
+        <p>
+          If optional raw-response retention is enabled, those local diagnostic
+          files may contain the provider payload and are not encrypted. The
+          authorisation-session identifier is redacted from them. Raw retention
+          can be disabled, and the files can be removed from the application.
         </p>
         <p>
           The application does not sell data, include advertising or send
@@ -92,8 +98,7 @@ export default function PrivacyPage() {
         <p>
           Sessions are retained while consent remains valid or until it is
           revoked. Historical transactions may remain locally to preserve the
-          user&apos;s Kakebo records until the user deletes them. Optional raw
-          diagnostic responses can be disabled and removed from the computer.
+          user&apos;s Kakebo records until the user deletes them.
         </p>
 
         <h2>7. Rights and withdrawal of consent</h2>

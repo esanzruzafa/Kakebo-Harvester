@@ -1,0 +1,752 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kakebo Harvester</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">KH</div>
+          <div>
+            <p class="brand-name">Kakebo Harvester</p>
+            <p class="brand-caption" data-i18n="brand.caption">Personal finance data</p>
+          </div>
+        </div>
+
+        <nav class="nav-list" data-i18n-aria-label="nav.ariaLabel">
+          <button class="nav-item is-active" type="button" data-tab="sync">
+            <span class="nav-icon" aria-hidden="true">↻</span>
+            <span data-i18n="nav.sync">Synchronization</span>
+          </button>
+          <button class="nav-item" type="button" data-tab="accounts">
+            <span class="nav-icon" aria-hidden="true">◫</span>
+            <span data-i18n="nav.accounts">Accounts and aliases</span>
+          </button>
+          <button class="nav-item" type="button" data-tab="cards">
+            <span class="nav-icon" aria-hidden="true">▤</span>
+            <span data-i18n="nav.cards">Card imports</span>
+          </button>
+          <button class="nav-item" type="button" data-tab="categories">
+            <span class="nav-icon" aria-hidden="true">⌁</span>
+            <span data-i18n="nav.categories">Categorization</span>
+          </button>
+          <button class="nav-item" type="button" data-tab="export">
+            <span class="nav-icon" aria-hidden="true">⇩</span>
+            <span data-i18n="nav.export">Export</span>
+          </button>
+          <button class="nav-item" type="button" data-tab="settings">
+            <span class="nav-icon" aria-hidden="true">◇</span>
+            <span data-i18n="nav.settings">Settings</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <span class="environment-dot" aria-hidden="true"></span>
+          <div>
+            <strong data-i18n="environment.production">Production</strong>
+            <span id="sidebar-version">Loading…</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow" data-i18n="app.mode">Local · Read-only</p>
+            <h1 id="page-title">Synchronization</h1>
+          </div>
+          <div class="server-status" id="server-status">
+            <span class="status-pulse" aria-hidden="true"></span>
+            <span data-i18n="callback.starting">Starting HTTPS callback…</span>
+          </div>
+        </header>
+
+        <section class="view is-visible" id="view-sync" aria-labelledby="page-title">
+          <div class="summary-grid">
+            <article class="summary-card">
+              <span data-i18n="summary.connections">Connections</span>
+              <strong id="summary-connections">—</strong>
+              <small id="summary-connection-detail" data-i18n="summary.checking">
+                Checking status
+              </small>
+            </article>
+            <article class="summary-card">
+              <span data-i18n="summary.lastSync">Last synchronization</span>
+              <strong id="summary-last-sync">—</strong>
+              <small id="summary-last-sync-detail" data-i18n="summary.noActivity">
+                No recorded activity
+              </small>
+            </article>
+            <article class="summary-card">
+              <span data-i18n="summary.accounts">Included accounts</span>
+              <strong id="summary-accounts">—</strong>
+              <small id="summary-accounts-detail" data-i18n="summary.localConfig">
+                Local configuration
+              </small>
+            </article>
+          </div>
+
+          <div class="content-grid">
+            <article class="panel sync-panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="section-kicker" data-i18n="sync.manual">Manual run</p>
+                  <h2 data-i18n="sync.new">New synchronization</h2>
+                </div>
+                <select id="sync-preset" class="select compact" data-i18n-aria-label="sync.type">
+                  <option value="full" data-i18n="sync.preset.full">Full synchronization</option>
+                  <option value="transactions" data-i18n="sync.preset.transactions">
+                    Movements and export
+                  </option>
+                  <option value="export" data-i18n="sync.preset.export">Export only</option>
+                  <option value="custom" data-i18n="sync.preset.custom">Custom selection</option>
+                </select>
+              </div>
+
+              <div class="date-grid">
+                <label class="field">
+                  <span data-i18n="sync.dateFrom">Start date</span>
+                  <input id="date-from" class="input" type="date" />
+                </label>
+                <label class="field">
+                  <span data-i18n="sync.dateTo">End date</span>
+                  <input id="date-to" class="input" type="date" />
+                </label>
+              </div>
+
+              <fieldset class="steps-fieldset">
+                <legend data-i18n="sync.steps">Steps</legend>
+                <div class="step-options">
+                  <label class="check-option">
+                    <input type="checkbox" value="accounts" data-sync-step checked />
+                    <span>
+                      <strong data-i18n="step.accounts">Accounts</strong>
+                      <small data-i18n="step.accounts.help">Refresh details and selection</small>
+                    </span>
+                  </label>
+                  <label class="check-option">
+                    <input type="checkbox" value="balances" data-sync-step checked />
+                    <span>
+                      <strong data-i18n="step.balances">Balances</strong>
+                      <small data-i18n="step.balances.help">Save a new snapshot</small>
+                    </span>
+                  </label>
+                  <label class="check-option">
+                    <input type="checkbox" value="transactions" data-sync-step checked />
+                    <span>
+                      <strong data-i18n="step.transactions">Movements</strong>
+                      <small data-i18n="step.transactions.help">Use the selected date range</small>
+                    </span>
+                  </label>
+                  <label class="check-option">
+                    <input type="checkbox" value="export" data-sync-step checked />
+                    <span>
+                      <strong data-i18n="step.export">Export</strong>
+                      <small data-i18n="step.export.help">Generate the configured file</small>
+                    </span>
+                  </label>
+                </div>
+              </fieldset>
+
+              <button id="start-sync" class="button primary large" type="button" data-i18n="sync.start">
+                Start synchronization
+              </button>
+              <div class="button-row sync-file-actions">
+                <button id="open-latest-export" class="button secondary" type="button" data-i18n="sync.openLatest">
+                  Open latest result
+                </button>
+                <button id="clear-exports" class="button danger" type="button" data-i18n="sync.clearResults">
+                  Delete result files
+                </button>
+              </div>
+            </article>
+
+            <article class="panel progress-panel" aria-live="polite">
+              <div class="panel-heading">
+                <div>
+                  <p class="section-kicker" data-i18n="progress.status">Status</p>
+                  <h2 data-i18n="progress.title">Progress</h2>
+                </div>
+                <div class="button-row">
+                  <span class="status-badge neutral" id="run-status" data-i18n="progress.ready">
+                    Ready
+                  </span>
+                </div>
+              </div>
+              <div class="progress-track" aria-hidden="true">
+                <span id="progress-fill"></span>
+              </div>
+              <ol class="progress-list" id="progress-list">
+                <li class="empty-state" data-i18n="progress.empty">
+                  Set the dates and select start.
+                </li>
+              </ol>
+              <div class="run-result" id="run-result" hidden></div>
+            </article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="connections.kicker">Consents</p>
+                <h2 data-i18n="connections.title">Bank connections</h2>
+              </div>
+            </div>
+            <div class="connection-list" id="connection-list"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="audit.kicker">Local audit</p>
+                <h2 data-i18n="audit.recent">Recent activity</h2>
+              </div>
+              <div class="audit-heading-actions">
+                <label class="field audit-limit-field">
+                  <span data-i18n="audit.showLatest">Show latest</span>
+                  <select id="recent-runs-limit" class="select compact-select">
+                    <option value="5">5</option>
+                    <option value="10">10</option>
+                    <option value="20">20</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                  </select>
+                </label>
+                <span class="year-counter">
+                  <strong id="runs-this-year">0</strong>
+                  <span data-i18n="audit.thisYear">runs this year</span>
+                </span>
+                <div class="button-row">
+                  <button id="open-audit" class="button secondary" type="button" data-i18n="audit.openAll">
+                    Open full history
+                  </button>
+                  <button id="clear-audit" class="button danger" type="button" data-i18n="audit.clear">
+                    Clear history
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="audit-run-list" id="recent-runs"></div>
+          </article>
+        </section>
+
+        <section class="view" id="view-accounts">
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="accounts.kicker">Local configuration</p>
+                <h2 data-i18n="accounts.title">Accounts and aliases</h2>
+                <p class="panel-description" data-i18n="accounts.description">
+                  Aliases appear in exports. Excluding an account does not delete its history.
+                </p>
+              </div>
+              <div class="button-row">
+                <button id="connect-bank" class="button primary" type="button" data-i18n="accounts.connectBank">
+                  Connect a new bank
+                </button>
+                <button class="button secondary" type="button" data-open-path="accounts-config" data-i18n="common.openJson">
+                  Open JSON
+                </button>
+                <button id="save-accounts" class="button primary" type="button" data-i18n="common.saveChanges">
+                  Save changes
+                </button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="editable-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="accounts.column.account">Bank and account</th>
+                    <th data-i18n="accounts.column.identifier">Identifier</th>
+                    <th data-i18n="accounts.column.alias">Alias</th>
+                    <th>
+                      <span data-i18n="accounts.column.sync">Synchronize</span>
+                      <span
+                        class="tooltip-help"
+                        tabindex="0"
+                        data-tooltip="Request new balances and movements for this account during synchronization. Existing data is preserved when disabled."
+                        data-i18n-tooltip="accounts.column.sync.tooltip"
+                        aria-label="Synchronization help"
+                      >?</span>
+                    </th>
+                    <th>
+                      <span data-i18n="accounts.column.export">Export</span>
+                      <span
+                        class="tooltip-help"
+                        tabindex="0"
+                        data-tooltip="Include this account's movements in generated export files. Its stored history is preserved when disabled."
+                        data-i18n-tooltip="accounts.column.export.tooltip"
+                        aria-label="Export help"
+                      >?</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody id="accounts-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="view" id="view-cards">
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="cards.importKicker">Manual statements</p>
+                <h2 data-i18n="cards.importTitle">Merge card movements</h2>
+                <p class="panel-description" data-i18n="cards.importDescription">
+                  Select overlapping XLSX statements, choose one saved profile per file, and import only movements that are not already stored.
+                </p>
+              </div>
+              <div class="button-row">
+                <button id="select-card-files" class="button secondary" type="button" data-i18n="cards.selectFiles">
+                  Select XLSX files
+                </button>
+                <button id="import-card-files" class="button primary" type="button" data-i18n="cards.importSelected">
+                  Import selected
+                </button>
+              </div>
+            </div>
+            <div class="profile-warning">
+              <strong data-i18n="cards.identityTitle">One profile per physical card</strong>
+              <span data-i18n="cards.identityHelp">
+                Reuse the same profile every time you import that card. Its stable profile id is part of the deduplication key.
+              </span>
+            </div>
+            <div class="table-wrap">
+              <table class="editable-table card-files-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="common.include">Include</th>
+                    <th data-i18n="cards.column.file">Workbook</th>
+                    <th data-i18n="cards.column.profile">Card profile</th>
+                  </tr>
+                </thead>
+                <tbody id="card-files-body"></tbody>
+              </table>
+            </div>
+            <div id="card-import-result" class="run-result" hidden></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="cards.profileKicker">Reusable mappings</p>
+                <h2 data-i18n="cards.profileTitle">Card import profiles</h2>
+                <p class="panel-description" data-i18n="cards.profileDescription">
+                  Configure the worksheet, first data row, Excel columns, regional formats, and card identity.
+                </p>
+              </div>
+              <div class="button-row">
+                <button class="button secondary" type="button" data-open-path="card-import-profiles" data-i18n="common.openJson">
+                  Open JSON
+                </button>
+                <button id="add-card-profile" class="button secondary" type="button" data-i18n="cards.addProfile">
+                  Add profile
+                </button>
+                <button id="save-card-profiles" class="button primary" type="button" data-i18n="cards.saveProfiles">
+                  Save profiles
+                </button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="editable-table card-profiles-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="cards.column.enabled">Enabled</th>
+                    <th data-i18n="cards.column.profileName">Profile</th>
+                    <th data-i18n="cards.column.bank">Bank</th>
+                    <th data-i18n="cards.column.card">Card</th>
+                    <th data-i18n="cards.column.sheet">Sheet</th>
+                    <th data-i18n="cards.column.startRow">First row</th>
+                    <th data-i18n="cards.column.date">Date</th>
+                    <th data-i18n="cards.column.description">Description</th>
+                    <th data-i18n="cards.column.valueDate">Value date</th>
+                    <th data-i18n="cards.column.amount">Amount</th>
+                    <th data-i18n="cards.column.dateFormat">Date format</th>
+                    <th data-i18n="cards.column.decimal">Decimal</th>
+                    <th data-i18n="cards.column.invert">Invert sign</th>
+                    <th data-i18n="cards.column.currency">Currency</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="card-profiles-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="view" id="view-categories">
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="rules.kicker">Automatic rules</p>
+                <h2 data-i18n="rules.title">Categorization</h2>
+                <p class="panel-description" data-i18n="rules.description">
+                  Rules are applied from top to bottom. Drag them to change their order.
+                </p>
+              </div>
+              <div class="button-row">
+                <button class="button secondary" type="button" data-open-path="categorization-rules" data-i18n="common.openJson">
+                  Open JSON
+                </button>
+                <button id="add-rule" class="button secondary" type="button" data-i18n="rules.add">
+                  Add rule
+                </button>
+                <button id="save-rules" class="button primary" type="button" data-i18n="rules.save">
+                  Save rules
+                </button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="editable-table rules-table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th data-i18n="common.number">No.</th>
+                    <th data-i18n="rules.column.enabled">Enabled</th>
+                    <th data-i18n="rules.column.operator">Operator</th>
+                    <th data-i18n="rules.column.value">Text or expression</th>
+                    <th data-i18n="rules.column.category">Category</th>
+                    <th data-i18n="rules.column.subcategory">Subcategory</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="rules-body"></tbody>
+              </table>
+            </div>
+            <div class="panel-footer">
+              <p data-i18n="rules.reapplyHelp">
+                Apply the saved rules to existing unreviewed movements and rebuild the export.
+              </p>
+              <button id="reapply-rules" class="button secondary" type="button" data-i18n="rules.reapply">
+                Apply to history
+              </button>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="exclusions.kicker">Precedence rules</p>
+                <h2 data-i18n="exclusions.title">Categorization exclusions</h2>
+                <p class="panel-description" data-i18n="exclusions.description">
+                  Exclusions are evaluated before categorization rules. Matching movements remain uncategorized.
+                </p>
+              </div>
+              <div class="button-row">
+                <button id="add-exclusion" class="button secondary" type="button" data-i18n="exclusions.add">
+                  Add exclusion
+                </button>
+                <button id="save-exclusions" class="button primary" type="button" data-i18n="exclusions.save">
+                  Save exclusions
+                </button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="editable-table rules-table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th data-i18n="common.number">No.</th>
+                    <th data-i18n="rules.column.enabled">Enabled</th>
+                    <th data-i18n="rules.column.operator">Operator</th>
+                    <th data-i18n="rules.column.value">Text or expression</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="exclusions-body"></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="categories.kicker">Dependent picklists</p>
+                <h2 data-i18n="categories.title">Categories and subcategories</h2>
+                <p class="panel-description" data-i18n="categories.description">
+                  Configure the allowed values used by the rule picklists.
+                </p>
+              </div>
+              <div class="button-row">
+                <button class="button secondary" type="button" data-open-path="categories-config" data-i18n="common.openJson">
+                  Open JSON
+                </button>
+                <button id="add-category" class="button secondary" type="button" data-i18n="categories.add">
+                  Add category
+                </button>
+                <button id="save-categories" class="button primary" type="button" data-i18n="categories.save">
+                  Save dependencies
+                </button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="editable-table category-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="categories.column.category">Category</th>
+                    <th data-i18n="categories.column.subcategories">Subcategories (comma separated)</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="categories-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="view" id="view-export">
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="export.kicker">Output profile</p>
+                <h2 data-i18n="export.title">Export configuration</h2>
+                <p class="panel-description" data-i18n="export.description">
+                  Choose the format and drag columns to define their order.
+                </p>
+              </div>
+              <div class="button-row">
+                <button class="button secondary" type="button" data-open-path="export-settings" data-i18n="common.openJson">
+                  Open JSON
+                </button>
+                <button id="save-export-settings" class="button primary" type="button" data-i18n="export.save">
+                  Save export profile
+                </button>
+              </div>
+            </div>
+
+            <div class="export-options">
+              <label class="field">
+                <span data-i18n="export.format">File format</span>
+                <select id="export-format" class="select">
+                  <option value="xlsx">XLSX</option>
+                  <option value="csv">CSV</option>
+                </select>
+              </label>
+              <label class="field csv-option">
+                <span data-i18n="export.fieldSeparator">Column separator</span>
+                <select id="csv-field-separator" class="select">
+                  <option value=",">,</option>
+                  <option value=";">;</option>
+                  <option value="&#9;" data-i18n="export.separator.tab">Tab</option>
+                  <option value="|">|</option>
+                </select>
+              </label>
+              <label class="field csv-option">
+                <span data-i18n="export.decimalSeparator">Decimal separator</span>
+                <select id="csv-decimal-separator" class="select">
+                  <option value=".">.</option>
+                  <option value=",">,</option>
+                </select>
+              </label>
+              <label class="field csv-option">
+                <span data-i18n="export.dateFormat">Date format</span>
+                <select id="csv-date-format" class="select">
+                  <option value="yyyy-mm-dd">YYYY-MM-DD</option>
+                  <option value="dd/mm/yyyy">DD/MM/YYYY</option>
+                  <option value="mm/dd/yyyy">MM/DD/YYYY</option>
+                </select>
+              </label>
+              <label class="check-option compact-check csv-option">
+                <input id="csv-bom" type="checkbox" />
+                <span>
+                  <strong data-i18n="export.bom">UTF-8 BOM</strong>
+                  <small data-i18n="export.bomHelp">Improves Excel compatibility</small>
+                </span>
+              </label>
+            </div>
+
+            <div class="profile-warning">
+              <strong data-i18n="export.rotationTitle">Safe profile changes</strong>
+              <span data-i18n="export.rotationHelp">
+                On the next export, a file created with a different profile is moved to the archive folder before the new file is written.
+              </span>
+            </div>
+
+            <div class="table-wrap">
+              <table class="editable-table export-columns-table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th data-i18n="common.number">No.</th>
+                    <th data-i18n="export.column.include">Include</th>
+                    <th data-i18n="export.column.field">Data field</th>
+                    <th data-i18n="export.column.header">Column name</th>
+                  </tr>
+                </thead>
+                <tbody id="export-columns-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="view" id="view-settings">
+          <div class="settings-grid">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="section-kicker" data-i18n="doctor.kicker">Check</p>
+                  <h2 data-i18n="doctor.title">Diagnostics</h2>
+                </div>
+                <button id="run-doctor" class="button primary" type="button" data-i18n="doctor.run">
+                  Run doctor
+                </button>
+              </div>
+              <div id="doctor-results" class="diagnostic-list">
+                <p class="empty-state" data-i18n="doctor.empty">Diagnostics have not run yet.</p>
+              </div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="section-kicker" data-i18n="language.kicker">Interface</p>
+                  <h2 data-i18n="language.title">Language</h2>
+                </div>
+              </div>
+              <label class="field">
+                <span data-i18n="language.label">Application language</span>
+                <select id="language-selector" class="select">
+                  <option value="en">English</option>
+                  <option value="es">Español</option>
+                </select>
+              </label>
+              <p class="panel-description" data-i18n="language.help">
+                The interface changes immediately and the selection is remembered.
+              </p>
+            </article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="paths.kicker">Local files</p>
+                <h2 data-i18n="paths.title">Locations</h2>
+              </div>
+            </div>
+            <dl class="path-list">
+              <div>
+                <dt data-i18n="paths.root">Application folder</dt>
+                <dd id="path-root">—</dd>
+                <button class="text-button" type="button" data-open-path="root" data-i18n="common.open">Open</button>
+              </div>
+              <div>
+                <dt data-i18n="paths.export">Export folder</dt>
+                <dd id="path-export">—</dd>
+                <button class="text-button" type="button" data-open-path="export-directory" data-i18n="common.open">
+                  Open
+                </button>
+              </div>
+              <div>
+                <dt data-i18n="paths.database">Database</dt>
+                <dd id="path-database">—</dd>
+              </div>
+            </dl>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker" data-i18n="scheduler.kicker">Automation</p>
+                <h2>Windows Task Scheduler</h2>
+                <p class="panel-description" data-i18n="scheduler.description">
+                  The portable executable can synchronize in the background. Expired consent returns exit code 10 without opening a browser.
+                </p>
+              </div>
+            </div>
+            <div class="command-row">
+              <input id="scheduled-command" class="input mono" type="text" readonly />
+              <button id="copy-command" class="button secondary" type="button" data-i18n="scheduler.copy">
+                Copy command
+              </button>
+            </div>
+          </article>
+
+          <article class="panel portability-panel">
+            <div>
+              <p class="section-kicker" data-i18n="portability.kicker">New computer</p>
+              <h2 data-i18n="portability.title">Portable without code changes</h2>
+            </div>
+            <div class="portability-copy">
+              <p data-i18n="portability.description">
+                Securely copy the private folder, database, and configuration next to the executable. private/.env.production stays inside the private folder. Regenerate the certificate for the new Windows user.
+              </p>
+              <button id="setup-https" class="button secondary" type="button" data-i18n="portability.https">
+                Prepare HTTPS on this computer
+              </button>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    <div class="app-modal" id="app-modal" hidden>
+      <div class="app-modal-card" role="alertdialog" aria-modal="true" aria-labelledby="app-modal-title" aria-describedby="app-modal-detail">
+        <p class="section-kicker" id="app-modal-kicker">Confirmation</p>
+        <h2 id="app-modal-title"></h2>
+        <p id="app-modal-detail"></p>
+        <div class="button-row">
+          <button id="app-modal-cancel" class="button secondary" type="button">Cancel</button>
+          <button id="app-modal-discard" class="button secondary" type="button" hidden>Discard</button>
+          <button id="app-modal-confirm" class="button primary" type="button">Confirm</button>
+        </div>
+      </div>
+    </div>
+    <div class="app-modal connection-wizard" id="connection-wizard" hidden>
+      <div class="app-modal-card connection-wizard-card" role="dialog" aria-modal="true" aria-labelledby="connection-wizard-title" aria-describedby="connection-wizard-description">
+        <p class="section-kicker" data-i18n="connectionWizard.kicker">Bank connection</p>
+        <h2 id="connection-wizard-title" data-i18n="connectionWizard.title">Connect a new bank</h2>
+        <p id="connection-wizard-description" data-i18n="connectionWizard.description">
+          Choose a country and bank. You will complete the authorization only in the official bank flow opened in your browser.
+        </p>
+        <div class="connection-wizard-grid">
+          <label class="field">
+            <span data-i18n="connectionWizard.country">Country</span>
+            <select id="connection-country" class="select"></select>
+          </label>
+          <div class="field connection-wizard-reload">
+            <span aria-hidden="true">&nbsp;</span>
+            <button id="reload-banks" class="button secondary" type="button" data-i18n="connectionWizard.loadBanks">
+              Load banks
+            </button>
+          </div>
+        </div>
+        <label class="field">
+          <span data-i18n="connectionWizard.search">Find a bank</span>
+          <input id="connection-bank-search" class="input" type="search" autocomplete="off" data-i18n-aria-label="connectionWizard.search" />
+        </label>
+        <div id="connection-bank-list" class="connection-bank-list" role="group" aria-label="Available banks" data-i18n-aria-label="connectionWizard.availableBanks"></div>
+        <div class="connection-wizard-grid">
+          <label class="field">
+            <span data-i18n="connectionWizard.customerType">Customer type</span>
+            <select id="connection-psu-type" class="select" disabled>
+              <option value="personal" data-i18n="connectionWizard.personal">Personal</option>
+              <option value="business" data-i18n="connectionWizard.business">Business</option>
+            </select>
+          </label>
+          <div class="field">
+            <span data-i18n="connectionWizard.authentication">Authentication</span>
+            <strong id="connection-authentication" class="connection-authentication">&mdash;</strong>
+          </div>
+        </div>
+        <p id="connection-wizard-status" class="connection-wizard-status" role="status" aria-live="polite"></p>
+        <div class="button-row">
+          <button id="connection-wizard-cancel" class="button secondary" type="button" data-i18n="common.cancel">Cancel</button>
+          <button id="connection-wizard-start" class="button primary" type="button" disabled data-i18n="connectionWizard.continue">
+            Continue to the bank
+          </button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>

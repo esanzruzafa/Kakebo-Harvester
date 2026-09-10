@@ -2,14 +2,16 @@
   "name": "kakebo-harvester-pages",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "next typegen && tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit",
+    "audit:production": "npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {
-    "next": "^16.2.11",
+    "next": "^16.3.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
@@ -20,7 +22,6 @@
     "typescript": "^5.8.0"
   },
   "overrides": {
-    "postcss": "^8.5.23",
-    "sharp": "^0.35.3"
+    "postcss": "^8.5.23"
   }
 }

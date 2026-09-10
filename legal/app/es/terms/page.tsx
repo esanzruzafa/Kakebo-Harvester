@@ -8,7 +8,7 @@ export default function SpanishTermsPage() {
     <div className="legal-shell" lang="es">
       <aside className="legal-aside">
         <p className="eyebrow">Documento 02</p>
-        <p>Versión: 25 de julio de 2026</p>
+        <p>Versión: 21 de agosto de 2026</p>
         <p>Ámbito: España</p>
         <p>
           Contacto:{" "}
@@ -22,8 +22,8 @@ export default function SpanishTermsPage() {
         <h1>Términos de uso</h1>
 
         <div className="notice">
-          Al utilizar Kakebo Harvester aceptas estas condiciones para un uso
-          personal, privado y no comercial.
+          Utiliza Kakebo Harvester de forma lícita y conecta únicamente cuentas
+          para las que tengas autorización de acceso.
         </div>
 
         <h2>1. Titular</h2>
@@ -49,8 +49,16 @@ export default function SpanishTermsPage() {
         </p>
 
         <h2>3. Uso permitido</h2>
+        <p>
+          El código fuente de Kakebo Harvester se distribuye bajo la{" "}
+          <a href="https://github.com/esanzruzafa/Kakebo-Harvester/blob/main/LICENSE">
+            licencia MIT
+          </a>
+          , que regula los derechos de uso, copia, modificación y distribución
+          del software.
+        </p>
         <ul>
-          <li>Uso personal y no comercial por el titular de las cuentas.</li>
+          <li>Uso lícito conforme a la licencia MIT.</li>
           <li>
             Autorización únicamente de cuentas sobre las que el usuario tenga
             derecho de acceso.
@@ -92,10 +100,10 @@ export default function SpanishTermsPage() {
 
         <h2>7. Disponibilidad y responsabilidad</h2>
         <p>
-          La aplicación se ofrece para uso personal y puede contener errores o
-          verse afectada por cambios en APIs bancarias. No se garantiza la
-          disponibilidad ininterrumpida ni que todos los productos o movimientos
-          estén accesibles mediante PSD2.
+          La aplicación se ofrece tal cual y puede contener errores o verse
+          afectada por cambios en APIs bancarias. No se garantiza la
+          disponibilidad ininterrumpida ni que todos los productos o
+          movimientos estén accesibles mediante PSD2.
         </p>
         <p>
           Nada en estos términos limita los derechos que la legislación

@@ -34,6 +34,9 @@ export default function SiteChrome({
             Kakebo Harvester
           </Link>
           <div className="nav-links">
+            <Link href={`${prefix}/app`}>
+              {isSpanish ? "Aplicación" : "Application"}
+            </Link>
             <Link href={`${prefix}/privacy`}>
               {isSpanish ? "Privacidad" : "Privacy"}
             </Link>

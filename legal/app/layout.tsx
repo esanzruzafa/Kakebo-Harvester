@@ -8,7 +8,7 @@ export const metadata: Metadata = {
     template: "%s · Kakebo Harvester"
   },
   description:
-    "Legal information for Kakebo Harvester, a personal read-only financial data application."
+    "Kakebo Harvester application information, downloads, user guide, FAQ, privacy policy and terms."
 };
 
 export default function RootLayout({

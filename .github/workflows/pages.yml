@@ -1,9 +1,12 @@
-name: Deploy legal site to GitHub Pages
+name: Deploy project site to GitHub Pages
 
 on:
   push:
     branches:
       - main
+    paths:
+      - "legal/**"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
@@ -32,10 +35,12 @@ jobs:
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
-          package-manager-cache: false
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Audit all dependencies
+        run: npm audit --audit-level=high
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5

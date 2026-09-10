@@ -4,17 +4,29 @@ export default function HomePage() {
   return (
     <div lang="en">
       <section className="hero">
-        <p className="eyebrow">Legal information</p>
+        <p className="eyebrow">Kakebo Harvester</p>
         <h1>Personal finances with clarity and local control.</h1>
         <p className="hero-copy">
           Kakebo Harvester is a personal application that retrieves account
           information through Open Banking and prepares it for private analysis.
-          It cannot initiate payments or transfers.
+          Explore the application, download releases, or review its legal
+          information. It cannot initiate payments or transfers.
         </p>
       </section>
-      <section className="cards" aria-label="Legal documents">
+      <section className="cards cards-three" aria-label="Project information">
         <article className="card">
           <span className="card-number">01</span>
+          <h2>Application</h2>
+          <p>
+            Features, download, setup guide, daily use and frequently asked
+            questions.
+          </p>
+          <Link className="card-link" href="/app">
+            Explore Kakebo Harvester →
+          </Link>
+        </article>
+        <article className="card">
+          <span className="card-number">02</span>
           <h2>Privacy</h2>
           <p>
             What information is accessed, why it is used, where it is stored and
@@ -25,11 +37,10 @@ export default function HomePage() {
           </Link>
         </article>
         <article className="card">
-          <span className="card-number">02</span>
+          <span className="card-number">03</span>
           <h2>Terms</h2>
           <p>
-            Conditions for a personal, non-commercial and informational
-            service.
+            Conditions for lawful, secure and informational use.
           </p>
           <Link className="card-link" href="/terms">
             Read the terms of use →

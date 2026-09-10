@@ -1,0 +1,2 @@
+﻿MovementKey;Date;ValueDate;Bank;Account;AccountAlias;ProductType;Description;Merchant;Counterparty;Amount;Currency;Direction;Status;CategoryAuto;SubcategoryAuto;Reviewed;Source;ImportedAt
+demo-movement-001;2026-07-23;2026-07-23;Banco Demo;Cuenta Demo;Cuenta familiar;CACC;COMPRA DEMO;Comercio Demo;Comercio Demo;-12.34;EUR;expense;booked;Otros;Prueba;false;enable-banking;2026-07-24T10:00:00.000Z
