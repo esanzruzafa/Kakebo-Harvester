@@ -24,6 +24,7 @@ export function testConfig(root: string): AppConfig {
     maxTransactionPages: 10,
     maxBufferedTransactionRows: 10_000,
     maxBufferedTransactionBytes: 50_000_000,
+    maxBufferedBalanceBytes: 50_000_000,
     maxCardImportRows: 250_000,
     httpTimeoutMs: 1_000,
     logLevel: "silent",

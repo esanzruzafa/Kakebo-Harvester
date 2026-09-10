@@ -1,4 +1,4 @@
-import { sha256 } from "../utils/crypto.js";
+import { sha256, stableJson } from "../utils/crypto.js";
 
 export interface MovementKeyInput {
   accountStableKey: string;
@@ -41,7 +41,7 @@ export function createMovementKey(input: MovementKeyInput): string {
   if ((input.fallbackOccurrence ?? 1) > 1) {
     parts.push("occurrence", input.fallbackOccurrence ?? 1);
   }
-  return sha256(parts.join("|"));
+  return sha256(stableJson(parts));
 }
 
 export function createReconciliationKey(input: MovementKeyInput): string {

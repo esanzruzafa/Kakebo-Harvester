@@ -60,21 +60,17 @@ async function selectedWorksheet(
   directory: CentralDirectory,
   sheetName: string | undefined
 ): Promise<File> {
-  const worksheetEntries = directory.files.filter(
-    (entry) => entry.type === "File" && /^xl\/worksheets\/[^/]+\.xml$/u.test(entry.path)
-  );
-  if (!sheetName) {
-    const first = worksheetEntries.find((entry) => entry.path === "xl/worksheets/sheet1.xml") ??
-      worksheetEntries[0];
-    if (!first) throw new Error("Workbook has no worksheets.");
-    return first;
-  }
-
   const workbook = await readMetadataEntry(directory, "xl/workbook.xml");
-  const sheet = [...workbook.matchAll(/<sheet\b([^>]*)\/?\s*>/gu)].find(
-    (match) => attribute(match[1] ?? "", "name") === sheetName
-  );
-  const relationshipId = sheet ? attribute(sheet[1] ?? "", "r:id") : undefined;
+  const sheets = [...workbook.matchAll(/<sheet\b([^>]*)\/?\s*>/gu)];
+  const sheet = sheetName
+    ? sheets.find((match) => attribute(match[1] ?? "", "name") === sheetName)
+    : sheets[0];
+  if (!sheet) {
+    throw sheetName
+      ? new Error(`Workbook sheet is missing: ${sheetName}`)
+      : new Error("Workbook has no worksheets.");
+  }
+  const relationshipId = attribute(sheet[1] ?? "", "r:id");
   if (!relationshipId) throw new Error(`Workbook sheet is missing: ${sheetName}`);
   const relationships = await readMetadataEntry(directory, "xl/_rels/workbook.xml.rels");
   const relationship = [...relationships.matchAll(/<Relationship\b([^>]*)\/?\s*>/gu)].find(

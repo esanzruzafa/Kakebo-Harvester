@@ -306,6 +306,100 @@ describe("CardImportService", () => {
     database.close();
   });
 
+  it("does not reuse positional identities when a statement has nonuniform row offsets", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-nonuniform-offset-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const [profile] = createDefaultCardImportProfiles();
+    if (!profile) throw new Error("The default card profile is missing.");
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save([profile]);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const statementPath = join(root, "card-nonuniform.xlsx");
+    const initial: Array<[string, string, string, string]> = [
+      ["20/06/2026", "First", "20/06/2026", "-1,00"],
+      ["21/06/2026", "Second", "21/06/2026", "-2,00"],
+      ["22/06/2026", "Third", "22/06/2026", "-3,00"],
+      ["23/06/2026", "Fourth", "23/06/2026", "-4,00"],
+      ["24/06/2026", "Fifth", "24/06/2026", "-5,00"]
+    ];
+    const [first, second, third, fourth, fifth] = initial;
+    if (!first || !second || !third || !fourth || !fifth) {
+      throw new Error("The test statement is incomplete.");
+    }
+    await writeXlsxFile(workbookRows(initial)).toFile(statementPath);
+    const importer = new CardImportService(config, database);
+    await importer.import({ files: [{ path: statementPath, profileId: profile.id }] });
+
+    await writeXlsxFile(
+      workbookRows([
+        first,
+        second,
+        third,
+        ["22/06/2026", "Inserted", "22/06/2026", "-9,00"],
+        fourth,
+        fifth
+      ])
+    ).toFile(statementPath);
+
+    await expect(
+      importer.import({ files: [{ path: statementPath, profileId: profile.id }] })
+    ).resolves.toMatchObject({ inserted: 1, duplicates: 5 });
+    expect(
+      database
+        .prepare(
+          `SELECT description_raw FROM transactions
+           WHERE provider = 'manual-card' ORDER BY description_raw`
+        )
+        .all()
+    ).toEqual([
+      { description_raw: "Fifth" },
+      { description_raw: "First" },
+      { description_raw: "Fourth" },
+      { description_raw: "Inserted" },
+      { description_raw: "Second" },
+      { description_raw: "Third" }
+    ]);
+    database.close();
+  });
+
+  it("keeps zero-value card movements with opposite directions distinct", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-zero-direction-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const [profile] = createDefaultCardImportProfiles();
+    if (!profile) throw new Error("The default card profile is missing.");
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save([profile]);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const firstPath = join(root, "first.xlsx");
+    const secondPath = join(root, "second.xlsx");
+    const anchor: [string, string, string, string] = [
+      "21/06/2026",
+      "Anchor",
+      "21/06/2026",
+      "-1,00"
+    ];
+    await writeXlsxFile(
+      workbookRows([["20/06/2026", "Zero adjustment", "20/06/2026", "-0,00"], anchor])
+    ).toFile(firstPath);
+    await writeXlsxFile(
+      workbookRows([["20/06/2026", "Zero adjustment", "20/06/2026", "0,00"], anchor])
+    ).toFile(secondPath);
+    const importer = new CardImportService(config, database);
+    await importer.import({ files: [{ path: firstPath, profileId: profile.id }] });
+    await importer.import({ files: [{ path: secondPath, profileId: profile.id }] });
+
+    expect(
+      database
+        .prepare(
+          `SELECT direction FROM transactions
+           WHERE provider = 'manual-card' AND description_raw = 'Zero adjustment'
+           ORDER BY direction`
+        )
+        .all()
+    ).toEqual([{ direction: "expense" }, { direction: "income" }]);
+    database.close();
+  });
+
   it("updates the stored local account labels when an imported card profile is renamed", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-card-profile-labels-"));
     const config = testConfig(root);

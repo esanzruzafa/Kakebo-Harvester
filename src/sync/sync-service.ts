@@ -798,6 +798,7 @@ export class SyncService {
       rawPath: string | null;
       extractedAt: string;
     }> = [];
+    let bufferedBalanceBytes = 0;
     for (const account of this.accounts.listActive()) {
       if (context.skippedConnectionIds?.has(account.bank_connection_id)) continue;
       if (context.skippedAccountIds?.has(account.id)) continue;
@@ -806,6 +807,12 @@ export class SyncService {
           account.provider_account_id,
           this.connectionPsuHeaders(account.bank_connection_id, context)
         );
+        bufferedBalanceBytes += Buffer.byteLength(stableJson(response), "utf8");
+        if (bufferedBalanceBytes > this.config.maxBufferedBalanceBytes) {
+          throw new Error(
+            `Se alcanzó MAX_BUFFERED_BALANCE_BYTES=${this.config.maxBufferedBalanceBytes}; sincronización detenida.`
+          );
+        }
         const raw = await this.rawStore.write("balances", account.id, response);
         snapshots.push({
           account,

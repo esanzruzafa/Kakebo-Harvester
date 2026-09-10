@@ -82,7 +82,8 @@ function cardSemanticKey(row: ParsedCardRow): string {
     valueDate: row.valueDate,
     description: normalizeText(row.description),
     amount: row.amount,
-    currency: row.profile.currency
+    currency: row.profile.currency,
+    direction: row.direction
   });
 }
 
@@ -348,6 +349,7 @@ function normalizedTransaction(
         valueDate: row.valueDate,
         amount: row.amount,
         currency: row.profile.currency,
+        direction: row.direction,
         descriptionNormalized,
         occurrence: row.occurrence
       })
@@ -503,6 +505,7 @@ function existingCardTransactions(
          AND value_date IS ?
          AND amount = ?
          AND currency = ?
+         AND direction = ?
          AND description_normalized = ?
          AND provider_transaction_id IS NOT NULL
        ORDER BY first_seen_at, id`
@@ -513,6 +516,7 @@ function existingCardTransactions(
       row.valueDate,
       row.amount,
       row.profile.currency,
+      row.direction,
       normalizeText(row.description)
     ) as Array<{
       provider_transaction_id: string;
@@ -531,6 +535,7 @@ function existingSourceMappings(
 ): {
   bySemanticKey: Map<string, SourceRowMapping>;
   bySourceRow: Map<number, string>;
+  duplicateSemanticKeyHashes: Set<string>;
 } {
   const rows = database
     .prepare(
@@ -544,6 +549,14 @@ function existingSourceMappings(
       source_row: number | null;
       provider_transaction_id: string;
     }>;
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    counts.set(row.semantic_key_hash, (counts.get(row.semantic_key_hash) ?? 0) + 1);
+  }
+  const duplicateSemanticKeyHashes = new Set<string>();
+  for (const [semanticKeyHash, count] of counts) {
+    if (count > 1) duplicateSemanticKeyHashes.add(semanticKeyHash);
+  }
   return {
     bySemanticKey: new Map(
       rows.map((row) => [
@@ -561,7 +574,8 @@ function existingSourceMappings(
             row.source_row !== null
         )
         .map((row) => [row.source_row, row.provider_transaction_id])
-    )
+    ),
+    duplicateSemanticKeyHashes
   };
 }
 
@@ -571,6 +585,7 @@ function sourceRowOffset(
 ): number | null {
   const offsets = new Map<number, number>();
   for (const row of rows) {
+    if (mappings.duplicateSemanticKeyHashes.has(cardSemanticKeyHash(row))) continue;
     const mapping = mappings.bySemanticKey.get(sourceMappingKey(row));
     if (mapping && mapping.sourceRow !== null) {
       const offset = mapping.sourceRow - row.sourceRow;
@@ -579,9 +594,14 @@ function sourceRowOffset(
   }
   const candidates = [...offsets.entries()].sort((left, right) => right[1] - left[1]);
   const [offset, matches] = candidates[0] ?? [];
-  const secondMatches = candidates[1]?.[1] ?? 0;
-  if (offset === undefined || matches === undefined || matches < 2) return null;
-  if (matches <= secondMatches) return null;
+  if (
+    offset === undefined ||
+    matches === undefined ||
+    matches < 2 ||
+    offsets.size !== 1
+  ) {
+    return null;
+  }
 
   return offset;
 }
