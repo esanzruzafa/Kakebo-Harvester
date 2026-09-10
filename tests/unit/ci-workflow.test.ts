@@ -12,5 +12,6 @@ describe("application validation workflow", () => {
 
     expect(workflow).toContain("npm run audit:all");
     expect(workflow).toContain("npm run desktop:dist");
+    expect(workflow).toContain('"vitest.config.mjs"');
   });
 });
