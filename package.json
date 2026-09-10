@@ -59,7 +59,7 @@
     "@types/node": "^24.1.0",
     "electron": "^43.2.0",
     "electron-builder": "^26.15.3",
-    "eslint": "^9.32.0",
+    "eslint": "^10.10.0",
     "fflate": "^0.8.3",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3",
