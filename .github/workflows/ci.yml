@@ -44,14 +44,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit production dependencies
-        run: npm run audit:production
+      - name: Audit all dependencies
+        run: npm run audit:all
 
       - name: Validate source
         run: npm run check
 
-      - name: Build and verify desktop assets
-        run: npm run build
+      - name: Build and verify portable package
+        run: npm run desktop:dist
 
   legal:
     runs-on: ubuntu-latest
