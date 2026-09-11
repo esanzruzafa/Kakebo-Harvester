@@ -42,7 +42,8 @@ export async function saveAccountSettings(input: {
       } catch (rollbackError) {
         throw new AggregateError(
           [error, rollbackError],
-          "Account settings could not be saved or rolled back."
+          "Account settings could not be saved or rolled back.",
+          { cause: rollbackError }
         );
       }
       throw error;

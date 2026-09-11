@@ -79,7 +79,8 @@ export async function saveCategorizationSettings(
     if (rollbackErrors.length > 0) {
       throw new AggregateError(
         [error, ...rollbackErrors],
-        "Categorization settings could not be saved or fully rolled back."
+        "Categorization settings could not be saved or fully rolled back.",
+        { cause: error }
       );
     }
     throw error;

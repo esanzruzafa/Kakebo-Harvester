@@ -943,7 +943,8 @@ function registerIpc(application: KakeboApplication): void {
                 "error.ruleCategory",
                 'Rule {number} uses an unknown category: "{category}".',
                 { number: error.ruleNumber, category: error.category }
-              )
+              ),
+          { cause: error }
         );
       }
       throw error;
