@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -77,6 +77,18 @@ function insertHistory(database: SqliteDatabase, accountId: string): void {
     .run(`${accountId}-sync`, now, accountId);
 }
 
+function insertRawTransaction(
+  database: SqliteDatabase,
+  accountId: string,
+  path: string
+): void {
+  database
+    .prepare(
+      `UPDATE transactions_raw SET raw_response_path = ? WHERE account_id = ?`
+    )
+    .run(path, accountId);
+}
+
 describe("local account removal persistence", () => {
   it("hides retained history, disables it, and restores visibility on provider rediscovery", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-account-removal-"));
@@ -88,7 +100,7 @@ describe("local account removal persistence", () => {
 
     await expect(
       removeLocalAccount({ database, environment: "sandbox", accountId: "account", mode: "keep-history" })
-    ).resolves.toEqual({ status: "hidden", counts: { accounts: 0, balances: 0, transactions: 0, transactionsRaw: 0, synchronizationRuns: 0 } });
+    ).resolves.toMatchObject({ status: "hidden", counts: { accounts: 0, balances: 0, transactions: 0, transactionsRaw: 0, synchronizationRuns: 0 } });
     expect(new AccountRepository(database).listEditable()).toEqual([]);
     expect(database.prepare("SELECT hidden, sync_enabled, export_enabled FROM accounts WHERE id = 'account'").get()).toEqual({ hidden: 1, sync_enabled: 0, export_enabled: 0 });
     expect(database.prepare("SELECT COUNT(*) AS count FROM transactions WHERE account_id = 'account'").get()).toEqual({ count: 1 });
@@ -115,7 +127,7 @@ describe("local account removal persistence", () => {
 
     await expect(
       removeLocalAccount({ database, environment: "sandbox", accountId: "selected", mode: "delete-history" })
-    ).resolves.toEqual({ status: "deleted", counts: { accounts: 1, balances: 1, transactions: 1, transactionsRaw: 1, synchronizationRuns: 1 } });
+    ).resolves.toMatchObject({ status: "deleted", counts: { accounts: 1, balances: 1, transactions: 1, transactionsRaw: 1, synchronizationRuns: 1 } });
     for (const table of ["accounts", "balances", "transactions_raw", "transactions", "sync_runs"]) {
       expect(database.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${table === "accounts" ? "id" : "account_id"} = 'selected'`).get()).toEqual({ count: 0 });
       expect(database.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${table === "accounts" ? "id" : "account_id"} = 'sibling'`).get()).toEqual({ count: 1 });
@@ -157,6 +169,69 @@ describe("local account removal persistence", () => {
     for (const table of ["accounts", "balances", "transactions_raw", "transactions", "sync_runs"]) {
       expect(database.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${table === "accounts" ? "id" : "account_id"} = 'account'`).get()).toEqual({ count: 1 });
     }
+    database.close();
+  });
+
+  it("removes a directly-owned raw file after a destructive purge", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-removal-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    insertConnection(database, "sandbox-connection", "sandbox");
+    insertAccount(database, "selected", "sandbox-connection");
+    insertHistory(database, "selected");
+    await mkdir(config.rawDataDirectory, { recursive: true });
+    const rawPath = join(config.rawDataDirectory, "selected.json");
+    await writeFile(rawPath, "{}\n");
+    insertRawTransaction(database, "selected", rawPath);
+
+    await expect(
+      removeLocalAccount({
+        database,
+        environment: "sandbox",
+        accountId: "selected",
+        mode: "delete-history",
+        rawDataDirectory: config.rawDataDirectory
+      })
+    ).resolves.toMatchObject({
+      status: "deleted",
+      rawCleanup: { removed: 1, warnings: [] },
+      audit: { action: "local-account-removal", outcome: "deleted" }
+    });
+    await expect(writeFile(rawPath, "{}\n", { flag: "wx" })).resolves.toBeUndefined();
+    database.close();
+  });
+
+  it("retains shared and outside raw paths as safe cleanup warnings", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-removal-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    insertConnection(database, "sandbox-connection", "sandbox");
+    insertAccount(database, "selected", "sandbox-connection");
+    insertAccount(database, "sibling", "sandbox-connection");
+    insertHistory(database, "selected");
+    insertHistory(database, "sibling");
+    await mkdir(config.rawDataDirectory, { recursive: true });
+    const sharedPath = join(config.rawDataDirectory, "shared.json");
+    const outsidePath = join(root, "outside.json");
+    await writeFile(sharedPath, "{}\n");
+    await writeFile(outsidePath, "{}\n");
+    insertRawTransaction(database, "selected", sharedPath);
+    database.prepare("UPDATE transactions_raw SET raw_response_path = ? WHERE account_id = ?").run(sharedPath, "sibling");
+    database.prepare("INSERT INTO transactions_raw (id, account_id, fetched_at, page_number, raw_response_path, raw_fingerprint) VALUES ('outside', 'selected', ?, 2, ?, 'outside-fingerprint')").run(new Date().toISOString(), outsidePath);
+
+    await expect(
+      removeLocalAccount({
+        database,
+        environment: "sandbox",
+        accountId: "selected",
+        mode: "delete-history",
+        rawDataDirectory: config.rawDataDirectory
+      })
+    ).resolves.toMatchObject({
+      rawCleanup: { removed: 0, warnings: ["shared", "outside-root"] }
+    });
+    await expect(writeFile(sharedPath, "{}\n", { flag: "wx" })).rejects.toMatchObject({ code: "EEXIST" });
+    await expect(writeFile(outsidePath, "{}\n", { flag: "wx" })).rejects.toMatchObject({ code: "EEXIST" });
     database.close();
   });
 });

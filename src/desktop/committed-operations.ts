@@ -3,6 +3,7 @@ import type {
 } from "../cards/card-import-service.js";
 import type { DisconnectResult } from "../auth/disconnect-service.js";
 import { safeMessage } from "../utils/text.js";
+import type { AccountRemovalResult } from "../storage/account-removal.js";
 
 export type FollowUpStep = "export" | "accounts-config";
 
@@ -27,6 +28,11 @@ export interface ConnectionOperationResult {
 }
 
 export interface DisconnectOperationResult extends DisconnectResult {
+  warnings: FollowUpWarning[];
+}
+
+export interface AccountRemovalOperationResult extends AccountRemovalResult {
+  exportPath: string | null;
   warnings: FollowUpWarning[];
 }
 
@@ -94,5 +100,26 @@ export async function runDisconnectOperation(input: {
   return {
     ...disconnected,
     warnings: accounts.warning ? [accounts.warning] : []
+  };
+}
+
+export async function runAccountRemovalOperation(input: {
+  remove: () => Promise<AccountRemovalResult>;
+  regenerateExport: () => Promise<{ path: string }>;
+  saveAccounts: () => Promise<void>;
+}): Promise<AccountRemovalOperationResult> {
+  const removed = await input.remove();
+  const [exported, accounts] = await Promise.all([
+    removed.status === "deleted"
+      ? followUp("export", input.regenerateExport)
+      : Promise.resolve({ value: null, warning: null }),
+    followUp("accounts-config", input.saveAccounts)
+  ]);
+  return {
+    ...removed,
+    exportPath: exported.value?.path ?? null,
+    warnings: [exported.warning, accounts.warning].filter(
+      (warning): warning is FollowUpWarning => warning !== null
+    )
   };
 }
