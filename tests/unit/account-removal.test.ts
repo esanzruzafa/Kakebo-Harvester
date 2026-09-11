@@ -2,7 +2,10 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { removeLocalAccount } from "../../src/storage/account-removal.js";
+import {
+  cleanupRawFiles,
+  removeLocalAccount
+} from "../../src/storage/account-removal.js";
 import { createDatabase, type SqliteDatabase } from "../../src/storage/database.js";
 import { AccountRepository } from "../../src/storage/repositories/account-repository.js";
 import { testConfig } from "../helpers.js";
@@ -233,5 +236,43 @@ describe("local account removal persistence", () => {
     await expect(writeFile(sharedPath, "{}\n", { flag: "wx" })).rejects.toMatchObject({ code: "EEXIST" });
     await expect(writeFile(outsidePath, "{}\n", { flag: "wx" })).rejects.toMatchObject({ code: "EEXIST" });
     database.close();
+  });
+
+  it("recognizes case-variant raw paths as shared on Windows", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-removal-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    insertConnection(database, "sandbox-connection", "sandbox");
+    insertAccount(database, "selected", "sandbox-connection");
+    insertAccount(database, "sibling", "sandbox-connection");
+    insertHistory(database, "selected");
+    insertHistory(database, "sibling");
+    await mkdir(config.rawDataDirectory, { recursive: true });
+    const rawPath = join(config.rawDataDirectory, "shared.json");
+    await writeFile(rawPath, "{}\n");
+    insertRawTransaction(database, "selected", rawPath);
+    database.prepare("UPDATE transactions_raw SET raw_response_path = ? WHERE account_id = ?").run(rawPath.toUpperCase(), "sibling");
+
+    await expect(removeLocalAccount({ database, environment: "sandbox", accountId: "selected", mode: "delete-history", rawDataDirectory: config.rawDataDirectory })).resolves.toMatchObject({ rawCleanup: { removed: 0, warnings: ["shared"] } });
+    await expect(writeFile(rawPath, "{}\n", { flag: "wx" })).rejects.toMatchObject({ code: "EEXIST" });
+    database.close();
+  });
+
+  it("returns a non-sensitive cleanup warning when a raw filesystem operation fails", async () => {
+    await expect(
+      cleanupRawFiles(["C:/safe/raw.json"], "C:/safe", () => false, {
+        lstat: () => Promise.resolve({ isSymbolicLink: () => false, isFile: () => true }),
+        unlink: () => Promise.reject(new Error("Disk error token=secret"))
+      })
+    ).resolves.toEqual({ removed: 0, warnings: ["cleanup-failed"] });
+  });
+
+  it("rejects a symbolic link through the portable cleanup seam", async () => {
+    await expect(
+      cleanupRawFiles(["C:/safe/raw.json"], "C:/safe", () => false, {
+        lstat: () => Promise.resolve({ isSymbolicLink: () => true, isFile: () => false }),
+        unlink: () => Promise.resolve()
+      })
+    ).resolves.toEqual({ removed: 0, warnings: ["symbolic-link"] });
   });
 });

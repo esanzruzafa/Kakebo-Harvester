@@ -17,6 +17,7 @@ export interface AccountRemovalResult {
 
 export type RawCleanupWarning =
   | "ambiguous"
+  | "cleanup-failed"
   | "missing"
   | "outside-root"
   | "shared"
@@ -26,6 +27,14 @@ export interface AccountRemovalAuditEvent {
   action: "local-account-removal";
   outcome: "hidden" | "deleted";
   occurredAt: string;
+}
+
+export interface RawFileOperations {
+  lstat: (path: string) => Promise<{
+    isSymbolicLink: () => boolean;
+    isFile: () => boolean;
+  }>;
+  unlink: (path: string) => Promise<void>;
 }
 
 export interface RemoveLocalAccountInput {
@@ -71,11 +80,8 @@ export function removeLocalAccount(
       status: "deleted",
       counts,
       rawCleanup: input.rawDataDirectory
-        ? await cleanupRawFiles(
-            rawPaths,
-            input.rawDataDirectory,
-            input.database,
-            input.accountId
+        ? await cleanupRawFiles(rawPaths, input.rawDataDirectory, (path) =>
+            hasOtherRawOwner(input.database, input.accountId, path)
           )
         : { removed: 0, warnings: [] },
       audit: createAuditEvent("deleted")
@@ -102,50 +108,62 @@ function accountRawPaths(database: SqliteDatabase, accountId: string): string[] 
 }
 
 function hasOtherRawOwner(database: SqliteDatabase, accountId: string, path: string): boolean {
-  return database
+  const candidate = canonicalRawPath(path);
+  const rows = database
     .prepare(
-      `SELECT 1 FROM (
+      `SELECT path FROM (
          SELECT id AS account_id, raw_response_path AS path FROM accounts
          UNION ALL SELECT account_id, raw_response_path FROM balances
          UNION ALL SELECT account_id, raw_response_path FROM transactions_raw
          UNION ALL SELECT account_id, source_raw_file FROM transactions
-       ) WHERE path = ? AND account_id <> ? LIMIT 1`
+       ) WHERE account_id <> ? AND path IS NOT NULL`
     )
-    .get(path, accountId) !== undefined;
+    .all(accountId) as Array<{ path: string }>;
+  return rows.some((row) => canonicalRawPath(row.path) === candidate);
 }
 
-async function cleanupRawFiles(
+function canonicalRawPath(path: string): string {
+  const canonical = resolve(path);
+  return process.platform === "win32" ? canonical.toLowerCase() : canonical;
+}
+
+const defaultRawFileOperations: RawFileOperations = { lstat, unlink };
+
+export async function cleanupRawFiles(
   paths: string[],
   rawDataDirectory: string,
-  database?: SqliteDatabase,
-  accountId?: string
+  hasOtherOwner: (path: string) => boolean,
+  operations: RawFileOperations = defaultRawFileOperations
 ): Promise<AccountRemovalResult["rawCleanup"]> {
-  const rawRoot = resolve(rawDataDirectory);
+  const rawRoot = canonicalRawPath(rawDataDirectory);
   const warnings: RawCleanupWarning[] = [];
   let removed = 0;
   for (const path of paths) {
-    if (database && accountId && hasOtherRawOwner(database, accountId, path)) {
+    if (hasOtherOwner(path)) {
       warnings.push("shared");
       continue;
     }
-    const candidate = resolve(path);
+    const candidate = canonicalRawPath(path);
     if (dirname(candidate) !== rawRoot) {
       warnings.push("outside-root");
       continue;
     }
     try {
-      const details = await lstat(candidate);
+      const details = await operations.lstat(candidate);
       if (details.isSymbolicLink()) {
         warnings.push("symbolic-link");
       } else if (!details.isFile()) {
         warnings.push("ambiguous");
       } else {
-        await unlink(candidate);
+        await operations.unlink(candidate);
         removed += 1;
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") warnings.push("missing");
-      else throw error;
+      warnings.push(
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+          ? "missing"
+          : "cleanup-failed"
+      );
     }
   }
   return { removed, warnings: [...new Set(warnings)] };
