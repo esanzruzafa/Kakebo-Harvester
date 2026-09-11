@@ -514,6 +514,9 @@
                 </p>
               </div>
               <div class="button-row">
+                <button id="add-export-column" class="button secondary" type="button" data-i18n="export.addColumn">
+                  Add custom column
+                </button>
                 <button class="button secondary" type="button" data-open-path="export-settings" data-i18n="common.openJson">
                   Open JSON
                 </button>
@@ -578,8 +581,10 @@
                     <th></th>
                     <th data-i18n="common.number">No.</th>
                     <th data-i18n="export.column.include">Include</th>
-                    <th data-i18n="export.column.field">Data field</th>
+                    <th data-i18n="export.column.field">Data field or type</th>
+                    <th data-i18n="export.column.formula">Formula</th>
                     <th data-i18n="export.column.header">Column name</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody id="export-columns-body"></tbody>

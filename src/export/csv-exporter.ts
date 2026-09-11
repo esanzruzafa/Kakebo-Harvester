@@ -16,13 +16,19 @@ import writeXlsxFile, {
   type Cell,
   type SheetData
 } from "write-excel-file/node";
+import { readSheet } from "read-excel-file/node";
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
 import { ExportError } from "../errors.js";
 import {
+  evaluateCustomFormula,
+  type CustomFormulaValue
+} from "./custom-formula.js";
+import {
   ExportSettingsStore,
   createDefaultExportSettings,
   exportSettingsFingerprint,
+  type CustomExportColumn,
   type ExportField,
   type ExportSettings
 } from "../settings/export-settings-store.js";
@@ -66,6 +72,7 @@ export interface ExportOptions {
 }
 
 type ExportValue = string | number | boolean | null;
+type CustomExportValue = ExportValue | Date;
 
 const exportStateSchema = z.object({
   fingerprint: z.string().regex(/^[a-f0-9]{12}$/u),
@@ -269,6 +276,131 @@ function rowValue(
     : value;
 }
 
+function formulaValues(row: ExportRow): Record<ExportField, CustomFormulaValue> {
+  return {
+    movementKey: row.movement_key,
+    date: row.movement_date,
+    valueDate: row.value_date,
+    bank: row.bank_name,
+    account: row.account_name,
+    accountAlias: row.account_alias,
+    productType: row.product_type,
+    description: row.description_raw,
+    merchant: row.merchant_name,
+    counterparty: row.counterparty_name,
+    amount: Number(row.amount),
+    direction: row.direction,
+    status: row.status,
+    categoryAuto: row.category_auto,
+    subcategoryAuto: row.subcategory_auto,
+    reviewed: row.reviewed === 1,
+    source: row.provider,
+    importedAt: row.imported_at
+  };
+}
+
+function customValue(
+  row: ExportRow,
+  column: CustomExportColumn,
+  previous: ReadonlyMap<string, ReadonlyMap<string, CustomExportValue>>
+): CustomExportValue {
+  const persisted = previous.get(row.movement_key)?.get(column.id);
+  if (persisted !== undefined) return persisted;
+  if (column.kind === "manual") return "";
+  if (!column.formula) throw new Error("Formula export columns require a formula.");
+  return evaluateCustomFormula(column.formula, formulaValues(row));
+}
+
+function safeCustomValue(value: CustomExportValue): CustomExportValue {
+  return typeof value === "string" ? safeSpreadsheetText(value) : value;
+}
+
+function csvCustomValue(value: CustomExportValue): ExportValue {
+  const normalized = value instanceof Date ? value.toISOString() : value;
+  return typeof normalized === "string" ? safeSpreadsheetText(normalized) : normalized;
+}
+
+function readCustomValue(value: unknown): CustomExportValue {
+  if (value === null || value instanceof Date) return value;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  return "";
+}
+
+function parseCsv(content: string, separator: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index] ?? "";
+    if (quoted) {
+      if (character === '"' && content[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else if (character === '"') {
+        quoted = false;
+      } else {
+        value += character;
+      }
+      continue;
+    }
+    if (character === '"') {
+      quoted = true;
+    } else if (character === separator) {
+      row.push(value);
+      value = "";
+    } else if (character === "\n" || character === "\r") {
+      if (character === "\r" && content[index + 1] === "\n") index += 1;
+      row.push(value);
+      rows.push(row);
+      row = [];
+      value = "";
+    } else {
+      value += character;
+    }
+  }
+  if (value.length > 0 || row.length > 0) {
+    row.push(value);
+    rows.push(row);
+  }
+  return rows;
+}
+
+async function previousCustomValues(
+  path: string,
+  settings: ExportSettings
+): Promise<Map<string, Map<string, CustomExportValue>>> {
+  const columns = settings.columns.filter((column) => column.enabled);
+  const movementKeyIndex = columns.findIndex(
+    (column) => "field" in column && column.field === "movementKey"
+  );
+  const customColumns = columns
+    .map((column, index) => ({ column, index }))
+    .filter(
+      (entry): entry is { column: CustomExportColumn; index: number } =>
+        !("field" in entry.column)
+    );
+  if (movementKeyIndex < 0 || customColumns.length === 0) return new Map();
+
+  const rows: readonly (readonly unknown[])[] = settings.format === "csv"
+    ? parseCsv((await readFile(path, "utf8")).replace(/^\uFEFF/u, ""), settings.csv.fieldSeparator)
+    : await readSheet(path);
+  const values = new Map<string, Map<string, CustomExportValue>>();
+  for (const row of rows.slice(1)) {
+    const movementKey = row[movementKeyIndex];
+    if (typeof movementKey !== "string" || movementKey.length === 0) continue;
+    values.set(
+      movementKey,
+      new Map(
+        customColumns.map(({ column, index }) => [column.id, readCustomValue(row[index] ?? "")])
+      )
+    );
+  }
+  return values;
+}
+
 function escapeCsv(value: ExportValue, separator: string): string {
   const text = value === null ? "" : String(value);
   if (text.includes(separator) || /["\r\n]/u.test(text)) {
@@ -455,7 +587,8 @@ export class CsvExporter {
   private async writeCsv(
     temporary: string,
     rows: ExportRow[],
-    settings: ExportSettings
+    settings: ExportSettings,
+    previous: ReadonlyMap<string, ReadonlyMap<string, CustomExportValue>>
   ): Promise<void> {
     const columns = settings.columns.filter((column) => column.enabled);
     const separator = settings.csv.fieldSeparator;
@@ -468,7 +601,12 @@ export class CsvExporter {
       ...rows.map((row) =>
         columns
           .map((column) =>
-            escapeCsv(rowValue(row, column.field, settings, false), separator)
+            escapeCsv(
+              "field" in column
+                ? rowValue(row, column.field, settings, false)
+                : csvCustomValue(customValue(row, column, previous)),
+              separator
+            )
           )
           .join(separator)
       )
@@ -491,7 +629,8 @@ export class CsvExporter {
     temporary: string,
     rows: ExportRow[],
     settings: ExportSettings,
-    highlightedKeys: Record<HighlightSource, ReadonlySet<string>>
+    highlightedKeys: Record<HighlightSource, ReadonlySet<string>>,
+    previous: ReadonlyMap<string, ReadonlyMap<string, CustomExportValue>>
   ): Promise<void> {
     const columns = settings.columns.filter((column) => column.enabled);
     const header: Cell[] = columns.map((column) => ({
@@ -511,7 +650,7 @@ export class CsvExporter {
           const background = isNew
             ? { backgroundColor: HIGHLIGHT_COLORS[source] }
             : {};
-          if (column.field === "amount") {
+          if ("field" in column && column.field === "amount") {
             const exactNumber = exactSpreadsheetNumber(row.amount);
             if (exactNumber === null) {
               return {
@@ -530,7 +669,7 @@ export class CsvExporter {
               ...background
             };
           }
-          if (column.field === "date" || column.field === "valueDate") {
+          if ("field" in column && (column.field === "date" || column.field === "valueDate")) {
             const rawDate = column.field === "date" ? row.movement_date : row.value_date;
             if (!rawDate) return null;
             const date = spreadsheetDate(rawDate);
@@ -543,7 +682,12 @@ export class CsvExporter {
                   ...background
                 };
           }
-          const value = rowValue(row, column.field, settings, true);
+          const value = "field" in column
+            ? rowValue(row, column.field, settings, true)
+            : safeCustomValue(customValue(row, column, previous));
+          if (value instanceof Date) {
+            return { value, type: Date, format: "yyyy-mm-dd", ...background };
+          }
           if (typeof value === "number") {
             return { value, type: Number, format: "#,##0.00", ...background };
           }
@@ -612,10 +756,13 @@ export class CsvExporter {
         const current = new Set(currentKeys[source]);
         highlighted[source] = new Set([...highlighted[source]].filter((key) => current.has(key)));
       }
+      const customValues = compatible && (await pathExists(destination))
+        ? await previousCustomValues(destination, settings)
+        : new Map<string, Map<string, CustomExportValue>>();
       if (settings.format === "csv") {
-        await this.writeCsv(temporary, rows, settings);
+        await this.writeCsv(temporary, rows, settings, customValues);
       } else {
-        await this.writeXlsx(temporary, rows, settings, highlighted);
+        await this.writeXlsx(temporary, rows, settings, highlighted, customValues);
         if (process.platform !== "win32") await chmod(temporary, 0o600);
       }
       if (compatible) {
