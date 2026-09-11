@@ -359,7 +359,8 @@ export class SyncRunner {
         } catch (auditError) {
           throw new AggregateError(
             [error, auditError],
-            "Synchronization failed and its audit record could not be finalized."
+            "Synchronization failed and its audit record could not be finalized.",
+            { cause: auditError }
           );
         }
       }

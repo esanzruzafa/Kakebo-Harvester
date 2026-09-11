@@ -370,7 +370,8 @@ async function rotateIncompatibleOutputs(
     if (rollbackFailures.length > 0) {
       throw new AggregateError(
         [error, ...rollbackFailures],
-        "Export rotation failed and one or more previous files could not be restored."
+        "Export rotation failed and one or more previous files could not be restored.",
+        { cause: error }
       );
     }
     throw error;
