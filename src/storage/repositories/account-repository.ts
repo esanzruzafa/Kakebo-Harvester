@@ -49,6 +49,14 @@ export interface AccountSettingsUpdate {
   exportEnabled: boolean;
 }
 
+export interface AccountPurgeCounts {
+  accounts: number;
+  balances: number;
+  transactions: number;
+  transactionsRaw: number;
+  synchronizationRuns: number;
+}
+
 interface AccountIdentityRow {
   id: string;
   identification_hash: string | null;
@@ -192,6 +200,63 @@ export class AccountRepository {
         .run(now, connectionId, ...providerAccountIds);
     });
     reconcile();
+  }
+
+  public hideLocalAccount(accountId: string, environment: string): boolean {
+    const result = this.database
+      .prepare(
+        `UPDATE accounts
+         SET hidden = 1, sync_enabled = 0, export_enabled = 0
+         WHERE id = ?
+           AND EXISTS (
+             SELECT 1
+             FROM bank_connections
+             WHERE bank_connections.id = accounts.bank_connection_id
+               AND bank_connections.environment = ?
+           )`
+      )
+      .run(accountId, environment);
+    return result.changes === 1;
+  }
+
+  public purgeLocalAccount(
+    accountId: string,
+    environment: string
+  ): AccountPurgeCounts | undefined {
+    const purge = this.database.transaction(() => {
+      const account = this.database
+        .prepare(
+          `SELECT a.id
+           FROM accounts a
+           JOIN bank_connections c ON c.id = a.bank_connection_id
+           WHERE a.id = ? AND c.environment = ?`
+        )
+        .get(accountId, environment) as { id: string } | undefined;
+      if (!account) return undefined;
+      const balances = this.database
+        .prepare("DELETE FROM balances WHERE account_id = ?")
+        .run(account.id).changes;
+      const transactionsRaw = this.database
+        .prepare("DELETE FROM transactions_raw WHERE account_id = ?")
+        .run(account.id).changes;
+      const transactions = this.database
+        .prepare("DELETE FROM transactions WHERE account_id = ?")
+        .run(account.id).changes;
+      const synchronizationRuns = this.database
+        .prepare("DELETE FROM sync_runs WHERE account_id = ?")
+        .run(account.id).changes;
+      this.database
+        .prepare("DELETE FROM desktop_run_accounts WHERE account_id = ?")
+        .run(account.id);
+      this.database
+        .prepare("DELETE FROM account_identification_hashes WHERE account_id = ?")
+        .run(account.id);
+      const accounts = this.database
+        .prepare("DELETE FROM accounts WHERE id = ?")
+        .run(account.id).changes;
+      return { accounts, balances, transactions, transactionsRaw, synchronizationRuns };
+    });
+    return purge();
   }
 
   private findByIdentificationHashes(
@@ -414,6 +479,7 @@ export class AccountRepository {
                display_name = COALESCE(?, display_name),
                account_type = COALESCE(?, account_type),
                product_type = COALESCE(?, product_type), active = 1, last_seen_at = ?,
+               hidden = 0,
                raw_response_path = COALESCE(?, raw_response_path),
                last_error_at = NULL, last_error_code = NULL,
                last_error_message_safe = NULL
@@ -506,6 +572,7 @@ export class AccountRepository {
            c.provider
          FROM accounts a
          JOIN bank_connections c ON c.id = a.bank_connection_id
+         WHERE a.hidden = 0
          ORDER BY c.bank_name, account_name`
       )
       .all() as Array<{
