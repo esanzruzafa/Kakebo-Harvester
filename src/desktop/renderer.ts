@@ -6,10 +6,13 @@ import type {
   SelectedCardFile
 } from "./contracts.js";
 import {
-  createAccountRemovalDialogModel,
-  selectedAccountRemovalMode,
   type AccountRemovalMode
 } from "./account-removal-dialog.js";
+import {
+  bindAccountRemovalDialogInteractions,
+  runAccountRemovalFromDialog
+} from "./account-removal-dialog-interaction.js";
+import { renderAccountRemovalDialog } from "./account-removal-dialog-view.js";
 import {
   adjacentMovableIndex,
   rowDropInsertionIndex
@@ -453,121 +456,33 @@ async function confirmInApp(
   );
 }
 
-function identityRow(label: string, value: string | null): HTMLDivElement | undefined {
-  if (!value) return undefined;
-  const row = document.createElement("div");
-  const name = document.createElement("strong");
-  name.textContent = `${label}: `;
-  const detail = document.createElement("span");
-  detail.textContent = value;
-  row.append(name, detail);
-  return row;
-}
-
 function displayAccountRemovalDialog(
   account: EditableAccount
 ): Promise<AccountRemovalMode | undefined> {
-  const model = createAccountRemovalDialogModel(account);
   const previousFocus =
     document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
-  const modal = document.createElement("div");
-  modal.className = "app-modal";
-  modal.setAttribute("role", model.accessibility.role);
-  modal.setAttribute("aria-modal", "true");
-  modal.setAttribute("aria-labelledby", "account-removal-title");
-  modal.setAttribute("aria-describedby", "account-removal-description");
-  const card = document.createElement("div");
-  card.className = "app-modal-card";
-  const kicker = document.createElement("p");
-  kicker.className = "section-kicker";
-  kicker.textContent = t("dialog.kicker", "Confirmation");
-  const title = document.createElement("h2");
-  title.id = "account-removal-title";
-  title.textContent = t("accountRemoval.title", "Remove local account");
-  const description = document.createElement("p");
-  description.id = "account-removal-description";
-  description.textContent = t("accountRemoval.description", "Remove this account locally.");
-  const identity = document.createElement("div");
-  identity.className = "account-removal-identity";
-  const rows = [
-    identityRow(t("accountRemoval.identity.bank", "Bank"), model.identity.bank),
-    identityRow(t("accountRemoval.identity.connection", "Connection"), model.identity.connection),
-    identityRow(t("accountRemoval.identity.account", "Account"), model.identity.displayName),
-    identityRow(t("accountRemoval.identity.alias", "Alias"), model.identity.alias),
-    identityRow(
-      t("accountRemoval.identity.identifier", "Masked identifier"),
-      model.identity.maskedIdentifier
-    )
-  ].filter((row): row is HTMLDivElement => row !== undefined);
-  identity.append(...rows);
-  const choices = document.createElement("fieldset");
-  choices.className = "field";
-  choices.setAttribute("role", model.accessibility.selectionRole);
-  const legend = document.createElement("legend");
-  legend.textContent = t("accountRemoval.choice", "Removal option");
-  choices.append(legend);
-  for (const option of model.options) {
-    const label = document.createElement("label");
-    label.className = "check-option";
-    const input = document.createElement("input");
-    input.type = "radio";
-    input.name = "account-removal-mode";
-    input.value = option.mode;
-    input.checked = option.mode === model.initialMode;
-    const copy = document.createElement("span");
-    const heading = document.createElement("strong");
-    heading.textContent = t(
-      `accountRemoval.${option.mode === "keep-history" ? "keepHistory" : "deleteHistory"}.label`,
-      option.mode
-    );
-    const detail = document.createElement("small");
-    detail.textContent = t(
-      `accountRemoval.${option.mode === "keep-history" ? "keepHistory" : "deleteHistory"}.description`,
-      ""
-    );
-    copy.append(heading, detail);
-    if (option.destructive) {
-      const warning = document.createElement("small");
-      warning.className = "account-last-error";
-      warning.textContent = t(
-        "accountRemoval.deleteHistory.warning",
-        "This local history deletion is irreversible."
-      );
-      copy.append(warning);
-    }
-    label.append(input, copy);
-    choices.append(label);
-  }
-  const actions = document.createElement("div");
-  actions.className = "button-row";
-  const cancel = button(t("accountRemoval.cancel", "Cancel"));
-  const confirm = button(t("accountRemoval.confirm", "Remove account"), "button danger");
-  actions.append(cancel, confirm);
-  card.append(kicker, title, description, identity, choices, actions);
-  modal.append(card);
-  document.body.append(modal);
+  const view = renderAccountRemovalDialog(document, account, t);
+  document.body.append(view.modal);
   updateOverlayInertState();
   return new Promise((resolve) => {
+    let dispose = (): void => undefined;
     const finish = (mode: AccountRemovalMode | undefined): void => {
-      modal.removeEventListener("keydown", onKeydown);
-      modal.remove();
+      dispose();
+      view.modal.remove();
       updateOverlayInertState();
-      if (previousFocus?.isConnected && !previousFocus.closest("[inert]")) {
-        previousFocus.focus();
-      }
       resolve(mode);
     };
-    const onKeydown = (event: KeyboardEvent): void =>
-      handleDialogKeydown(event, modal, () => finish(undefined));
-    cancel.onclick = () => finish(undefined);
-    confirm.onclick = () => {
-      const selected = choices.querySelector<HTMLInputElement>(
-        "input[name='account-removal-mode']:checked"
-      );
-      finish(selectedAccountRemovalMode(selected?.value));
-    };
-    modal.addEventListener("keydown", onKeydown);
-    choices.querySelector<HTMLInputElement>("input")?.focus();
+    dispose = bindAccountRemovalDialogInteractions({
+      modal: view.modal,
+      controls: [...view.modeInputs, view.cancel, view.confirm],
+      modeInputs: view.modeInputs,
+      cancel: view.cancel,
+      confirm: view.confirm,
+      previousFocus,
+      activeElement: () => document.activeElement,
+      finish
+    });
+    view.modeInputs[0]?.focus();
   });
 }
 
@@ -2125,8 +2040,13 @@ async function removeAccountFromUi(account: EditableAccount): Promise<void> {
   const save = element<HTMLButtonElement>("save-accounts");
   save.disabled = true;
   try {
-    const result = await window.kakebo.removeAccount({ id: account.id, mode });
-    applyAccountRemovalBootstrap(result.bootstrap);
+    const result = await runAccountRemovalFromDialog({
+      account,
+      openDialog: () => Promise.resolve(mode),
+      removeAccount: window.kakebo.removeAccount,
+      applyBootstrap: (bootstrap) => applyAccountRemovalBootstrap(bootstrap)
+    });
+    if (!result) return;
     showToast(
       result.removal.warnings.length > 0
         ? `${t(
