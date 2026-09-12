@@ -132,7 +132,7 @@ export function registerAccountRemovalHandler<Event, Result, Bootstrap>(input: {
         bootstrap: null,
         warnings: [{
           step: "bootstrap-refresh",
-          message: "The account was removed. Refresh the app to reload local data."
+          message: "account-removal-refresh-required"
         }]
       };
     }

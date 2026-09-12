@@ -168,7 +168,7 @@ describe("account removal desktop request", () => {
     await expect(handler?.({}, { id: "account-1", mode: "delete-history" })).resolves.toEqual({
       removal,
       bootstrap: null,
-      warnings: [{ step: "bootstrap-refresh", message: "The account was removed. Refresh the app to reload local data." }]
+      warnings: [{ step: "bootstrap-refresh", message: "account-removal-refresh-required" }]
     });
   });
 

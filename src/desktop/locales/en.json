@@ -429,6 +429,7 @@
   "toast.syncCompleted": "Synchronization completed successfully.",
   "toast.syncCompletedWithWarnings": "Synchronization completed with bank or account issues.",
   "warning.accountsConfig": "Account configuration: {message}",
+  "warning.accountRemovalRefreshRequired": "The account was removed. Refresh the app to reload local data.",
   "warning.bootstrapRefresh": "Refresh: {message}",
   "warning.rawCleanup.ambiguous": "Raw data was retained because its file type could not be verified.",
   "warning.rawCleanup.failed": "Raw data could not be removed.",

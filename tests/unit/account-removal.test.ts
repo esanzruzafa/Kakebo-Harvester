@@ -205,6 +205,29 @@ describe("local account removal persistence", () => {
     database.close();
   });
 
+  it("removes a directly-owned raw file in the RawStore hierarchy", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-removal-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    insertConnection(database, "sandbox-connection", "sandbox");
+    insertAccount(database, "selected", "sandbox-connection");
+    insertHistory(database, "selected");
+    const rawPath = join(config.rawDataDirectory, "2026-09-13", "selected", "transactions.json");
+    await mkdir(join(config.rawDataDirectory, "2026-09-13", "selected"), { recursive: true });
+    await writeFile(rawPath, "{}\n");
+    insertRawTransaction(database, "selected", rawPath);
+
+    await expect(removeLocalAccount({
+      database,
+      environment: "sandbox",
+      accountId: "selected",
+      mode: "delete-history",
+      rawDataDirectory: config.rawDataDirectory
+    })).resolves.toMatchObject({ rawCleanup: { removed: 1, warnings: [] } });
+    await expect(writeFile(rawPath, "{}\n", { flag: "wx" })).resolves.toBeUndefined();
+    database.close();
+  });
+
   it("persists a privacy-safe local removal audit event without account or financial data", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-account-removal-audit-"));
     const config = testConfig(root);
@@ -394,6 +417,24 @@ describe("local account removal persistence", () => {
 
     await expect(
       cleanupRawFiles(["C:/safe/raw.json"], "C:/safe", () => false, { lstat, unlink })
+    ).resolves.toEqual({ removed: 0, warnings: ["symbolic-link"] });
+    expect(unlink).not.toHaveBeenCalled();
+  });
+
+  it("rejects a symbolic link within the RawStore directory hierarchy", async () => {
+    const rawRoot = resolve("raw-store-root");
+    const dateDirectory = join(rawRoot, "2026-09-13");
+    const rawPath = join(dateDirectory, "account", "transactions.json");
+    const expectedDateDirectory = process.platform === "win32" ? dateDirectory.toLowerCase() : dateDirectory;
+    const expectedRawPath = process.platform === "win32" ? rawPath.toLowerCase() : rawPath;
+    const unlink = vi.fn();
+    const lstat = vi.fn((path: string) => Promise.resolve({
+      isSymbolicLink: () => path === expectedDateDirectory,
+      isFile: () => path === expectedRawPath
+    }));
+
+    await expect(
+      cleanupRawFiles([rawPath], rawRoot, () => false, { lstat, unlink })
     ).resolves.toEqual({ removed: 0, warnings: ["symbolic-link"] });
     expect(unlink).not.toHaveBeenCalled();
   });

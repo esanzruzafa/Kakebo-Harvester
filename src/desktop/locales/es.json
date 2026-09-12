@@ -429,6 +429,7 @@
   "toast.syncCompleted": "Sincronización completada correctamente.",
   "toast.syncCompletedWithWarnings": "La sincronización se ha completado con incidencias en bancos o cuentas.",
   "warning.accountsConfig": "Configuración de cuentas: {message}",
+  "warning.accountRemovalRefreshRequired": "La cuenta se ha eliminado. Actualiza la aplicación para recargar los datos locales.",
   "warning.bootstrapRefresh": "Actualización: {message}",
   "warning.rawCleanup.ambiguous": "Los datos brutos se conservaron porque no se pudo verificar el tipo de archivo.",
   "warning.rawCleanup.failed": "No se pudieron eliminar los datos brutos.",

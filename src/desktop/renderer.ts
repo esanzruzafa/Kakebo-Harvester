@@ -111,7 +111,14 @@ function followUpWarningMessage(warnings: FollowUpWarning[]): string {
           ? tf(
               "warning.bootstrapRefresh",
               "Refresh: {message}",
-              { message: warning.message }
+              {
+                message: warning.message === "account-removal-refresh-required"
+                  ? t(
+                    "warning.accountRemovalRefreshRequired",
+                    "The account was removed. Refresh the app to reload local data."
+                  )
+                  : warning.message
+              }
             )
           : tf(
             "warning.accountsConfig",
@@ -2057,7 +2064,7 @@ async function removeAccountFromUi(account: EditableAccount): Promise<void> {
       } catch {
         recoveryWarnings.push({
           step: "bootstrap-refresh",
-          message: "The account was removed. Refresh the app to reload local data."
+          message: "account-removal-refresh-required"
         });
       }
     }

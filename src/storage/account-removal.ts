@@ -1,5 +1,5 @@
 import { lstat, unlink } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { SqliteDatabase } from "./database.js";
 import { AccountRepository, type AccountPurgeCounts } from "./repositories/account-repository.js";
 import { createId } from "../utils/crypto.js";
@@ -269,6 +269,26 @@ function canonicalRawPath(path: string): string {
   return process.platform === "win32" ? canonical.toLowerCase() : canonical;
 }
 
+function rawFileParents(candidate: string, rawRoot: string): string[] | null {
+  const relativePath = relative(rawRoot, candidate);
+  if (!relativePath || isAbsolute(relativePath) || relativePath.startsWith(`..${sep}`) || relativePath === "..") {
+    return null;
+  }
+  const parts = relativePath.split(sep);
+  if (parts.length === 1) return [];
+  const [date, account] = parts;
+  if (
+    parts.length === 3 &&
+    date !== undefined &&
+    account !== undefined &&
+    /^\d{4}-\d{2}-\d{2}$/u.test(date) &&
+    /^[a-zA-Z0-9_-]{1,80}$/u.test(account)
+  ) {
+    return [join(rawRoot, date), join(rawRoot, date, account)];
+  }
+  return null;
+}
+
 const defaultRawFileOperations: RawFileOperations = { lstat, unlink };
 
 export async function cleanupRawFiles(
@@ -303,8 +323,15 @@ export async function cleanupRawFiles(
         continue;
       }
       const candidate = canonicalRawPath(path);
-      if (dirname(candidate) !== rawRoot) {
+      const parents = rawFileParents(candidate, rawRoot);
+      if (parents === null) {
         warnings.push("outside-root");
+        continue;
+      }
+      if ((await Promise.all(parents.map(async (parent) => await operations.lstat(parent)))).some(
+        (details) => details.isSymbolicLink()
+      )) {
+        warnings.push("symbolic-link");
         continue;
       }
       const details = await operations.lstat(candidate);
