@@ -29,6 +29,10 @@ class FakeElement extends EventTarget {
     this.children.push(...children);
   }
 
+  public contains(element: unknown): boolean {
+    return element === this || this.children.some((child) => child.contains(element));
+  }
+
   public setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
   }
@@ -155,6 +159,19 @@ describe("account removal dialog renderer interactions", () => {
     expect(backward.defaultPrevented).toBe(true);
     expect(dialog.confirm.focused).toBe(true);
     expect(finish).not.toHaveBeenCalled();
+  });
+
+  it("traps Shift+Tab from the checked destructive radio option", () => {
+    const dialog = interactionFixture(vi.fn());
+    dialog.retain.checked = false;
+    dialog.destructive.checked = true;
+    dialog.setActive(dialog.destructive);
+    const backward = keydown("Tab", true);
+
+    dialog.modal.dispatchEvent(backward);
+
+    expect(backward.defaultPrevented).toBe(true);
+    expect(dialog.confirm.focused).toBe(true);
   });
 
   it("Cancel terminally removes dialog listeners, restores focus, and does not remove", async () => {

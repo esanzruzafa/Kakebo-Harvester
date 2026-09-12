@@ -29,7 +29,13 @@ export function bindAccountRemovalDialogInteractions(input: {
       return;
     }
     if (event.key !== "Tab") return;
-    const controls = input.controls.filter((control) => !control.disabled && !control.hidden);
+    const selectedMode = input.modeInputs.find((mode) => mode.checked);
+    const controls = input.controls.filter(
+      (control) =>
+        !control.disabled &&
+        !control.hidden &&
+        (!input.modeInputs.includes(control as HTMLInputElement) || control === selectedMode)
+    );
     const first = controls[0];
     const last = controls.at(-1);
     if (!first || !last) {

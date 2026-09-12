@@ -2009,9 +2009,7 @@ async function refresh(
 }
 
 function applyAccountRemovalBootstrap(bootstrap: DesktopBootstrap): void {
-  const dirtyTabs = new Set<EditableTab>(
-    unsavedTabs().filter((tab) => tab !== "accounts")
-  );
+  const dirtyTabs = new Set<EditableTab>(unsavedTabs());
   const drafts = captureEditableDrafts(dirtyTabs);
   const priorSnapshots = new Map(savedTabSnapshots);
   state = dirtyTabs.size > 0
@@ -2047,14 +2045,17 @@ async function removeAccountFromUi(account: EditableAccount): Promise<void> {
       applyBootstrap: (bootstrap) => applyAccountRemovalBootstrap(bootstrap)
     });
     if (!result) return;
+    const hasWarnings =
+      result.removal.warnings.length > 0 ||
+      result.removal.rawCleanup.warnings.length > 0;
     showToast(
-      result.removal.warnings.length > 0
+      hasWarnings
         ? `${t(
             "toast.accountRemovedWithWarnings",
             "The account was removed, but follow-up tasks need attention."
           )} ${followUpWarningMessage(result.removal.warnings)}`
         : t("toast.accountRemoved", "The account was removed from this local data set."),
-      result.removal.warnings.length > 0 ? "warning" : false
+      hasWarnings ? "warning" : false
     );
   } catch (error) {
     showToast(errorMessage(error), true);
