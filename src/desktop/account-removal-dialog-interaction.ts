@@ -14,7 +14,9 @@ export function bindAccountRemovalDialogInteractions(input: {
   activeElement: () => Element | null;
   finish: (mode: AccountRemovalMode | undefined) => void;
 }): () => void {
+  let dispose = (): void => undefined;
   const finish = (mode: AccountRemovalMode | undefined): void => {
+    dispose();
     input.finish(mode);
     if (input.previousFocus?.isConnected && !input.previousFocus.closest("[inert]")) {
       input.previousFocus.focus();
@@ -54,11 +56,12 @@ export function bindAccountRemovalDialogInteractions(input: {
   input.modal.addEventListener("keydown", keydown);
   input.cancel.addEventListener("click", cancel);
   input.confirm.addEventListener("click", confirm);
-  return () => {
+  dispose = () => {
     input.modal.removeEventListener("keydown", keydown);
     input.cancel.removeEventListener("click", cancel);
     input.confirm.removeEventListener("click", confirm);
   };
+  return dispose;
 }
 
 export async function runAccountRemovalFromDialog<Bootstrap, Removal>(input: {

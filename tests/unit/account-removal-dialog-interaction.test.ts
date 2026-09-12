@@ -79,6 +79,52 @@ function textContent(element: FakeElement): string {
   return `${element.textContent}${element.children.map(textContent).join("")}`;
 }
 
+function interactionFixture(
+  finish: (mode: "keep-history" | "delete-history" | undefined) => void
+): {
+  modal: FakeElement;
+  retain: FakeElement;
+  destructive: FakeElement;
+  cancel: FakeElement;
+  confirm: FakeElement;
+  priorFocus: FakeElement;
+  setActive: (element: FakeElement) => void;
+} {
+  const modal = new FakeElement("div");
+  const retain = new FakeElement("input");
+  retain.value = "keep-history";
+  retain.checked = true;
+  const destructive = new FakeElement("input");
+  destructive.value = "delete-history";
+  const cancel = new FakeElement("button");
+  const confirm = new FakeElement("button");
+  const priorFocus = new FakeElement("button");
+  let active: FakeElement = confirm;
+  bindAccountRemovalDialogInteractions({
+    modal: modal as unknown as HTMLElement,
+    controls: [retain, destructive, cancel, confirm] as unknown as Array<
+      HTMLInputElement | HTMLButtonElement
+    >,
+    modeInputs: [retain, destructive] as unknown as HTMLInputElement[],
+    cancel: cancel as unknown as HTMLButtonElement,
+    confirm: confirm as unknown as HTMLButtonElement,
+    previousFocus: priorFocus as unknown as HTMLElement,
+    activeElement: () => active as unknown as Element,
+    finish
+  });
+  return {
+    modal,
+    retain,
+    destructive,
+    cancel,
+    confirm,
+    priorFocus,
+    setActive: (element) => {
+      active = element;
+    }
+  };
+}
+
 describe("account removal dialog renderer interactions", () => {
   it("renders only safe identity and starts with retain-history selected", () => {
     const view = renderAccountRemovalDialog(
@@ -95,47 +141,74 @@ describe("account removal dialog renderer interactions", () => {
     expect(view.modeInputs.map((input) => input.checked)).toEqual([true, false]);
   });
 
-  it("uses Cancel, Escape, and focus trapping through dispatched DOM events", () => {
-    const modal = new FakeElement("div");
-    const retain = new FakeElement("input");
-    retain.value = "keep-history";
-    retain.checked = true;
-    const destructive = new FakeElement("input");
-    destructive.value = "delete-history";
-    const cancel = new FakeElement("button");
-    const confirm = new FakeElement("button");
-    const priorFocus = new FakeElement("button");
-    let active: FakeElement = confirm;
+  it("prevents default while wrapping Tab and Shift+Tab focus", () => {
     const finish = vi.fn();
+    const dialog = interactionFixture(finish);
 
-    bindAccountRemovalDialogInteractions({
-      modal: modal as unknown as HTMLElement,
-      controls: [retain, destructive, cancel, confirm] as unknown as Array<
-        HTMLInputElement | HTMLButtonElement
-      >,
-      modeInputs: [retain, destructive] as unknown as HTMLInputElement[],
-      cancel: cancel as unknown as HTMLButtonElement,
-      confirm: confirm as unknown as HTMLButtonElement,
-      previousFocus: priorFocus as unknown as HTMLElement,
-      activeElement: () => active as unknown as Element,
-      finish
+    const forward = keydown("Tab");
+    dialog.modal.dispatchEvent(forward);
+    expect(forward.defaultPrevented).toBe(true);
+    expect(dialog.retain.focused).toBe(true);
+    dialog.setActive(dialog.retain);
+    const backward = keydown("Tab", true);
+    dialog.modal.dispatchEvent(backward);
+    expect(backward.defaultPrevented).toBe(true);
+    expect(dialog.confirm.focused).toBe(true);
+    expect(finish).not.toHaveBeenCalled();
+  });
+
+  it("Cancel terminally removes dialog listeners, restores focus, and does not remove", async () => {
+    let resolveDialog: (mode: "keep-history" | "delete-history" | undefined) => void;
+    const openDialog = new Promise<"keep-history" | "delete-history" | undefined>((resolve) => {
+      resolveDialog = resolve;
+    });
+    const finish = vi.fn((mode: "keep-history" | "delete-history" | undefined) => {
+      resolveDialog(mode);
+    });
+    const dialog = interactionFixture(finish);
+    const removeAccount = vi.fn();
+    const operation = runAccountRemovalFromDialog({
+      account: account(),
+      openDialog: () => openDialog,
+      removeAccount,
+      applyBootstrap: vi.fn()
     });
 
-    modal.dispatchEvent(keydown("Tab"));
-    expect(retain.focused).toBe(true);
-    active = retain;
-    modal.dispatchEvent(keydown("Tab", true));
-    expect(confirm.focused).toBe(true);
-    cancel.dispatchEvent(new Event("click"));
-    modal.dispatchEvent(keydown("Escape"));
-    retain.checked = false;
-    destructive.checked = true;
-    confirm.dispatchEvent(new Event("click"));
+    dialog.cancel.dispatchEvent(new Event("click"));
+    dialog.confirm.dispatchEvent(new Event("click"));
 
-    expect(finish).toHaveBeenNthCalledWith(1, undefined);
-    expect(finish).toHaveBeenNthCalledWith(2, undefined);
-    expect(finish).toHaveBeenNthCalledWith(3, "delete-history");
-    expect(priorFocus.focused).toBe(true);
+    await expect(operation).resolves.toBeUndefined();
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(undefined);
+    expect(dialog.priorFocus.focused).toBe(true);
+    expect(removeAccount).not.toHaveBeenCalled();
+  });
+
+  it("Escape terminally removes dialog listeners, restores focus, and does not remove", async () => {
+    let resolveDialog: (mode: "keep-history" | "delete-history" | undefined) => void;
+    const openDialog = new Promise<"keep-history" | "delete-history" | undefined>((resolve) => {
+      resolveDialog = resolve;
+    });
+    const finish = vi.fn((mode: "keep-history" | "delete-history" | undefined) => {
+      resolveDialog(mode);
+    });
+    const dialog = interactionFixture(finish);
+    const removeAccount = vi.fn();
+    const operation = runAccountRemovalFromDialog({
+      account: account(),
+      openDialog: () => openDialog,
+      removeAccount,
+      applyBootstrap: vi.fn()
+    });
+
+    dialog.modal.dispatchEvent(keydown("Escape"));
+    dialog.confirm.dispatchEvent(new Event("click"));
+
+    await expect(operation).resolves.toBeUndefined();
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(undefined);
+    expect(dialog.priorFocus.focused).toBe(true);
+    expect(removeAccount).not.toHaveBeenCalled();
   });
 
   it("sends the explicitly selected destructive mode and applies the returned bootstrap", async () => {
