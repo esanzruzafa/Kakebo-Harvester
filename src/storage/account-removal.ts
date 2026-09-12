@@ -139,16 +139,16 @@ export async function cleanupRawFiles(
   const warnings: RawCleanupWarning[] = [];
   let removed = 0;
   for (const path of paths) {
-    if (hasOtherOwner(path)) {
-      warnings.push("shared");
-      continue;
-    }
-    const candidate = canonicalRawPath(path);
-    if (dirname(candidate) !== rawRoot) {
-      warnings.push("outside-root");
-      continue;
-    }
     try {
+      if (hasOtherOwner(path)) {
+        warnings.push("shared");
+        continue;
+      }
+      const candidate = canonicalRawPath(path);
+      if (dirname(candidate) !== rawRoot) {
+        warnings.push("outside-root");
+        continue;
+      }
       const details = await operations.lstat(candidate);
       if (details.isSymbolicLink()) {
         warnings.push("symbolic-link");

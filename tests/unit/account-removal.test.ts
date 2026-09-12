@@ -267,6 +267,22 @@ describe("local account removal persistence", () => {
     ).resolves.toEqual({ removed: 0, warnings: ["cleanup-failed"] });
   });
 
+  it("returns a safe warning when raw ownership lookup fails after the database purge", async () => {
+    await expect(
+      cleanupRawFiles(
+        ["C:/safe/raw.json"],
+        "C:/safe",
+        () => {
+          throw new Error("Ownership lookup token=secret");
+        },
+        {
+          lstat: () => Promise.resolve({ isSymbolicLink: () => false, isFile: () => true }),
+          unlink: () => Promise.resolve()
+        }
+      )
+    ).resolves.toEqual({ removed: 0, warnings: ["cleanup-failed"] });
+  });
+
   it("rejects a symbolic link through the portable cleanup seam", async () => {
     await expect(
       cleanupRawFiles(["C:/safe/raw.json"], "C:/safe", () => false, {

@@ -6,6 +6,7 @@ import {
   registerAccountRemovalHandler,
   runAccountRemovalWithSnapshot
 } from "../../src/desktop/account-removal-request.js";
+import { cleanupRawFiles } from "../../src/storage/account-removal.js";
 
 describe("account removal desktop request", () => {
   it.each([
@@ -209,5 +210,36 @@ describe("account removal desktop request", () => {
 
     expect(saveSnapshot).toHaveBeenNthCalledWith(1, []);
     expect(saveSnapshot).toHaveBeenNthCalledWith(2, [{ id: "account-1" }]);
+  });
+
+  it("keeps the prospective snapshot when post-purge raw ownership lookup becomes a safe warning", async () => {
+    const saveSnapshot = vi.fn().mockResolvedValue(undefined);
+
+    const result = await runAccountRemovalWithSnapshot({
+      previousSnapshot: [{ id: "account-1" }],
+      nextSnapshot: [],
+      saveSnapshot,
+      remove: async () => ({
+        status: "deleted",
+        rawCleanup: await cleanupRawFiles(
+          ["C:/safe/raw.json"],
+          "C:/safe",
+          () => {
+            throw new Error("Post-purge ownership lookup failed");
+          },
+          {
+            lstat: () => Promise.resolve({ isSymbolicLink: () => false, isFile: () => true }),
+            unlink: () => Promise.resolve()
+          }
+        )
+      })
+    });
+
+    expect(result).toEqual({
+      status: "deleted",
+      rawCleanup: { removed: 0, warnings: ["cleanup-failed"] }
+    });
+    expect(saveSnapshot).toHaveBeenCalledTimes(1);
+    expect(saveSnapshot).toHaveBeenCalledWith([]);
   });
 });
