@@ -63,6 +63,7 @@ interface ExportState {
   movementKeys?: string[] | undefined;
   sourceMovementKeys?: Record<HighlightSource, string[]> | undefined;
   highlightedMovementKeys?: Record<HighlightSource, string[]> | undefined;
+  customValues?: Record<string, Record<string, ExportValue>> | undefined;
 }
 
 export type HighlightSource = "banking" | "cards";
@@ -83,7 +84,8 @@ const exportStateSchema = z.object({
     .optional(),
   highlightedMovementKeys: z
     .object({ banking: z.array(z.string()), cards: z.array(z.string()) })
-    .optional()
+    .optional(),
+  customValues: z.record(z.string(), z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))).optional()
 });
 
 const HIGHLIGHT_COLORS: Record<HighlightSource, string> = {
@@ -414,6 +416,17 @@ async function previousCustomValues(
     );
   }
   return values;
+}
+
+function stateCustomValues(values: ReadonlyMap<string, ReadonlyMap<string, CustomExportValue>>): Record<string, Record<string, ExportValue>> {
+  return Object.fromEntries([...values].map(([movementKey, columns]) => [
+    movementKey,
+    Object.fromEntries([...columns].flatMap(([id, value]) => value instanceof Date ? [] : [[id, value]]))
+  ]));
+}
+
+function customValuesFromState(state: ExportState | undefined): Map<string, Map<string, CustomExportValue>> {
+  return new Map(Object.entries(state?.customValues ?? {}).map(([key, values]) => [key, new Map(Object.entries(values))]));
 }
 
 function escapeCsv(value: ExportValue, separator: string): string {
@@ -771,9 +784,16 @@ export class CsvExporter {
         const current = new Set(currentKeys[source]);
         highlighted[source] = new Set([...highlighted[source]].filter((key) => current.has(key)));
       }
-      const customValues = compatible && (await pathExists(destination))
-        ? await previousCustomValues(destination, settings)
-        : new Map<string, Map<string, CustomExportValue>>();
+      const customValues = compatible ? customValuesFromState(previous) : new Map<string, Map<string, CustomExportValue>>();
+      if (compatible && (await pathExists(destination))) {
+        for (const [key, values] of await previousCustomValues(destination, settings)) customValues.set(key, values);
+      }
+      const customColumns = settings.columns.filter((column): column is CustomExportColumn => !('field' in column));
+      for (const row of rows) {
+        const values = customValues.get(row.movement_key) ?? new Map<string, CustomExportValue>();
+        for (const column of customColumns) values.set(column.id, customValue(row, column, customValues));
+        customValues.set(row.movement_key, values);
+      }
       if (settings.format === "csv") {
         await this.writeCsv(temporary, rows, settings, customValues);
       } else {
@@ -806,7 +826,8 @@ export class CsvExporter {
         highlightedMovementKeys: {
           banking: [...highlighted.banking],
           cards: [...highlighted.cards]
-        }
+        },
+        customValues: stateCustomValues(customValues)
       });
       committed = true;
       if (destinationStaged) {
