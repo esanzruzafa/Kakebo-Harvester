@@ -159,12 +159,29 @@ function captureAccountRows(database: SqliteDatabase, accountId: string): TableS
     ["desktop_run_accounts", "account_id"],
     ["account_identification_hashes", "account_id"]
   ] as const;
-  return tables.map(([table, column]) => ({
+  const snapshots: TableSnapshot[] = tables.map(([table, column]) => ({
     table,
     rows: database
       .prepare(`SELECT * FROM ${table} WHERE ${column} = ?`)
       .all(accountId) as Array<Record<string, unknown>>
   }));
+  const manualCardProfile = database
+    .prepare(
+      `SELECT a.provider_account_id AS profile_id
+       FROM accounts a
+       JOIN bank_connections c ON c.id = a.bank_connection_id
+       WHERE a.id = ? AND c.provider = 'manual-card'`
+    )
+    .get(accountId) as { profile_id: string } | undefined;
+  if (manualCardProfile) {
+    snapshots.push({
+      table: "card_import_source_rows",
+      rows: database
+        .prepare("SELECT * FROM card_import_source_rows WHERE profile_id = ?")
+        .all(manualCardProfile.profile_id) as Array<Record<string, unknown>>
+    });
+  }
+  return snapshots;
 }
 
 function restoreAccountRows(database: SqliteDatabase, snapshots: TableSnapshot[]): void {
@@ -240,7 +257,8 @@ function hasOtherRawOwner(database: SqliteDatabase, accountId: string, path: str
          UNION ALL SELECT account_id, raw_response_path FROM balances
          UNION ALL SELECT account_id, raw_response_path FROM transactions_raw
          UNION ALL SELECT account_id, source_raw_file FROM transactions
-       ) WHERE account_id <> ? AND path IS NOT NULL`
+         UNION ALL SELECT NULL AS account_id, raw_response_path FROM provider_sessions
+       ) WHERE (account_id IS NULL OR account_id <> ?) AND path IS NOT NULL`
     )
     .all(accountId) as Array<{ path: string }>;
   return rows.some((row) => canonicalRawPath(row.path) === candidate);

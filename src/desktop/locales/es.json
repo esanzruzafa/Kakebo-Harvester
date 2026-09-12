@@ -429,5 +429,12 @@
   "toast.syncCompleted": "Sincronización completada correctamente.",
   "toast.syncCompletedWithWarnings": "La sincronización se ha completado con incidencias en bancos o cuentas.",
   "warning.accountsConfig": "Configuración de cuentas: {message}",
+  "warning.bootstrapRefresh": "Actualización: {message}",
+  "warning.rawCleanup.ambiguous": "Los datos brutos se conservaron porque no se pudo verificar el tipo de archivo.",
+  "warning.rawCleanup.failed": "No se pudieron eliminar los datos brutos.",
+  "warning.rawCleanup.missing": "El archivo de datos brutos ya no existía.",
+  "warning.rawCleanup.outsideRoot": "Se conservaron los datos brutos fuera del directorio de datos configurado.",
+  "warning.rawCleanup.shared": "Se conservaron los datos brutos compartidos por otro registro local.",
+  "warning.rawCleanup.symbolicLink": "Los datos brutos se conservaron porque se detectó un enlace simbólico.",
   "warning.export": "Exportación: {message}"
 }

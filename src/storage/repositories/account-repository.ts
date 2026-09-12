@@ -244,12 +244,14 @@ export class AccountRepository {
     const purge = this.database.transaction(() => {
       const account = this.database
         .prepare(
-          `SELECT a.id
+          `SELECT a.id, a.provider_account_id, c.provider
            FROM accounts a
            JOIN bank_connections c ON c.id = a.bank_connection_id
            WHERE a.id = ? AND c.environment = ?`
         )
-        .get(accountId, environment) as { id: string } | undefined;
+        .get(accountId, environment) as
+        | { id: string; provider_account_id: string; provider: string }
+        | undefined;
       if (!account) return undefined;
       const balances = this.database
         .prepare("DELETE FROM balances WHERE account_id = ?")
@@ -269,6 +271,11 @@ export class AccountRepository {
       this.database
         .prepare("DELETE FROM account_identification_hashes WHERE account_id = ?")
         .run(account.id);
+      if (account.provider === "manual-card") {
+        this.database
+          .prepare("DELETE FROM card_import_source_rows WHERE profile_id = ?")
+          .run(account.provider_account_id);
+      }
       const accounts = this.database
         .prepare("DELETE FROM accounts WHERE id = ?")
         .run(account.id).changes;

@@ -223,6 +223,73 @@ describe("local account removal persistence", () => {
     database.close();
   });
 
+  it("retains a raw file that is still referenced by a provider session", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-removal-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    insertConnection(database, "sandbox-connection", "sandbox");
+    insertAccount(database, "selected", "sandbox-connection");
+    await mkdir(config.rawDataDirectory, { recursive: true });
+    const rawPath = join(config.rawDataDirectory, "session.json");
+    await writeFile(rawPath, "{}\n");
+    database.prepare("UPDATE accounts SET raw_response_path = ? WHERE id = 'selected'").run(rawPath);
+    database.prepare(
+      `INSERT INTO provider_sessions (
+         id, bank_connection_id, provider_session_id_ciphertext, created_at, status, raw_response_path
+       ) VALUES ('session', 'sandbox-connection', 'ciphertext', ?, 'AUTHORIZED', ?)`
+    ).run(new Date().toISOString(), rawPath);
+
+    await expect(removeLocalAccount({
+      database,
+      environment: "sandbox",
+      accountId: "selected",
+      mode: "delete-history",
+      rawDataDirectory: config.rawDataDirectory
+    })).resolves.toMatchObject({ rawCleanup: { removed: 0, warnings: ["shared"] } });
+    await expect(writeFile(rawPath, "{}\n", { flag: "wx" })).rejects.toMatchObject({ code: "EEXIST" });
+    database.close();
+  });
+
+  it("removes manual-card source mappings with the selected local account", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-removal-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database.prepare(
+      `INSERT INTO bank_connections (
+         id, provider, environment, bank_name, bank_country, psu_type, alias, status, created_at
+       ) VALUES ('manual-connection', 'manual-card', 'sandbox', 'Card bank', 'ES', 'personal', 'Card', 'LOCAL', ?)`
+    ).run(now);
+    database.prepare(
+      `INSERT INTO accounts (
+         id, bank_connection_id, provider_account_id, name, active, first_seen_at, last_seen_at
+       ) VALUES ('manual-account', 'manual-connection', 'profile-selected', 'Selected card', 1, ?, ?)`
+    ).run(now, now);
+    database.prepare(
+      `INSERT INTO card_import_source_rows (
+         profile_id, source_path_hash, semantic_key_hash, occurrence,
+         provider_transaction_id, first_seen_at, last_seen_at
+       ) VALUES ('profile-selected', 'path', 'semantic', 1, 'transaction', ?, ?)`
+    ).run(now, now);
+    database.prepare(
+      `INSERT INTO card_import_source_rows (
+         profile_id, source_path_hash, semantic_key_hash, occurrence,
+         provider_transaction_id, first_seen_at, last_seen_at
+       ) VALUES ('profile-other', 'path', 'semantic', 1, 'transaction', ?, ?)`
+    ).run(now, now);
+
+    await removeLocalAccount({
+      database,
+      environment: "sandbox",
+      accountId: "manual-account",
+      mode: "delete-history"
+    });
+
+    expect(database.prepare("SELECT COUNT(*) AS count FROM card_import_source_rows WHERE profile_id = 'profile-selected'").get()).toEqual({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM card_import_source_rows WHERE profile_id = 'profile-other'").get()).toEqual({ count: 1 });
+    database.close();
+  });
+
   it("retains shared and outside raw paths as safe cleanup warnings", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-account-removal-"));
     const config = testConfig(root);

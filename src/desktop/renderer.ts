@@ -13,6 +13,7 @@ import {
   runAccountRemovalFromDialog
 } from "./account-removal-dialog-interaction.js";
 import { renderAccountRemovalDialog } from "./account-removal-dialog-view.js";
+import { formatRawCleanupWarnings } from "./account-removal-warning.js";
 import {
   adjacentMovableIndex,
   rowDropInsertionIndex
@@ -106,11 +107,17 @@ function followUpWarningMessage(warnings: FollowUpWarning[]): string {
         ? tf("warning.export", "Export: {message}", {
             message: warning.message
           })
-        : tf(
+        : warning.step === "bootstrap-refresh"
+          ? tf(
+              "warning.bootstrapRefresh",
+              "Refresh: {message}",
+              { message: warning.message }
+            )
+          : tf(
             "warning.accountsConfig",
             "Account configuration: {message}",
             { message: warning.message }
-          )
+            )
     )
     .join(" · ");
 }
@@ -2064,11 +2071,14 @@ async function removeAccountFromUi(account: EditableAccount): Promise<void> {
         ? `${t(
             "toast.accountRemovedWithWarnings",
             "The account was removed, but follow-up tasks need attention."
-          )} ${followUpWarningMessage([
-            ...result.removal.warnings,
-            ...result.warnings,
-            ...recoveryWarnings
-          ])}`
+          )} ${[
+            followUpWarningMessage([
+              ...result.removal.warnings,
+              ...result.warnings,
+              ...recoveryWarnings
+            ]),
+            formatRawCleanupWarnings(result.removal.rawCleanup.warnings, t)
+          ].filter(Boolean).join(" · ")}`
         : t("toast.accountRemoved", "The account was removed from this local data set."),
       hasWarnings ? "warning" : false
     );
