@@ -13,6 +13,8 @@ import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { unzipSync } from "fflate";
+import { readSheet } from "read-excel-file/node";
+import writeXlsxFile, { type SheetData } from "write-excel-file/node";
 import {
   clearGeneratedExportFiles,
   countGeneratedExportFiles,
@@ -36,6 +38,133 @@ afterEach(async () => {
 });
 
 describe("CSV export", () => {
+  it.each(["csv", "xlsx"] as const)(
+    "preserves custom values by movement key in %s exports and initializes only new rows",
+    async (format) => {
+      root = await mkdtemp(join(tmpdir(), "kakebo-export-custom-values-"));
+      const config = testConfig(root);
+      const database = createDatabase(config.databasePath);
+      const now = new Date().toISOString();
+      database
+        .prepare(
+          `INSERT INTO bank_connections (
+             id, provider, environment, bank_name, bank_country, psu_type,
+             alias, status, created_at
+           ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                     'personal', 'Demo', 'AUTHORIZED', ?)`
+        )
+        .run(now);
+      database
+        .prepare(
+          `INSERT INTO accounts (
+             id, bank_connection_id, provider_account_id, name, active,
+             first_seen_at, last_seen_at
+           ) VALUES ('account', 'connection', 'provider', 'Account', 1, ?, ?)`
+        )
+        .run(now, now);
+      const insertMovement = database.prepare(
+        `INSERT INTO transactions (
+           id, movement_key, reconciliation_key, provider, environment,
+           bank_connection_id, account_id, status, booking_date, amount, currency,
+           direction, description_raw, description_normalized, reviewed,
+           first_seen_at, last_seen_at, imported_at, raw_fingerprint
+         ) VALUES (?, ?, ?, 'enable-banking', 'sandbox', 'connection', 'account',
+                   'booked', ?, '-12.34', 'EUR', 'expense', ?, ?, 0, ?, ?, ?, ?)`
+      );
+      const addMovement = (id: string, description: string): void => {
+        insertMovement.run(
+          id,
+          `movement-${id}`,
+          `reconcile-${id}`,
+          "2026-09-01",
+          description,
+          description.toUpperCase(),
+          now,
+          now,
+          now,
+          `raw-${id}`
+        );
+      };
+      addMovement("one", "Coffee");
+
+      const settings = createDefaultExportSettings(",", ";");
+      settings.format = format;
+      settings.columns.push(
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          kind: "formula",
+          header: "Formula label",
+          enabled: true,
+          formula: "upper(description)"
+        },
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          kind: "manual",
+          header: "Manual note",
+          enabled: true
+        }
+      );
+      await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+      const exporter = new CsvExporter(config, database);
+      const first = await exporter.export();
+
+      if (format === "csv") {
+        const lines = (await readFile(first.path, "utf8")).replace(/^\uFEFF/u, "").trim().split(/\r?\n/u);
+        const header = lines[0]?.split(";") ?? [];
+        const formulaIndex = header.indexOf("Formula label");
+        const manualIndex = header.indexOf("Manual note");
+        const row = lines[1]?.split(";") ?? [];
+        row[formulaIndex] = "Edited formula";
+        row[manualIndex] = "Edited manual";
+        lines[1] = row.join(";");
+        await writeFile(first.path, `${lines.join("\r\n")}\r\n`);
+      } else {
+        const header = settings.columns.filter((column) => column.enabled);
+        const data: SheetData = [
+          header.map((column) => ({ value: column.header, type: String })),
+          header.map((column) => ({
+            value: "field" in column
+              ? column.field === "movementKey" ? "movement-one" : "source value"
+              : column.kind === "formula" ? "Edited formula" : "Edited manual",
+            type: String
+          }))
+        ];
+        await writeXlsxFile(data, { sheet: "Movements" }).toFile(first.path);
+      }
+
+      addMovement("two", "Tea");
+      const second = await exporter.export();
+      database.close();
+      if (format === "csv") {
+        const rows = (await readFile(second.path, "utf8"))
+          .replace(/^\uFEFF/u, "")
+          .trim()
+          .split(/\r?\n/u)
+          .map((line) => line.split(";"));
+        const header = rows[0] ?? [];
+        const formulaIndex = header.indexOf("Formula label");
+        const manualIndex = header.indexOf("Manual note");
+        const movementIndex = header.indexOf("MovementKey");
+        const values = new Map(rows.slice(1).map((row) => [row[movementIndex], row]));
+        expect(values.get("movement-one")?.[formulaIndex]).toBe("Edited formula");
+        expect(values.get("movement-one")?.[manualIndex]).toBe("Edited manual");
+        expect(values.get("movement-two")?.[formulaIndex]).toBe("TEA");
+        expect(values.get("movement-two")?.[manualIndex]).toBe("");
+      } else {
+        const rows = await readSheet(second.path);
+        const header = rows[0]?.map(String) ?? [];
+        const formulaIndex = header.indexOf("Formula label");
+        const manualIndex = header.indexOf("Manual note");
+        const movementIndex = header.indexOf("MovementKey");
+        const values = new Map(rows.slice(1).map((row) => [String(row[movementIndex]), row]));
+        expect(values.get("movement-one")?.[formulaIndex]).toBe("Edited formula");
+        expect(values.get("movement-one")?.[manualIndex]).toBe("Edited manual");
+        expect(values.get("movement-two")?.[formulaIndex]).toBe("TEA");
+        expect(values.get("movement-two")?.[manualIndex]).toBeNull();
+      }
+    }
+  );
+
   it.runIf(platform() !== "win32")(
     "creates XLSX exports with owner-only permissions on POSIX",
     async () => {

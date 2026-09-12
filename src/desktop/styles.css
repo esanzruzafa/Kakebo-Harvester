@@ -1032,10 +1032,10 @@ body[data-export-format="xlsx"] .csv-option {
 }
 
 .export-columns-table {
-  min-width: 720px;
+  min-width: 900px;
 }
 
-.export-columns-table td:last-child {
+.export-columns-table td:nth-last-child(2) {
   width: 45%;
 }
 

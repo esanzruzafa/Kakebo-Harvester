@@ -22,6 +22,7 @@ import type {
   CategorizationRule
 } from "../settings/categorization-rules-store.js";
 import type {
+  CustomExportColumn,
   ExportField,
   ExportSettings
 } from "../settings/export-settings-store.js";
@@ -1784,6 +1785,10 @@ function exportFieldLabel(field: ExportField): string {
   return t(`export.field.${field}`, field);
 }
 
+function exportColumnTypeLabel(kind: CustomExportColumn["kind"]): string {
+  return t(`export.kind.${kind}`, kind);
+}
+
 function moveExportColumn(from: number, to: number): void {
   const settings = exportValues();
   if (
@@ -1817,6 +1822,7 @@ function renderExportSettings(): void {
   settings.columns.forEach((column, index) => {
     const row = body.insertRow();
     row.dataset["exportColumnIndex"] = String(index);
+    if (!("field" in column)) row.dataset["customExportColumnId"] = column.id;
     const handleCell = row.insertCell();
     const columnNumber = settings.columns
       .slice(0, index + 1)
@@ -1847,9 +1853,13 @@ function renderExportSettings(): void {
     const enabledCell = row.insertCell();
     const enabled = checkbox(
       column.enabled,
-      tf("export.includeAria", "Include {field}", {
-        field: exportFieldLabel(column.field)
-      })
+      "field" in column
+        ? tf("export.includeAria", "Include {field}", {
+            field: exportFieldLabel(column.field)
+          })
+        : tf("export.includeCustomAria", "Include {header}", {
+            header: column.header
+          })
     );
     enabled.dataset["field"] = "enabled";
     enabled.addEventListener("change", () => {
@@ -1858,14 +1868,70 @@ function renderExportSettings(): void {
     });
     enabledCell.append(enabled);
     const fieldCell = row.insertCell();
-    fieldCell.textContent = exportFieldLabel(column.field);
-    fieldCell.dataset["exportField"] = column.field;
+    if ("field" in column) {
+      fieldCell.textContent = exportFieldLabel(column.field);
+      fieldCell.dataset["exportField"] = column.field;
+    } else {
+      const kind = document.createElement("select");
+      kind.className = "select";
+      kind.dataset["field"] = "kind";
+      for (const value of ["formula", "manual"] as const) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = exportColumnTypeLabel(value);
+        option.selected = value === column.kind;
+        kind.append(option);
+      }
+      kind.addEventListener("change", () => {
+        const columns = exportValues().columns;
+        const current = columns[index];
+        if (!current || "field" in current) return;
+        current.kind = kind.value as CustomExportColumn["kind"];
+        if (current.kind === "manual") delete current.formula;
+        else current.formula = "";
+        state.exportSettings = { ...exportValues(), columns };
+        renderExportSettings();
+      });
+      fieldCell.append(kind);
+    }
+    const formulaCell = row.insertCell();
+    if (!("field" in column) && column.kind === "formula") {
+      const formula = textInput(column.formula ?? "");
+      formula.dataset["field"] = "formula";
+      formula.required = true;
+      formula.maxLength = 500;
+      formula.placeholder = t("export.formulaPlaceholder", "amount * 2");
+      formula.setAttribute(
+        "aria-label",
+        tf("export.formulaAria", "Formula for {header}", {
+          header: column.header
+        })
+      );
+      formulaCell.append(formula);
+    }
     const headerCell = row.insertCell();
     const header = textInput(column.header);
     header.dataset["field"] = "header";
     header.required = true;
     header.maxLength = 120;
     headerCell.append(header);
+    const deleteCell = row.insertCell();
+    if (!("field" in column)) {
+      const remove = button("×", "icon-button");
+      remove.setAttribute(
+        "aria-label",
+        tf("export.deleteAria", "Delete custom export column {number}", {
+          number: index + 1
+        })
+      );
+      remove.addEventListener("click", () => {
+        const columns = exportValues().columns;
+        columns.splice(index, 1);
+        state.exportSettings = { ...exportValues(), columns };
+        renderExportSettings();
+      });
+      deleteCell.append(remove);
+    }
   });
 }
 
@@ -2223,12 +2289,23 @@ function exportValues(normalizeOrder = false): ExportSettings {
     const field = row
       .querySelector<HTMLElement>("[data-export-field]")
       ?.dataset["exportField"] as ExportField | undefined;
+    const id = row.dataset["customExportColumnId"];
+    const kind = row.querySelector<HTMLSelectElement>('[data-field="kind"]');
     const enabled = row.querySelector<HTMLInputElement>('[data-field="enabled"]');
     const header = row.querySelector<HTMLInputElement>('[data-field="header"]');
-    if (!field || !enabled || !header) {
+    const formula = row.querySelector<HTMLInputElement>('[data-field="formula"]');
+    if (!enabled || !header) {
       throw new Error("An export column is incomplete.");
     }
-    return { field, enabled: enabled.checked, header: header.value };
+    if (field) return { field, enabled: enabled.checked, header: header.value };
+    if (!id || !kind) throw new Error("An export column is incomplete.");
+    return {
+      id,
+      kind: kind.value as CustomExportColumn["kind"],
+      enabled: enabled.checked,
+      header: header.value,
+      ...(kind.value === "formula" ? { formula: formula?.value ?? "" } : {})
+    };
   });
   const orderedColumns = normalizeOrder
     ? [
@@ -2237,6 +2314,7 @@ function exportValues(normalizeOrder = false): ExportSettings {
       ]
     : columns;
   return {
+    schemaVersion: 2,
     format: element<HTMLSelectElement>("export-format").value as "csv" | "xlsx",
     csv: {
       fieldSeparator: element<HTMLSelectElement>("csv-field-separator")
@@ -2963,6 +3041,24 @@ function setupActions(): void {
   element<HTMLSelectElement>("export-format").addEventListener("change", () => {
     document.body.dataset["exportFormat"] =
       element<HTMLSelectElement>("export-format").value;
+  });
+
+  onClick(element<HTMLButtonElement>("add-export-column"), () => {
+    const settings = exportValues();
+    state.exportSettings = {
+      ...settings,
+      columns: [
+        ...settings.columns,
+        {
+          id: crypto.randomUUID(),
+          kind: "manual",
+          header: t("export.newColumnHeader", "Custom column"),
+          enabled: true
+        }
+      ]
+    };
+    renderExportSettings();
+    return Promise.resolve();
   });
 
   onClick(element<HTMLButtonElement>("save-export-settings"), async () => {
