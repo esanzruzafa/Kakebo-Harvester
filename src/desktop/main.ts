@@ -56,6 +56,7 @@ import {
 import { startCallbackServer } from "../server.js";
 import { completeDesktopAuthorization } from "./authorization-callback.js";
 import { AccountRepository } from "../storage/repositories/account-repository.js";
+import { removeLocalAccount } from "../storage/account-removal.js";
 import { resetLocalData } from "../storage/local-data-reset.js";
 import { DesktopRunRepository } from "../storage/repositories/desktop-run-repository.js";
 import { getSyncWindow } from "../sync/sync-window.js";
@@ -90,6 +91,11 @@ import type {
   OpenPathTarget
 } from "./contracts.js";
 import {
+  assertTrustedDesktopRequest,
+  executeAccountRemovalRequest
+} from "./account-removal-request.js";
+import {
+  runAccountRemovalOperation,
   runCardImportOperation,
   runConnectionOperation,
   runDisconnectOperation,
@@ -507,15 +513,15 @@ async function listenForCallbacks(
 
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
   const window = mainWindow;
-  if (
-    !window ||
-    window.isDestroyed() ||
-    event.sender.id !== window.webContents.id ||
-    event.senderFrame?.url !== window.webContents.getURL()
-  ) {
-    throw new Error("Rejected IPC request from an untrusted renderer.");
-  }
-  if (quitting) throw new Error("The application is closing.");
+  assertTrustedDesktopRequest({
+    expectedSenderId:
+      window && !window.isDestroyed() ? window.webContents.id : undefined,
+    expectedUrl:
+      window && !window.isDestroyed() ? window.webContents.getURL() : undefined,
+    senderId: event.sender.id,
+    senderUrl: event.senderFrame?.url,
+    closing: quitting
+  });
 }
 
 function assertAuditSender(event: IpcMainInvokeEvent): void {
@@ -921,6 +927,37 @@ function registerIpc(application: KakeboApplication): void {
         }))
       })
     );
+  });
+  ipcMain.handle("accounts:remove", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    return await executeAccountRemovalRequest({
+      request: input,
+      hasActiveOperation: () => activeSync !== undefined || activeOperations.size > 0,
+      remove: async (request) =>
+        await trackOperation(
+          withSynchronizationLock(application, async () => {
+            const removal = await runAccountRemovalOperation({
+              remove: async () =>
+                await removeLocalAccount({
+                  database: application.database,
+                  environment: application.config.appEnv,
+                  accountId: request.id,
+                  mode: request.mode,
+                  rawDataDirectory: application.config.rawDataDirectory
+                }),
+              regenerateExport: async () =>
+                await new CsvExporter(
+                  application.config,
+                  application.database
+                ).export(),
+              saveAccounts: async () =>
+                await accountsStore.save(accountRepository.listEditable())
+            });
+            auditWindow?.webContents.send("audit:history-changed");
+            return { removal, bootstrap: await bootstrap(application) };
+          })
+        )
+    });
   });
   ipcMain.handle("categorization:save", async (event, input: unknown) => {
     assertTrustedSender(event);
