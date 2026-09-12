@@ -315,8 +315,9 @@ function safeCustomValue(value: CustomExportValue): CustomExportValue {
   return typeof value === "string" ? safeSpreadsheetText(value) : value;
 }
 
-function csvCustomValue(value: CustomExportValue): ExportValue {
+function csvCustomValue(value: CustomExportValue, decimalSeparator: "." | ","): ExportValue {
   const normalized = value instanceof Date ? value.toISOString() : value;
+  if (typeof normalized === "number" && decimalSeparator === ",") return String(normalized).replace(".", ",");
   return typeof normalized === "string" ? safeSpreadsheetText(normalized) : normalized;
 }
 
@@ -384,9 +385,17 @@ async function previousCustomValues(
     );
   if (movementKeyIndex < 0 || customColumns.length === 0) return new Map();
 
-  const rows: readonly (readonly unknown[])[] = settings.format === "csv"
-    ? parseCsv((await readFile(path, "utf8")).replace(/^\uFEFF/u, ""), settings.csv.fieldSeparator)
-    : await readSheet(path);
+  let rows: readonly (readonly unknown[])[];
+  if (settings.format === "csv") {
+    rows = parseCsv((await readFile(path, "utf8")).replace(/^\uFEFF/u, ""), settings.csv.fieldSeparator);
+  } else {
+    try {
+      rows = await readSheet(path, "Movements");
+    } catch (error) {
+      if (error instanceof Error && error.name === "SheetNotFoundError") return new Map();
+      throw error;
+    }
+  }
   const expectedHeaders = columns.map((column) =>
     settings.format === "csv" ? safeSpreadsheetText(column.header) : column.header
   );
@@ -610,7 +619,7 @@ export class CsvExporter {
             escapeCsv(
               "field" in column
                 ? rowValue(row, column.field, settings, false)
-                : csvCustomValue(customValue(row, column, previous)),
+                : csvCustomValue(customValue(row, column, previous), settings.csv.decimalSeparator),
               separator
             )
           )

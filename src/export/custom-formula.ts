@@ -75,6 +75,9 @@ class FormulaParser {
         }
       }
       this.expectPunctuation(")");
+      const count = arguments_.length;
+      if ((token.value === "upper" || token.value === "lower") && count !== 1) this.invalid();
+      if (token.value === "round" && (count < 1 || count > 2)) this.invalid();
       return {
         type: "call",
         name: token.value as "upper" | "lower" | "coalesce" | "concat" | "round",
@@ -234,8 +237,7 @@ function evaluate(node: FormulaNode, values: Readonly<Record<string, CustomFormu
       if (!Number.isInteger(precision) || precision < 0 || precision > 15) {
         throw new Error("Invalid custom formula value.");
       }
-      const factor = 10 ** precision;
-      return Math.round(numberValue(arguments_[0] ?? null) * factor) / factor;
+      return Number(numberValue(arguments_[0] ?? null).toFixed(precision));
     }
   }
 }

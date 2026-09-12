@@ -129,7 +129,7 @@ describe("CSV export", () => {
             type: String
           }))
         ];
-        await writeXlsxFile(data).toFile(first.path);
+        await writeXlsxFile(data, { sheet: "Movements" }).toFile(first.path);
       }
 
       addMovement("two", "Tea");
