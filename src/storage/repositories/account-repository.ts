@@ -646,7 +646,7 @@ export class AccountRepository {
     const update = this.database.prepare(
       `UPDATE accounts SET
          account_alias = ?, sync_enabled = ?, export_enabled = ?
-       WHERE id = ?`
+       WHERE id = ? AND hidden = 0`
     );
     const transaction = this.database.transaction(() => {
       for (const item of updates) {

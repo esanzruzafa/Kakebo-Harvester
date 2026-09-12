@@ -217,6 +217,26 @@ describe("CSV export", () => {
     database.close();
   });
 
+  it("does not archive the previous export during a privacy purge regeneration", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-purge-"));
+    const config = { ...testConfig(root), exportKeepBackup: true };
+    const database = createDatabase(config.databasePath);
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = "csv";
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+    const exporter = new CsvExporter(config, database);
+    const first = await exporter.export();
+    await writeFile(first.path, "deleted account movement\n");
+
+    await exporter.export({ discardPreviousOutput: true });
+
+    await expect(readdir(join(config.exportDirectory, "archive"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+    expect(await readFile(first.path, "utf8")).not.toContain("deleted account movement");
+    database.close();
+  });
+
   it("does not use an untrusted state fingerprint in archive paths", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-export-state-"));
     const config = testConfig(root);

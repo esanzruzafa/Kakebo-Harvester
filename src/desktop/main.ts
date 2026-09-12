@@ -961,7 +961,7 @@ function registerIpc(application: KakeboApplication): void {
           await new CsvExporter(
             application.config,
             application.database
-          ).export(),
+          ).export({ discardPreviousOutput: true }),
         saveAccounts: () => Promise.resolve()
       });
     },

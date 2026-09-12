@@ -63,6 +63,7 @@ export type HighlightSource = "banking" | "cards";
 
 export interface ExportOptions {
   highlightSource?: HighlightSource | undefined;
+  discardPreviousOutput?: boolean | undefined;
 }
 
 type ExportValue = string | number | boolean | null;
@@ -618,7 +619,15 @@ export class CsvExporter {
         await this.writeXlsx(temporary, rows, settings, highlighted);
         if (process.platform !== "win32") await chmod(temporary, 0o600);
       }
-      if (compatible) {
+      if (options.discardPreviousOutput) {
+        await Promise.all(
+          ["csv", "xlsx"].map(async (extension) =>
+            await rm(join(this.config.exportDirectory, `kakebo_movements.${extension}`), {
+              force: true
+            })
+          )
+        );
+      } else if (compatible) {
         backupPath = await backupCurrentOutput(
           this.config,
           destination,
