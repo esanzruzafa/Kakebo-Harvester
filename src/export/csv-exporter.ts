@@ -594,10 +594,10 @@ export class CsvExporter {
       const previous = await readExportState(statePath);
       const compatible = previous?.fingerprint === fingerprint && previous.format === settings.format;
       const currentKeys = sourceKeys(rows);
-      const knownKeys = compatible && previous.sourceMovementKeys
+      const knownKeys = !options.discardPreviousOutput && compatible && previous.sourceMovementKeys
         ? previous.sourceMovementKeys
         : currentKeys;
-      const highlighted = compatible && previous.highlightedMovementKeys
+      const highlighted = !options.discardPreviousOutput && compatible && previous.highlightedMovementKeys
         ? {
             banking: new Set(previous.highlightedMovementKeys.banking),
             cards: new Set(previous.highlightedMovementKeys.cards)
