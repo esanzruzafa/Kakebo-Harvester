@@ -21,6 +21,7 @@ import { z } from "zod";
 import type { AppConfig } from "../config.js";
 import { ExportError } from "../errors.js";
 import {
+  customFormulaReferences,
   evaluateCustomFormula,
   type CustomFormulaValue
 } from "./custom-formula.js";
@@ -310,7 +311,7 @@ function customValue(
   if (persisted !== undefined) return persisted;
   if (column.kind === "manual") return "";
   if (!column.formula) throw new Error("Formula export columns require a formula.");
-  if (/\bamount\b/u.test(column.formula) && exactSpreadsheetNumber(row.amount) === null) {
+  if (customFormulaReferences(column.formula, "amount") && exactSpreadsheetNumber(row.amount) === null) {
     throw new Error("Custom formulas cannot use an amount that is not exactly representable.");
   }
   return evaluateCustomFormula(column.formula, formulaValues(row));

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  customFormulaReferences,
   customFormulaSchema,
   evaluateCustomFormula,
   parseCustomFormula
@@ -30,5 +31,21 @@ describe("custom export formulas", () => {
     expect(evaluateCustomFormula("round(100000.075, 2)", {})).toBe(100000.08);
     expect(evaluateCustomFormula('coalesce(description, 1 / amount)', { description: "kept", amount: 0 })).toBe("kept");
     expect(() => customFormulaSchema.parse("9".repeat(400))).toThrow(/invalid/i);
+  });
+
+  it("rejects arithmetic results outside the finite number range", () => {
+    expect(() => evaluateCustomFormula(`${"9".repeat(200)} * ${"9".repeat(200)}`, {})).toThrow(
+      /invalid custom formula value/i
+    );
+  });
+
+  it("rounds negative midpoint values away from zero", () => {
+    expect(evaluateCustomFormula("round(1.005, 2)", {})).toBe(1.01);
+    expect(evaluateCustomFormula("round(amount, 2)", { amount: -1.005 })).toBe(-1.01);
+  });
+
+  it("recognizes identifiers without matching text in string literals", () => {
+    expect(customFormulaReferences('concat("amount: ", description)', "amount")).toBe(false);
+    expect(customFormulaReferences("amount * 2", "amount")).toBe(true);
   });
 });

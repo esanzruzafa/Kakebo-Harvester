@@ -197,10 +197,25 @@ export function parseCustomFormula(formula: string): FormulaNode {
   return new FormulaParser(tokenize(formula)).parse();
 }
 
+export function customFormulaReferences(formula: string, identifier: string): boolean {
+  const references = (node: FormulaNode): boolean => {
+    if (node.type === "identifier") return node.name === identifier;
+    if (node.type === "literal") return false;
+    if (node.type === "binary") return references(node.left) || references(node.right);
+    return node.arguments.some(references);
+  };
+  return references(parseCustomFormula(formula));
+}
+
 function numberValue(value: CustomFormulaValue): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error("Invalid custom formula value.");
   }
+  return value;
+}
+
+function finiteNumber(value: number): number {
+  if (!Number.isFinite(value)) throw new Error("Invalid custom formula value.");
   return value;
 }
 
@@ -216,15 +231,15 @@ function evaluate(node: FormulaNode, values: Readonly<Record<string, CustomFormu
     const right = evaluate(node.right, values);
     if (node.operator === "+") {
       return typeof left === "number" && typeof right === "number"
-        ? left + right
+        ? finiteNumber(left + right)
         : textValue(left) + textValue(right);
     }
     const leftNumber = numberValue(left);
     const rightNumber = numberValue(right);
-    if (node.operator === "-") return leftNumber - rightNumber;
-    if (node.operator === "*") return leftNumber * rightNumber;
+    if (node.operator === "-") return finiteNumber(leftNumber - rightNumber);
+    if (node.operator === "*") return finiteNumber(leftNumber * rightNumber);
     if (rightNumber === 0) throw new Error("Invalid custom formula value.");
-    return leftNumber / rightNumber;
+    return finiteNumber(leftNumber / rightNumber);
   }
   if (node.name === "coalesce") {
     for (const argument of node.arguments) {
@@ -250,7 +265,9 @@ function evaluate(node: FormulaNode, values: Readonly<Record<string, CustomFormu
         throw new Error("Invalid custom formula value.");
       }
       const value = numberValue(arguments_[0] ?? null);
-      return Number(`${Math.round(Number(`${value}e${precision}`))}e-${precision}`);
+      const shifted = finiteNumber(Number(`${Math.abs(value)}e${precision}`));
+      const rounded = Math.round(shifted);
+      return finiteNumber(Number(`${value < 0 ? -rounded : rounded}e-${precision}`));
     }
   }
 }

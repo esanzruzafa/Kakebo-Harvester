@@ -165,6 +165,59 @@ describe("CSV export", () => {
     }
   );
 
+  it("allows an unsafe amount when a formula only mentions it in a string literal", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-formula-literal-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, name, active,
+           first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider', 'Account', 1, ?, ?)`
+      )
+      .run(now, now);
+    database
+      .prepare(
+        `INSERT INTO transactions (
+           id, movement_key, reconciliation_key, provider, environment,
+           bank_connection_id, account_id, status, booking_date, amount, currency,
+           direction, description_raw, description_normalized, reviewed,
+           first_seen_at, last_seen_at, imported_at, raw_fingerprint
+         ) VALUES (
+           'transaction', 'movement', 'reconcile', 'enable-banking', 'sandbox',
+           'connection', 'account', 'booked', '2026-09-01', '9007199254740993.00',
+           'EUR', 'income', 'Coffee', 'COFFEE', 0, ?, ?, ?, 'raw'
+         )`
+      )
+      .run(now, now, now);
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = "csv";
+    settings.columns.push({
+      id: "11111111-1111-4111-8111-111111111111",
+      kind: "formula",
+      header: "Literal",
+      enabled: true,
+      formula: 'concat("amount: ", description)'
+    });
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+
+    const result = await new CsvExporter(config, database).export();
+
+    await expect(readFile(result.path, "utf8")).resolves.toContain("amount: Coffee");
+    database.close();
+  });
+
   it.runIf(platform() !== "win32")(
     "creates XLSX exports with owner-only permissions on POSIX",
     async () => {
