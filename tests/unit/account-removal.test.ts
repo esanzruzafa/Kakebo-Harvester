@@ -1,8 +1,9 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  beginLocalAccountRemoval,
   cleanupRawFiles,
   removeLocalAccount
 } from "../../src/storage/account-removal.js";
@@ -281,6 +282,56 @@ describe("local account removal persistence", () => {
         }
       )
     ).resolves.toEqual({ removed: 0, warnings: ["cleanup-failed"] });
+  });
+
+  it("rejects a symbolic-link raw root before it evaluates or deletes a child", async () => {
+    const hasOtherOwner = vi.fn();
+    const unlink = vi.fn();
+    const lstat = vi.fn().mockResolvedValue({
+      isSymbolicLink: () => true,
+      isFile: () => false
+    });
+
+    await expect(
+      cleanupRawFiles(["C:/safe/raw.json"], "C:/safe", hasOtherOwner, { lstat, unlink })
+    ).resolves.toEqual({ removed: 0, warnings: ["symbolic-link"] });
+    expect(lstat).toHaveBeenCalledWith("c:\\safe");
+    expect(hasOtherOwner).not.toHaveBeenCalled();
+    expect(unlink).not.toHaveBeenCalled();
+  });
+
+  it("rejects a Windows junction root through the portable symbolic-link seam", async () => {
+    const unlink = vi.fn();
+    const lstat = vi.fn().mockResolvedValue({
+      isSymbolicLink: () => true,
+      isFile: () => false
+    });
+
+    await expect(
+      cleanupRawFiles(["C:/safe/raw.json"], "C:/safe", () => false, { lstat, unlink })
+    ).resolves.toEqual({ removed: 0, warnings: ["symbolic-link"] });
+    expect(unlink).not.toHaveBeenCalled();
+  });
+
+  it("restores a purged account when snapshot persistence must be compensated", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-removal-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    insertConnection(database, "sandbox-connection", "sandbox");
+    insertAccount(database, "account", "sandbox-connection");
+    insertHistory(database, "account");
+
+    const pending = await beginLocalAccountRemoval({
+      database,
+      environment: "sandbox",
+      accountId: "account",
+      mode: "delete-history"
+    });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM accounts WHERE id = 'account'").get()).toEqual({ count: 0 });
+    pending.rollback();
+    expect(database.prepare("SELECT COUNT(*) AS count FROM accounts WHERE id = 'account'").get()).toEqual({ count: 1 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM transactions WHERE account_id = 'account'").get()).toEqual({ count: 1 });
+    database.close();
   });
 
   it("rejects a symbolic link through the portable cleanup seam", async () => {

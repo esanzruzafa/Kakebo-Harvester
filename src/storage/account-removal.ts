@@ -53,40 +53,120 @@ const emptyCounts: AccountPurgeCounts = {
   synchronizationRuns: 0
 };
 
+export interface PendingLocalAccountRemoval {
+  finalize: () => Promise<AccountRemovalResult>;
+  rollback: () => void;
+}
+
+interface TableSnapshot {
+  table: string;
+  rows: Array<Record<string, unknown>>;
+}
+
 export function removeLocalAccount(
   input: RemoveLocalAccountInput
 ): Promise<AccountRemovalResult> {
-  return Promise.resolve().then(async () => {
+  return beginLocalAccountRemoval(input).then(async (pending) =>
+    await pending.finalize()
+  );
+}
+
+export function beginLocalAccountRemoval(
+  input: RemoveLocalAccountInput
+): Promise<PendingLocalAccountRemoval> {
+  return Promise.resolve().then(() => {
     const accounts = new AccountRepository(input.database);
     if (input.mode === "keep-history") {
-      if (!accounts.hideLocalAccount(input.accountId, input.environment)) {
+      const previous = input.database
+        .prepare(
+          `SELECT hidden, sync_enabled, export_enabled FROM accounts
+           WHERE id = ?`
+        )
+        .get(input.accountId) as
+        | { hidden: number; sync_enabled: number; export_enabled: number }
+        | undefined;
+      if (!previous || !accounts.hideLocalAccount(input.accountId, input.environment)) {
         throw new Error("The account does not exist in the active environment.");
       }
       return {
-        status: "hidden",
-        counts: emptyCounts,
-        rawCleanup: { removed: 0, warnings: [] },
-        audit: createAuditEvent("hidden")
+        rollback: () => {
+          input.database
+            .prepare(
+              `UPDATE accounts SET hidden = ?, sync_enabled = ?, export_enabled = ?
+               WHERE id = ?`
+            )
+            .run(
+              previous.hidden,
+              previous.sync_enabled,
+              previous.export_enabled,
+              input.accountId
+            );
+        },
+        finalize: () => Promise.resolve({
+          status: "hidden",
+          counts: emptyCounts,
+          rawCleanup: { removed: 0, warnings: [] },
+          audit: createAuditEvent("hidden")
+        })
       };
     }
     const rawPaths = input.rawDataDirectory
       ? accountRawPaths(input.database, input.accountId)
       : [];
+    const snapshots = captureAccountRows(input.database, input.accountId);
     const counts = accounts.purgeLocalAccount(input.accountId, input.environment);
     if (!counts) {
       throw new Error("The account does not exist in the active environment.");
     }
     return {
-      status: "deleted",
-      counts,
-      rawCleanup: input.rawDataDirectory
-        ? await cleanupRawFiles(rawPaths, input.rawDataDirectory, (path) =>
-            hasOtherRawOwner(input.database, input.accountId, path)
-          )
-        : { removed: 0, warnings: [] },
-      audit: createAuditEvent("deleted")
+      rollback: () => restoreAccountRows(input.database, snapshots),
+      finalize: async () => ({
+        status: "deleted",
+        counts,
+        rawCleanup: input.rawDataDirectory
+          ? await cleanupRawFiles(rawPaths, input.rawDataDirectory, (path) =>
+              hasOtherRawOwner(input.database, input.accountId, path)
+            )
+          : { removed: 0, warnings: [] },
+        audit: createAuditEvent("deleted")
+      })
     };
   });
+}
+
+function captureAccountRows(database: SqliteDatabase, accountId: string): TableSnapshot[] {
+  const tables = [
+    ["accounts", "id"],
+    ["balances", "account_id"],
+    ["transactions_raw", "account_id"],
+    ["transactions", "account_id"],
+    ["sync_runs", "account_id"],
+    ["desktop_run_accounts", "account_id"],
+    ["account_identification_hashes", "account_id"]
+  ] as const;
+  return tables.map(([table, column]) => ({
+    table,
+    rows: database
+      .prepare(`SELECT * FROM ${table} WHERE ${column} = ?`)
+      .all(accountId) as Array<Record<string, unknown>>
+  }));
+}
+
+function restoreAccountRows(database: SqliteDatabase, snapshots: TableSnapshot[]): void {
+  const restore = database.transaction(() => {
+    for (const snapshot of snapshots) {
+      for (const row of snapshot.rows) {
+        const columns = Object.keys(row);
+        const placeholders = columns.map(() => "?").join(", ");
+        database
+          .prepare(
+            `INSERT INTO ${snapshot.table} (${columns.join(", ")}) VALUES (${placeholders})`
+          )
+          .run(...columns.map((column) => row[column]));
+      }
+    }
+  });
+  restore();
 }
 
 function createAuditEvent(outcome: AccountRemovalAuditEvent["outcome"]): AccountRemovalAuditEvent {
@@ -136,6 +216,20 @@ export async function cleanupRawFiles(
   operations: RawFileOperations = defaultRawFileOperations
 ): Promise<AccountRemovalResult["rawCleanup"]> {
   const rawRoot = canonicalRawPath(rawDataDirectory);
+  try {
+    if ((await operations.lstat(rawRoot)).isSymbolicLink()) {
+      return { removed: 0, warnings: ["symbolic-link"] };
+    }
+  } catch (error) {
+    return {
+      removed: 0,
+      warnings: [
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+          ? "missing"
+          : "cleanup-failed"
+      ]
+    };
+  }
   const warnings: RawCleanupWarning[] = [];
   let removed = 0;
   for (const path of paths) {

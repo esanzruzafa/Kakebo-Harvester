@@ -56,7 +56,7 @@ import {
 import { startCallbackServer } from "../server.js";
 import { completeDesktopAuthorization } from "./authorization-callback.js";
 import { AccountRepository } from "../storage/repositories/account-repository.js";
-import { removeLocalAccount } from "../storage/account-removal.js";
+import { beginLocalAccountRemoval } from "../storage/account-removal.js";
 import { resetLocalData } from "../storage/local-data-reset.js";
 import { DesktopRunRepository } from "../storage/repositories/desktop-run-repository.js";
 import { getSyncWindow } from "../sync/sync-window.js";
@@ -92,8 +92,8 @@ import type {
 } from "./contracts.js";
 import {
   assertTrustedDesktopRequest,
-  registerAccountRemovalHandler,
-  runAccountRemovalWithSnapshot
+  commitAccountRemovalWithSnapshot,
+  registerAccountRemovalHandler
 } from "./account-removal-request.js";
 import {
   runAccountRemovalOperation,
@@ -942,27 +942,27 @@ function registerIpc(application: KakeboApplication): void {
         request.id,
         application.config.appEnv
       );
-      return await runAccountRemovalWithSnapshot({
-        previousSnapshot,
-        nextSnapshot,
-        saveSnapshot: async (accounts) => await accountsStore.save(accounts),
+      return await runAccountRemovalOperation({
         remove: async () =>
-          await runAccountRemovalOperation({
-            remove: async () =>
-              await removeLocalAccount({
+          await commitAccountRemovalWithSnapshot({
+            previousSnapshot,
+            nextSnapshot,
+            saveSnapshot: async (accounts) => await accountsStore.save(accounts),
+            begin: async () =>
+              await beginLocalAccountRemoval({
                 database: application.database,
                 environment: application.config.appEnv,
                 accountId: request.id,
                 mode: request.mode,
                 rawDataDirectory: application.config.rawDataDirectory
-              }),
-            regenerateExport: async () =>
-              await new CsvExporter(
-                application.config,
-                application.database
-              ).export(),
-            saveAccounts: () => Promise.resolve()
-          })
+              })
+          }),
+        regenerateExport: async () =>
+          await new CsvExporter(
+            application.config,
+            application.database
+          ).export(),
+        saveAccounts: () => Promise.resolve()
       });
     },
     refresh: async () => {

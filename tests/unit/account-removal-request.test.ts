@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   assertTrustedDesktopRequest,
+  commitAccountRemovalWithSnapshot,
   executeAccountRemovalRequest,
   parseAccountRemovalRequest,
   registerAccountRemovalHandler,
@@ -241,5 +242,72 @@ describe("account removal desktop request", () => {
     });
     expect(saveSnapshot).toHaveBeenCalledTimes(1);
     expect(saveSnapshot).toHaveBeenCalledWith([]);
+  });
+
+  it("writes the account snapshot only after the local database change and finalizes afterward", async () => {
+    const events: string[] = [];
+
+    await expect(
+      commitAccountRemovalWithSnapshot({
+        previousSnapshot: [{ id: "account-1" }],
+        nextSnapshot: [],
+        saveSnapshot: (snapshot) => {
+          events.push(`snapshot:${snapshot.length}`);
+          return Promise.resolve();
+        },
+        begin: () => {
+          events.push("database");
+          return Promise.resolve({
+            finalize: () => {
+              events.push("finalize");
+              return Promise.resolve({ status: "deleted" });
+            },
+            rollback: () => events.push("rollback")
+          });
+        }
+      })
+    ).resolves.toEqual({ status: "deleted" });
+    expect(events).toEqual(["database", "snapshot:0", "finalize"]);
+  });
+
+  it("retains the prior snapshot when the local change fails before commit", async () => {
+    const saveSnapshot = vi.fn();
+
+    await expect(
+      commitAccountRemovalWithSnapshot({
+        previousSnapshot: [{ id: "account-1" }],
+        nextSnapshot: [],
+        saveSnapshot,
+        begin: () => Promise.reject(new Error("Database constraint failure"))
+      })
+    ).rejects.toThrow("Database constraint failure");
+    expect(saveSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("rolls back the local database change and restores the prior snapshot when the post-change write fails", async () => {
+    const events: string[] = [];
+    let attempts = 0;
+
+    await expect(
+      commitAccountRemovalWithSnapshot({
+        previousSnapshot: [{ id: "account-1" }],
+        nextSnapshot: [],
+        saveSnapshot: (snapshot) => {
+          attempts += 1;
+          events.push(`snapshot:${snapshot.length}`);
+          return attempts === 1
+            ? Promise.reject(new Error("Snapshot disk failure"))
+            : Promise.resolve();
+        },
+        begin: () => {
+          events.push("database");
+          return Promise.resolve({
+            finalize: () => Promise.resolve({ status: "deleted" }),
+            rollback: () => events.push("rollback")
+          });
+        }
+      })
+    ).rejects.toThrow("Could not save the local account snapshot.");
+    expect(events).toEqual(["database", "snapshot:0", "rollback", "snapshot:1"]);
   });
 });

@@ -70,6 +70,34 @@ export async function runAccountRemovalWithSnapshot<Snapshot, Result>(input: {
   }
 }
 
+export async function commitAccountRemovalWithSnapshot<Snapshot, Result>(input: {
+  previousSnapshot: Snapshot;
+  nextSnapshot: Snapshot;
+  saveSnapshot: (snapshot: Snapshot) => Promise<void>;
+  begin: () => Promise<{
+    finalize: () => Promise<Result>;
+    rollback: () => void;
+  }>;
+}): Promise<Result> {
+  const pending = await input.begin();
+  try {
+    await input.saveSnapshot(input.nextSnapshot);
+  } catch (error) {
+    try {
+      pending.rollback();
+      await input.saveSnapshot(input.previousSnapshot);
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        "The local account operation could not restore a consistent account snapshot.",
+        { cause: rollbackError }
+      );
+    }
+    throw new Error("Could not save the local account snapshot.", { cause: error });
+  }
+  return await pending.finalize();
+}
+
 export function registerAccountRemovalHandler<Event, Result, Bootstrap>(input: {
   register: (
     channel: "accounts:remove",
