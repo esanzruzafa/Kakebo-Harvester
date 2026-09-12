@@ -92,7 +92,8 @@ import type {
 } from "./contracts.js";
 import {
   assertTrustedDesktopRequest,
-  executeAccountRemovalRequest
+  registerAccountRemovalHandler,
+  runAccountRemovalWithSnapshot
 } from "./account-removal-request.js";
 import {
   runAccountRemovalOperation,
@@ -928,36 +929,46 @@ function registerIpc(application: KakeboApplication): void {
       })
     );
   });
-  ipcMain.handle("accounts:remove", async (event, input: unknown) => {
-    assertTrustedSender(event);
-    return await executeAccountRemovalRequest({
-      request: input,
-      hasActiveOperation: () => activeSync !== undefined || activeOperations.size > 0,
-      remove: async (request) =>
-        await trackOperation(
-          withSynchronizationLock(application, async () => {
-            const removal = await runAccountRemovalOperation({
-              remove: async () =>
-                await removeLocalAccount({
-                  database: application.database,
-                  environment: application.config.appEnv,
-                  accountId: request.id,
-                  mode: request.mode,
-                  rawDataDirectory: application.config.rawDataDirectory
-                }),
-              regenerateExport: async () =>
-                await new CsvExporter(
-                  application.config,
-                  application.database
-                ).export(),
-              saveAccounts: async () =>
-                await accountsStore.save(accountRepository.listEditable())
-            });
-            auditWindow?.webContents.send("audit:history-changed");
-            return { removal, bootstrap: await bootstrap(application) };
+  registerAccountRemovalHandler({
+    register: (channel, handler) => ipcMain.handle(channel, handler),
+    assertTrustedSender,
+    hasActiveOperation: () => activeSync !== undefined || activeOperations.size > 0,
+    trackOperation,
+    withSynchronizationLock: async (operation) =>
+      await withSynchronizationLock(application, operation),
+    remove: async (request) => {
+      const previousSnapshot = accountRepository.listEditable();
+      const nextSnapshot = accountRepository.previewEditableAfterLocalRemoval(
+        request.id,
+        application.config.appEnv
+      );
+      return await runAccountRemovalWithSnapshot({
+        previousSnapshot,
+        nextSnapshot,
+        saveSnapshot: async (accounts) => await accountsStore.save(accounts),
+        remove: async () =>
+          await runAccountRemovalOperation({
+            remove: async () =>
+              await removeLocalAccount({
+                database: application.database,
+                environment: application.config.appEnv,
+                accountId: request.id,
+                mode: request.mode,
+                rawDataDirectory: application.config.rawDataDirectory
+              }),
+            regenerateExport: async () =>
+              await new CsvExporter(
+                application.config,
+                application.database
+              ).export(),
+            saveAccounts: () => Promise.resolve()
           })
-        )
-    });
+      });
+    },
+    refresh: async () => {
+      auditWindow?.webContents.send("audit:history-changed");
+      return await bootstrap(application);
+    }
   });
   ipcMain.handle("categorization:save", async (event, input: unknown) => {
     assertTrustedSender(event);

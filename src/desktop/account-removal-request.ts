@@ -42,3 +42,59 @@ export async function executeAccountRemovalRequest<Result>(input: {
   }
   return await input.remove(request);
 }
+
+export async function runAccountRemovalWithSnapshot<Snapshot, Result>(input: {
+  previousSnapshot: Snapshot;
+  nextSnapshot: Snapshot;
+  saveSnapshot: (snapshot: Snapshot) => Promise<void>;
+  remove: () => Promise<Result>;
+}): Promise<Result> {
+  try {
+    await input.saveSnapshot(input.nextSnapshot);
+  } catch (error) {
+    throw new Error("Could not save the local account snapshot.", { cause: error });
+  }
+  try {
+    return await input.remove();
+  } catch (error) {
+    try {
+      await input.saveSnapshot(input.previousSnapshot);
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        "The local account operation failed and the account snapshot could not be restored.",
+        { cause: rollbackError }
+      );
+    }
+    throw error;
+  }
+}
+
+export function registerAccountRemovalHandler<Event, Result, Bootstrap>(input: {
+  register: (
+    channel: "accounts:remove",
+    handler: (event: Event, request: unknown) => Promise<{
+      removal: Result;
+      bootstrap: Bootstrap;
+    }>
+  ) => void;
+  assertTrustedSender: (event: Event) => void;
+  hasActiveOperation: () => boolean;
+  trackOperation: <Value>(operation: Promise<Value>) => Promise<Value>;
+  withSynchronizationLock: <Value>(operation: () => Promise<Value>) => Promise<Value>;
+  remove: (request: AccountRemovalRequest) => Promise<Result>;
+  refresh: (removal: Result) => Promise<Bootstrap>;
+}): void {
+  input.register("accounts:remove", async (event, request) => {
+    input.assertTrustedSender(event);
+    const removal = await executeAccountRemovalRequest({
+      request,
+      hasActiveOperation: input.hasActiveOperation,
+      remove: async (parsedRequest) =>
+        await input.trackOperation(
+          input.withSynchronizationLock(async () => await input.remove(parsedRequest))
+        )
+    });
+    return { removal, bootstrap: await input.refresh(removal) };
+  });
+}

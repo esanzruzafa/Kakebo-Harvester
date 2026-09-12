@@ -219,6 +219,24 @@ export class AccountRepository {
     return result.changes === 1;
   }
 
+  public previewEditableAfterLocalRemoval(
+    accountId: string,
+    environment: string
+  ): EditableAccount[] {
+    const account = this.database
+      .prepare(
+        `SELECT a.id
+         FROM accounts a
+         JOIN bank_connections c ON c.id = a.bank_connection_id
+         WHERE a.id = ? AND c.environment = ?`
+      )
+      .get(accountId, environment) as { id: string } | undefined;
+    if (!account) {
+      throw new Error("The account does not exist in the active environment.");
+    }
+    return this.listEditable().filter((editable) => editable.id !== account.id);
+  }
+
   public purgeLocalAccount(
     accountId: string,
     environment: string
