@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   beginLocalAccountRemoval,
@@ -380,7 +380,7 @@ describe("local account removal persistence", () => {
     await expect(
       cleanupRawFiles(["C:/safe/raw.json"], "C:/safe", hasOtherOwner, { lstat, unlink })
     ).resolves.toEqual({ removed: 0, warnings: ["symbolic-link"] });
-    expect(lstat).toHaveBeenCalledWith(process.platform === "win32" ? "c:\\safe" : "C:/safe");
+    expect(lstat).toHaveBeenCalledWith(process.platform === "win32" ? "c:\\safe" : resolve("C:/safe"));
     expect(hasOtherOwner).not.toHaveBeenCalled();
     expect(unlink).not.toHaveBeenCalled();
   });
@@ -396,6 +396,15 @@ describe("local account removal persistence", () => {
       cleanupRawFiles(["C:/safe/raw.json"], "C:/safe", () => false, { lstat, unlink })
     ).resolves.toEqual({ removed: 0, warnings: ["symbolic-link"] });
     expect(unlink).not.toHaveBeenCalled();
+  });
+
+  it("does not validate the raw root when there are no raw paths", async () => {
+    const lstat = vi.fn().mockRejectedValue(Object.assign(new Error("missing root"), { code: "ENOENT" }));
+
+    await expect(
+      cleanupRawFiles([], "C:/missing", () => false, { lstat, unlink: vi.fn() })
+    ).resolves.toEqual({ removed: 0, warnings: [] });
+    expect(lstat).not.toHaveBeenCalled();
   });
 
   it("restores a purged account when snapshot persistence must be compensated", async () => {

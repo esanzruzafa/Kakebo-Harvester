@@ -277,6 +277,8 @@ export async function cleanupRawFiles(
   hasOtherOwner: (path: string) => boolean,
   operations: RawFileOperations = defaultRawFileOperations
 ): Promise<AccountRemovalResult["rawCleanup"]> {
+  if (paths.length === 0) return { removed: 0, warnings: [] };
+
   const rawRoot = canonicalRawPath(rawDataDirectory);
   try {
     if ((await operations.lstat(rawRoot)).isSymbolicLink()) {
