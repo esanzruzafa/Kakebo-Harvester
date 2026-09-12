@@ -139,7 +139,9 @@ function tokenize(formula: string): Token[] {
     }
     const number = /^(?:\d+\.\d*|\d*\.\d+|\d+)/u.exec(input)?.[0];
     if (number) {
-      tokens.push({ type: "number", value: Number(number) });
+      const value = Number(number);
+      if (!Number.isFinite(value)) throw new Error("Invalid custom formula.");
+      tokens.push({ type: "number", value });
       position += number.length;
       continue;
     }
@@ -224,6 +226,13 @@ function evaluate(node: FormulaNode, values: Readonly<Record<string, CustomFormu
     if (rightNumber === 0) throw new Error("Invalid custom formula value.");
     return leftNumber / rightNumber;
   }
+  if (node.name === "coalesce") {
+    for (const argument of node.arguments) {
+      const value = evaluate(argument, values);
+      if (value !== null) return value;
+    }
+    return null;
+  }
   const arguments_ = node.arguments.map((argument) => evaluate(argument, values));
   switch (node.name) {
     case "upper":
@@ -232,8 +241,6 @@ function evaluate(node: FormulaNode, values: Readonly<Record<string, CustomFormu
     case "lower":
       if (arguments_.length !== 1) throw new Error("Invalid custom formula.");
       return textValue(arguments_[0] ?? null).toLowerCase();
-    case "coalesce":
-      return arguments_.find((value) => value !== null) ?? null;
     case "concat":
       return arguments_.map(textValue).join("");
     case "round": {
@@ -242,7 +249,8 @@ function evaluate(node: FormulaNode, values: Readonly<Record<string, CustomFormu
       if (!Number.isInteger(precision) || precision < 0 || precision > 15) {
         throw new Error("Invalid custom formula value.");
       }
-      return Number((numberValue(arguments_[0] ?? null) + Number.EPSILON * 10).toFixed(precision));
+      const value = numberValue(arguments_[0] ?? null);
+      return Number(`${Math.round(Number(`${value}e${precision}`))}e-${precision}`);
     }
   }
 }

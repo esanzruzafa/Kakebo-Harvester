@@ -25,4 +25,10 @@ describe("custom export formulas", () => {
       /invalid/i
     );
   });
+
+  it("rounds decimal boundaries and short-circuits coalesce", () => {
+    expect(evaluateCustomFormula("round(100000.075, 2)", {})).toBe(100000.08);
+    expect(evaluateCustomFormula('coalesce(description, 1 / amount)', { description: "kept", amount: 0 })).toBe("kept");
+    expect(() => customFormulaSchema.parse("9".repeat(400))).toThrow(/invalid/i);
+  });
 });

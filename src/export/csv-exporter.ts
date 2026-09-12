@@ -63,7 +63,7 @@ interface ExportState {
   movementKeys?: string[] | undefined;
   sourceMovementKeys?: Record<HighlightSource, string[]> | undefined;
   highlightedMovementKeys?: Record<HighlightSource, string[]> | undefined;
-  customValues?: Record<string, Record<string, ExportValue>> | undefined;
+  customValues?: Record<string, Record<string, ExportValue | { date: string }>> | undefined;
 }
 
 export type HighlightSource = "banking" | "cards";
@@ -85,7 +85,7 @@ const exportStateSchema = z.object({
   highlightedMovementKeys: z
     .object({ banking: z.array(z.string()), cards: z.array(z.string()) })
     .optional(),
-  customValues: z.record(z.string(), z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))).optional()
+  customValues: z.record(z.string(), z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null(), z.object({ date: z.iso.datetime() })]))).optional()
 });
 
 const HIGHLIGHT_COLORS: Record<HighlightSource, string> = {
@@ -290,7 +290,7 @@ function formulaValues(row: ExportRow): Record<ExportField, CustomFormulaValue> 
     description: row.description_raw,
     merchant: row.merchant_name,
     counterparty: row.counterparty_name,
-    amount: Number(row.amount),
+    amount: exactSpreadsheetNumber(row.amount),
     direction: row.direction,
     status: row.status,
     categoryAuto: row.category_auto,
@@ -310,6 +310,9 @@ function customValue(
   if (persisted !== undefined) return persisted;
   if (column.kind === "manual") return "";
   if (!column.formula) throw new Error("Formula export columns require a formula.");
+  if (/\bamount\b/u.test(column.formula) && exactSpreadsheetNumber(row.amount) === null) {
+    throw new Error("Custom formulas cannot use an amount that is not exactly representable.");
+  }
   return evaluateCustomFormula(column.formula, formulaValues(row));
 }
 
@@ -418,15 +421,15 @@ async function previousCustomValues(
   return values;
 }
 
-function stateCustomValues(values: ReadonlyMap<string, ReadonlyMap<string, CustomExportValue>>): Record<string, Record<string, ExportValue>> {
+function stateCustomValues(values: ReadonlyMap<string, ReadonlyMap<string, CustomExportValue>>): Record<string, Record<string, ExportValue | { date: string }>> {
   return Object.fromEntries([...values].map(([movementKey, columns]) => [
     movementKey,
-    Object.fromEntries([...columns].flatMap(([id, value]) => value instanceof Date ? [] : [[id, value]]))
+    Object.fromEntries([...columns].map(([id, value]) => [id, value instanceof Date ? { date: value.toISOString() } : value]))
   ]));
 }
 
 function customValuesFromState(state: ExportState | undefined): Map<string, Map<string, CustomExportValue>> {
-  return new Map(Object.entries(state?.customValues ?? {}).map(([key, values]) => [key, new Map(Object.entries(values))]));
+  return new Map(Object.entries(state?.customValues ?? {}).map(([key, values]) => [key, new Map(Object.entries(values).map(([id, value]) => [id, typeof value === "object" && value !== null ? new Date(value.date) : value]))]));
 }
 
 function escapeCsv(value: ExportValue, separator: string): string {
@@ -788,7 +791,7 @@ export class CsvExporter {
       if (compatible && (await pathExists(destination))) {
         for (const [key, values] of await previousCustomValues(destination, settings)) customValues.set(key, values);
       }
-      const customColumns = settings.columns.filter((column): column is CustomExportColumn => !('field' in column));
+      const customColumns = settings.columns.filter((column): column is CustomExportColumn => !('field' in column) && column.enabled);
       for (const row of rows) {
         const values = customValues.get(row.movement_key) ?? new Map<string, CustomExportValue>();
         for (const column of customColumns) values.set(column.id, customValue(row, column, customValues));
