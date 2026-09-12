@@ -17,6 +17,11 @@ type Token =
   | { type: "end" };
 
 const validFunctions = new Set(["upper", "lower", "coalesce", "concat", "round"]);
+const validIdentifiers = new Set([
+  "movementKey", "date", "valueDate", "bank", "account", "accountAlias", "productType",
+  "description", "merchant", "counterparty", "amount", "direction", "status", "categoryAuto",
+  "subcategoryAuto", "reviewed", "source", "importedAt"
+]);
 
 class FormulaParser {
   private position = 0;
@@ -55,7 +60,10 @@ class FormulaParser {
       return { type: "literal", value: token.value };
     }
     if (token.type === "identifier") {
-      if (!this.matchesPunctuation("(")) return { type: "identifier", name: token.value };
+      if (!this.matchesPunctuation("(")) {
+        if (!validIdentifiers.has(token.value)) this.invalid();
+        return { type: "identifier", name: token.value };
+      }
       if (!validFunctions.has(token.value)) this.invalid();
       this.advance();
       const arguments_: FormulaNode[] = [];

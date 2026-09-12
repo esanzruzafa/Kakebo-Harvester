@@ -144,6 +144,8 @@ function migrateSettings(value: unknown): unknown {
   if (!value || typeof value !== "object" || !Array.isArray((value as { columns?: unknown }).columns)) {
     return value;
   }
+  const schemaVersion = (value as { schemaVersion?: unknown }).schemaVersion;
+  if (schemaVersion !== undefined && schemaVersion !== 2) return value;
   const columns = (
     value as { columns: Array<{ field?: unknown }> }
   ).columns.filter((column) => column.field !== "currency");

@@ -387,6 +387,12 @@ async function previousCustomValues(
   const rows: readonly (readonly unknown[])[] = settings.format === "csv"
     ? parseCsv((await readFile(path, "utf8")).replace(/^\uFEFF/u, ""), settings.csv.fieldSeparator)
     : await readSheet(path);
+  const expectedHeaders = columns.map((column) =>
+    settings.format === "csv" ? safeSpreadsheetText(column.header) : column.header
+  );
+  const header = rows[0] ?? [];
+  if (header.length !== expectedHeaders.length ||
+      header.some((value, index) => value !== expectedHeaders[index])) return new Map();
   const values = new Map<string, Map<string, CustomExportValue>>();
   for (const row of rows.slice(1)) {
     const movementKey = row[movementKeyIndex];
@@ -689,7 +695,7 @@ export class CsvExporter {
             return { value, type: Date, format: "yyyy-mm-dd", ...background };
           }
           if (typeof value === "number") {
-            return { value, type: Number, format: "#,##0.00", ...background };
+            return { value, type: Number, format: "#,##0.###############", ...background };
           }
           if (typeof value === "boolean") {
             return { value, type: Boolean, ...background };
