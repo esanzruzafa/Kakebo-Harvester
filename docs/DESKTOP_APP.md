@@ -232,6 +232,39 @@ SQLite is authoritative for aliases and `sync_enabled` / `export_enabled`.
 
 The JSON account file is regenerated as a readable snapshot. Provider account type remains stored but is intentionally hidden from the alias table.
 
+### Local account removal
+
+The per-account removal action is local-only and is separate from **Revoke
+consent**. It does not call Enable Banking, revoke a consent, close a remote
+account, or mutate `bank_connections` or local provider sessions. The request
+is limited to the selected account in the active environment, validated at the
+trusted desktop IPC boundary, and coordinated with synchronization and other
+tracked account operations.
+
+**Keep local history** is the default path. It sets the selected account's
+local `hidden` state and disables `sync_enabled` and `export_enabled`; it keeps
+the account, balances, normalized movements, raw transaction metadata,
+synchronization runs, identification hashes, and audit snapshots. Provider
+reconciliation/upsert clears `hidden` during normal rediscovery, allowing the
+account to reappear without a custom restore operation.
+
+**Delete local history** deletes only the selected account and its
+account-scoped SQLite rows in one transaction: balances, normalized movements,
+raw transaction metadata, synchronization runs, identification hashes, and
+`desktop_run_accounts` audit snapshots. It retains sibling accounts and their
+data, connections and sessions, and `desktop_runs` parent records because one
+may describe multiple accounts. After a successful destructive deletion, the
+current export is regenerated. Export failure is reported as a follow-up
+warning and does not reverse the committed local database deletion.
+
+Raw-file cleanup runs only after the destructive database transaction. It can
+unlink only a regular file directly below `rawDataDirectory` when the selected
+account is its sole local owner. It refuses and warns for shared, missing,
+symbolic-link/junction, outside-root, ambiguous, or failed paths. It never
+follows links and never recursively removes a directory, so an unsafe raw file
+does not broaden the deletion or make the completed database operation appear
+to have failed.
+
 Account identity reconciliation is deliberately conservative. An unchanged provider UID always updates its existing account. A changed UID can reuse an existing account only when the provider supplies that account's previously stored canonical hash, the hash descriptor is based on `account.account_id.iban`, and the masked IBAN also agrees. Name-, bank-, and country-based hashes are never identity evidence, and historical alternate-hash mappings are not authoritative. Ambiguity therefore creates a separate account instead of destructively merging two real accounts.
 
 ## Categorization dependencies and order
