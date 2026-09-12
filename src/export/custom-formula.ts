@@ -78,6 +78,11 @@ class FormulaParser {
       const count = arguments_.length;
       if ((token.value === "upper" || token.value === "lower") && count !== 1) this.invalid();
       if (token.value === "round" && (count < 1 || count > 2)) this.invalid();
+      if (token.value === "round" && count === 2) {
+        const precision = arguments_[1];
+        if (!precision || precision.type !== "literal" || typeof precision.value !== "number" ||
+            !Number.isInteger(precision.value) || precision.value < 0 || precision.value > 15) this.invalid();
+      }
       return {
         type: "call",
         name: token.value as "upper" | "lower" | "coalesce" | "concat" | "round",
@@ -237,7 +242,7 @@ function evaluate(node: FormulaNode, values: Readonly<Record<string, CustomFormu
       if (!Number.isInteger(precision) || precision < 0 || precision > 15) {
         throw new Error("Invalid custom formula value.");
       }
-      return Number(numberValue(arguments_[0] ?? null).toFixed(precision));
+      return Number((numberValue(arguments_[0] ?? null) + Number.EPSILON * 10).toFixed(precision));
     }
   }
 }
