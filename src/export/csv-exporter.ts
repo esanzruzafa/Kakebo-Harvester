@@ -63,6 +63,7 @@ export type HighlightSource = "banking" | "cards";
 
 export interface ExportOptions {
   highlightSource?: HighlightSource | undefined;
+  discardPreviousOutput?: boolean | undefined;
 }
 
 type ExportValue = string | number | boolean | null;
@@ -593,10 +594,10 @@ export class CsvExporter {
       const previous = await readExportState(statePath);
       const compatible = previous?.fingerprint === fingerprint && previous.format === settings.format;
       const currentKeys = sourceKeys(rows);
-      const knownKeys = compatible && previous.sourceMovementKeys
+      const knownKeys = !options.discardPreviousOutput && compatible && previous.sourceMovementKeys
         ? previous.sourceMovementKeys
         : currentKeys;
-      const highlighted = compatible && previous.highlightedMovementKeys
+      const highlighted = !options.discardPreviousOutput && compatible && previous.highlightedMovementKeys
         ? {
             banking: new Set(previous.highlightedMovementKeys.banking),
             cards: new Set(previous.highlightedMovementKeys.cards)
@@ -618,7 +619,15 @@ export class CsvExporter {
         await this.writeXlsx(temporary, rows, settings, highlighted);
         if (process.platform !== "win32") await chmod(temporary, 0o600);
       }
-      if (compatible) {
+      if (options.discardPreviousOutput) {
+        await Promise.all(
+          ["csv", "xlsx"].map(async (extension) =>
+            await rm(join(this.config.exportDirectory, `kakebo_movements.${extension}`), {
+              force: true
+            })
+          )
+        );
+      } else if (compatible) {
         backupPath = await backupCurrentOutput(
           this.config,
           destination,

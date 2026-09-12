@@ -217,6 +217,56 @@ describe("CSV export", () => {
     database.close();
   });
 
+  it("does not archive the previous export during a privacy purge regeneration", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-purge-"));
+    const config = { ...testConfig(root), exportKeepBackup: true };
+    const database = createDatabase(config.databasePath);
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = "csv";
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+    const exporter = new CsvExporter(config, database);
+    const first = await exporter.export();
+    await writeFile(first.path, "deleted account movement\n");
+
+    await exporter.export({ discardPreviousOutput: true });
+
+    await expect(readdir(join(config.exportDirectory, "archive"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+    expect(await readFile(first.path, "utf8")).not.toContain("deleted account movement");
+    database.close();
+  });
+
+  it("resets source-key baselines when regenerating after a privacy purge", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-purge-baseline-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = "csv";
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+    const exporter = new CsvExporter(config, database);
+    await exporter.export();
+    const previousState = JSON.parse(
+      await readFile(`${config.exportSettingsPath}.state.json`, "utf8")
+    ) as Record<string, unknown>;
+    await writeFile(
+      `${config.exportSettingsPath}.state.json`,
+      JSON.stringify({
+        ...previousState,
+        sourceMovementKeys: { banking: ["deleted-movement"], cards: [] },
+        highlightedMovementKeys: { banking: ["deleted-movement"], cards: [] }
+      })
+    );
+
+    await exporter.export({ discardPreviousOutput: true });
+
+    const state = JSON.parse(await readFile(`${config.exportSettingsPath}.state.json`, "utf8")) as {
+      sourceMovementKeys: { banking: string[]; cards: string[] };
+    };
+    expect(state.sourceMovementKeys).toEqual({ banking: [], cards: [] });
+    database.close();
+  });
+
   it("does not use an untrusted state fingerprint in archive paths", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-export-state-"));
     const config = testConfig(root);

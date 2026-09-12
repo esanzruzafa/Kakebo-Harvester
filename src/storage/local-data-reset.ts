@@ -65,6 +65,7 @@ export async function resetLocalData(
     database.prepare("DELETE FROM transactions_raw").run();
     const balances = database.prepare("DELETE FROM balances").run().changes;
     const synchronizationRuns = database.prepare("DELETE FROM sync_runs").run().changes;
+    database.prepare("DELETE FROM local_account_removal_audit_events").run();
     const desktopRuns = database.prepare("DELETE FROM desktop_runs").run().changes;
     database
       .prepare(

@@ -32,5 +32,13 @@
   {
     "version": 13,
     "filename": "013_card_import_source_row_identity.sql"
+  },
+  {
+    "version": 14,
+    "filename": "014_account_hidden_state.sql"
+  },
+  {
+    "version": 15,
+    "filename": "015_local_account_removal_audit.sql"
   }
 ]

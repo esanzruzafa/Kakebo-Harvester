@@ -84,6 +84,35 @@ In that case the local disconnect still completes and the application clearly
 asks you to revoke the consent from the bank or Enable Banking control panel as
 well.
 
+## Remove a local account
+
+In **Accounts and aliases**, each account can be removed from this computer in
+one of two ways. Neither option contacts Enable Banking or the bank: it does
+not revoke a consent, close a remote account, or change a bank connection or
+its local provider session.
+
+- **Keep local history** is the default. It hides the selected account from the
+  local account list and disables its synchronization and export switches. Its
+  balances, movements, raw metadata, and local audit snapshots remain in the
+  active environment's SQLite database. A later normal provider account
+  discovery clears the local hidden state, so the account can appear again;
+  there is no separate restore action.
+- **Delete local history** permanently removes only the selected account's
+  local account row and its balances, normalized movements, raw transaction
+  metadata, synchronization runs, identification hashes, and audit snapshots.
+  It preserves other accounts, their history, bank connections, consents,
+  provider sessions, and parent execution records that may describe more than
+  one account. The current export is regenerated afterwards; if regeneration
+  fails, the completed local deletion is retained and the application shows a
+  warning.
+
+When deleting history, Kakebo Harvester may remove a raw response only when it
+is a regular file directly inside the configured raw-data folder and no other
+local record owns it. Shared, missing, linked, outside-folder, ambiguous, or
+locked/failed raw files are never removed recursively; they are retained and
+reported as warnings. Account removal is scoped to the current local
+environment.
+
 When an ASPSP returns `WRONG_TRANSACTIONS_PERIOD`, Kakebo Harvester retries that account with Enable Banking's `longest` strategy. Pagination continues with the same request parameters, and only movements inside the date interval selected in the application are added to SQLite and exports. Movements without any valid booking, transaction, or value date are excluded because they cannot be proven to belong to that interval; the optional raw response remains available for diagnosis.
 
 `ASPSP_ERROR` means the bank temporarily failed while Enable Banking was retrieving
