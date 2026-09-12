@@ -2017,9 +2017,7 @@ function applyAccountRemovalBootstrap(bootstrap: DesktopBootstrap): void {
     : bootstrap;
   applyTranslations();
   renderAll();
-  rememberSavedTab("accounts");
   for (const tab of editableTabs) {
-    if (tab === "accounts") continue;
     if (dirtyTabs.has(tab)) {
       const snapshot = priorSnapshots.get(tab);
       if (snapshot === undefined) savedTabSnapshots.delete(tab);
@@ -2045,15 +2043,32 @@ async function removeAccountFromUi(account: EditableAccount): Promise<void> {
       applyBootstrap: (bootstrap) => applyAccountRemovalBootstrap(bootstrap)
     });
     if (!result) return;
+    const recoveryWarnings: Array<{ step: "bootstrap-refresh"; message: string }> = [];
+    if (result.bootstrap === null) {
+      try {
+        applyAccountRemovalBootstrap(await window.kakebo.bootstrap());
+      } catch {
+        recoveryWarnings.push({
+          step: "bootstrap-refresh",
+          message: "The account was removed. Refresh the app to reload local data."
+        });
+      }
+    }
     const hasWarnings =
       result.removal.warnings.length > 0 ||
-      result.removal.rawCleanup.warnings.length > 0;
+      result.removal.rawCleanup.warnings.length > 0 ||
+      result.warnings.length > 0 ||
+      recoveryWarnings.length > 0;
     showToast(
       hasWarnings
         ? `${t(
             "toast.accountRemovedWithWarnings",
             "The account was removed, but follow-up tasks need attention."
-          )} ${followUpWarningMessage(result.removal.warnings)}`
+          )} ${followUpWarningMessage([
+            ...result.removal.warnings,
+            ...result.warnings,
+            ...recoveryWarnings
+          ])}`
         : t("toast.accountRemoved", "The account was removed from this local data set."),
       hasWarnings ? "warning" : false
     );

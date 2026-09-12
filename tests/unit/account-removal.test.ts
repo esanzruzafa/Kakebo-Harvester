@@ -205,6 +205,24 @@ describe("local account removal persistence", () => {
     database.close();
   });
 
+  it("persists a privacy-safe local removal audit event without account or financial data", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-account-removal-audit-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    insertConnection(database, "sandbox-connection", "sandbox");
+    insertAccount(database, "selected", "sandbox-connection");
+    insertHistory(database, "selected");
+
+    await removeLocalAccount({ database, environment: "sandbox", accountId: "selected", mode: "delete-history" });
+
+    const event = database.prepare(
+      "SELECT action, outcome, occurred_at FROM local_account_removal_audit_events"
+    ).get() as Record<string, unknown>;
+    expect(event).toMatchObject({ action: "local-account-removal", outcome: "deleted" });
+    expect(Object.keys(event).sort()).toEqual(["action", "occurred_at", "outcome"]);
+    database.close();
+  });
+
   it("retains shared and outside raw paths as safe cleanup warnings", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-account-removal-"));
     const config = testConfig(root);
@@ -239,7 +257,7 @@ describe("local account removal persistence", () => {
     database.close();
   });
 
-  it("recognizes case-variant raw paths as shared on Windows", async () => {
+  it.runIf(process.platform === "win32")("recognizes case-variant raw paths as shared on Windows", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-account-removal-"));
     const config = testConfig(root);
     const database = createDatabase(config.databasePath);
@@ -295,7 +313,7 @@ describe("local account removal persistence", () => {
     await expect(
       cleanupRawFiles(["C:/safe/raw.json"], "C:/safe", hasOtherOwner, { lstat, unlink })
     ).resolves.toEqual({ removed: 0, warnings: ["symbolic-link"] });
-    expect(lstat).toHaveBeenCalledWith("c:\\safe");
+    expect(lstat).toHaveBeenCalledWith(process.platform === "win32" ? "c:\\safe" : "C:/safe");
     expect(hasOtherOwner).not.toHaveBeenCalled();
     expect(unlink).not.toHaveBeenCalled();
   });

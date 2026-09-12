@@ -76,12 +76,22 @@ export async function runAccountRemovalFromDialog<Bootstrap, Removal>(input: {
   removeAccount: (request: {
     id: string;
     mode: AccountRemovalMode;
-  }) => Promise<{ bootstrap: Bootstrap; removal: Removal }>;
+  }) => Promise<{
+    bootstrap: Bootstrap | null;
+    removal: Removal;
+    warnings: Array<{ step: "bootstrap-refresh"; message: string }>;
+  }>;
   applyBootstrap: (bootstrap: Bootstrap, options: { preserveUnsaved: true }) => void;
-}): Promise<{ bootstrap: Bootstrap; removal: Removal } | undefined> {
+}): Promise<{
+  bootstrap: Bootstrap | null;
+  removal: Removal;
+  warnings: Array<{ step: "bootstrap-refresh"; message: string }>;
+} | undefined> {
   const mode = await input.openDialog();
   if (!mode) return undefined;
   const result = await input.removeAccount({ id: input.account.id, mode });
-  input.applyBootstrap(result.bootstrap, { preserveUnsaved: true });
+  if (result.bootstrap !== null) {
+    input.applyBootstrap(result.bootstrap, { preserveUnsaved: true });
+  }
   return result;
 }

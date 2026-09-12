@@ -103,7 +103,8 @@ export function registerAccountRemovalHandler<Event, Result, Bootstrap>(input: {
     channel: "accounts:remove",
     handler: (event: Event, request: unknown) => Promise<{
       removal: Result;
-      bootstrap: Bootstrap;
+      bootstrap: Bootstrap | null;
+      warnings: Array<{ step: "bootstrap-refresh"; message: string }>;
     }>
   ) => void;
   assertTrustedSender: (event: Event) => void;
@@ -123,6 +124,17 @@ export function registerAccountRemovalHandler<Event, Result, Bootstrap>(input: {
           input.withSynchronizationLock(async () => await input.remove(parsedRequest))
         )
     });
-    return { removal, bootstrap: await input.refresh(removal) };
+    try {
+      return { removal, bootstrap: await input.refresh(removal), warnings: [] };
+    } catch {
+      return {
+        removal,
+        bootstrap: null,
+        warnings: [{
+          step: "bootstrap-refresh",
+          message: "The account was removed. Refresh the app to reload local data."
+        }]
+      };
+    }
   });
 }

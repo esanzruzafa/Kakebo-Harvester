@@ -5,7 +5,7 @@ import type { DisconnectResult } from "../auth/disconnect-service.js";
 import { safeMessage } from "../utils/text.js";
 import type { AccountRemovalResult } from "../storage/account-removal.js";
 
-export type FollowUpStep = "export" | "accounts-config";
+export type FollowUpStep = "export" | "accounts-config" | "bootstrap-refresh";
 
 export interface FollowUpWarning {
   step: FollowUpStep;

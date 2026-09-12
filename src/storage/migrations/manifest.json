@@ -36,5 +36,9 @@
   {
     "version": 14,
     "filename": "014_account_hidden_state.sql"
+  },
+  {
+    "version": 15,
+    "filename": "015_local_account_removal_audit.sql"
   }
 ]

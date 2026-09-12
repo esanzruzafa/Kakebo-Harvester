@@ -2,6 +2,7 @@ import { lstat, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { SqliteDatabase } from "./database.js";
 import { AccountRepository, type AccountPurgeCounts } from "./repositories/account-repository.js";
+import { createId } from "../utils/crypto.js";
 
 export type AccountRemovalMode = "keep-history" | "delete-history";
 
@@ -58,6 +59,10 @@ export interface PendingLocalAccountRemoval {
   rollback: () => void;
 }
 
+interface StoredAuditEvent extends AccountRemovalAuditEvent {
+  id: string;
+}
+
 interface TableSnapshot {
   table: string;
   rows: Array<Record<string, unknown>>;
@@ -77,17 +82,20 @@ export function beginLocalAccountRemoval(
   return Promise.resolve().then(() => {
     const accounts = new AccountRepository(input.database);
     if (input.mode === "keep-history") {
-      const previous = input.database
-        .prepare(
-          `SELECT hidden, sync_enabled, export_enabled FROM accounts
-           WHERE id = ?`
-        )
-        .get(input.accountId) as
-        | { hidden: number; sync_enabled: number; export_enabled: number }
-        | undefined;
-      if (!previous || !accounts.hideLocalAccount(input.accountId, input.environment)) {
-        throw new Error("The account does not exist in the active environment.");
-      }
+      const { previous, audit } = input.database.transaction(() => {
+        const previous = input.database
+          .prepare(
+            `SELECT hidden, sync_enabled, export_enabled FROM accounts
+             WHERE id = ?`
+          )
+          .get(input.accountId) as
+          | { hidden: number; sync_enabled: number; export_enabled: number }
+          | undefined;
+        if (!previous || !accounts.hideLocalAccount(input.accountId, input.environment)) {
+          throw new Error("The account does not exist in the active environment.");
+        }
+        return { previous, audit: persistAuditEvent(input.database, "hidden") };
+      })();
       return {
         rollback: () => {
           input.database
@@ -101,12 +109,13 @@ export function beginLocalAccountRemoval(
               previous.export_enabled,
               input.accountId
             );
+          removeAuditEvent(input.database, audit.id);
         },
         finalize: () => Promise.resolve({
           status: "hidden",
           counts: emptyCounts,
           rawCleanup: { removed: 0, warnings: [] },
-          audit: createAuditEvent("hidden")
+          audit: publicAuditEvent(audit)
         })
       };
     }
@@ -114,12 +123,18 @@ export function beginLocalAccountRemoval(
       ? accountRawPaths(input.database, input.accountId)
       : [];
     const snapshots = captureAccountRows(input.database, input.accountId);
-    const counts = accounts.purgeLocalAccount(input.accountId, input.environment);
-    if (!counts) {
-      throw new Error("The account does not exist in the active environment.");
-    }
+    const { counts, audit } = input.database.transaction(() => {
+      const counts = accounts.purgeLocalAccount(input.accountId, input.environment);
+      if (!counts) {
+        throw new Error("The account does not exist in the active environment.");
+      }
+      return { counts, audit: persistAuditEvent(input.database, "deleted") };
+    })();
     return {
-      rollback: () => restoreAccountRows(input.database, snapshots),
+      rollback: () => {
+        restoreAccountRows(input.database, snapshots);
+        removeAuditEvent(input.database, audit.id);
+      },
       finalize: async () => ({
         status: "deleted",
         counts,
@@ -128,7 +143,7 @@ export function beginLocalAccountRemoval(
               hasOtherRawOwner(input.database, input.accountId, path)
             )
           : { removed: 0, warnings: [] },
-        audit: createAuditEvent("deleted")
+        audit: publicAuditEvent(audit)
       })
     };
   });
@@ -169,8 +184,37 @@ function restoreAccountRows(database: SqliteDatabase, snapshots: TableSnapshot[]
   restore();
 }
 
-function createAuditEvent(outcome: AccountRemovalAuditEvent["outcome"]): AccountRemovalAuditEvent {
-  return { action: "local-account-removal", outcome, occurredAt: new Date().toISOString() };
+function persistAuditEvent(
+  database: SqliteDatabase,
+  outcome: AccountRemovalAuditEvent["outcome"]
+): StoredAuditEvent {
+  const audit: StoredAuditEvent = {
+    id: createId(),
+    action: "local-account-removal",
+    outcome,
+    occurredAt: new Date().toISOString()
+  };
+  database
+    .prepare(
+      `INSERT INTO local_account_removal_audit_events (id, action, outcome, occurred_at)
+       VALUES (?, ?, ?, ?)`
+    )
+    .run(audit.id, audit.action, audit.outcome, audit.occurredAt);
+  return audit;
+}
+
+function removeAuditEvent(database: SqliteDatabase, id: string): void {
+  database
+    .prepare("DELETE FROM local_account_removal_audit_events WHERE id = ?")
+    .run(id);
+}
+
+function publicAuditEvent(audit: StoredAuditEvent): AccountRemovalAuditEvent {
+  return {
+    action: audit.action,
+    outcome: audit.outcome,
+    occurredAt: audit.occurredAt
+  };
 }
 
 function accountRawPaths(database: SqliteDatabase, accountId: string): string[] {

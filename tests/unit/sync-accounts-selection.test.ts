@@ -745,6 +745,36 @@ describe("account detail synchronization selection", () => {
     database.close();
   });
 
+  it("rediscovers a hidden provider account even when its synchronization is disabled", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-hidden-provider-account-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database.prepare(
+      `INSERT INTO bank_connections (id, provider, environment, bank_name, bank_country, psu_type, alias, status, created_at)
+       VALUES ('connection', 'enable-banking', ?, 'BBVA', 'ES', 'personal', 'Personal', 'AUTHORIZED', ?)`
+    ).run(config.appEnv, now);
+    database.prepare(
+      `INSERT INTO provider_sessions (id, bank_connection_id, provider_session_id_ciphertext, created_at, status)
+       VALUES ('session', 'connection', ?, ?, 'AUTHORIZED')`
+    ).run(encryptSecret("provider-session", config.sessionEncryptionKey), now);
+    database.prepare(
+      `INSERT INTO accounts (id, bank_connection_id, provider_account_id, name, hidden, sync_enabled, active, first_seen_at, last_seen_at)
+       VALUES ('hidden-account', 'connection', 'provider-account', 'Old name', 1, 0, 1, ?, ?)`
+    ).run(now, now);
+    const getAccount = vi.fn().mockResolvedValue({ uid: "provider-account", name: "Rediscovered" });
+    const client = {
+      getSession: vi.fn().mockResolvedValue({ status: "AUTHORIZED", accounts: ["provider-account"] }),
+      getAccount
+    } as unknown as EnableBankingClient;
+
+    await expect(new SyncService(config, database, client).syncAccounts()).resolves.toBe(0);
+    expect(getAccount).not.toHaveBeenCalled();
+    expect(database.prepare("SELECT hidden, sync_enabled FROM accounts WHERE id = 'hidden-account'").get())
+      .toEqual({ hidden: 0, sync_enabled: 0 });
+    database.close();
+  });
+
   it("deactivates accounts omitted by the session and reactivates them if they return", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-session-accounts-"));
     const config = testConfig(root);

@@ -113,7 +113,7 @@ describe("account removal desktop request", () => {
         id: "account-1",
         mode: "keep-history"
       })
-    ).resolves.toEqual({ removal, bootstrap: refreshed });
+    ).resolves.toEqual({ removal, bootstrap: refreshed, warnings: [] });
     expect(events).toEqual([
       "locked",
       "snapshot:0",
@@ -147,6 +147,29 @@ describe("account removal desktop request", () => {
     ).rejects.toThrow("Wait for the current account operation to finish");
     expect(withSynchronizationLock).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("returns the committed removal with a refresh warning when bootstrap refresh fails", async () => {
+    let handler:
+      | ((event: unknown, input: unknown) => Promise<unknown>)
+      | undefined;
+    const removal = { status: "deleted" };
+
+    registerAccountRemovalHandler<unknown, { status: string }, { accounts: never[] }>({
+      register: (_channel, value) => { handler = value; },
+      assertTrustedSender: () => undefined,
+      hasActiveOperation: () => false,
+      trackOperation: async (operation) => await operation,
+      withSynchronizationLock: async (operation) => await operation(),
+      remove: () => Promise.resolve(removal),
+      refresh: () => Promise.reject(new Error("Unreadable local settings"))
+    });
+
+    await expect(handler?.({}, { id: "account-1", mode: "delete-history" })).resolves.toEqual({
+      removal,
+      bootstrap: null,
+      warnings: [{ step: "bootstrap-refresh", message: "The account was removed. Refresh the app to reload local data." }]
+    });
   });
 
   it("returns a safe snapshot error from the registered handler without starting removal", async () => {

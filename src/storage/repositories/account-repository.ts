@@ -193,7 +193,7 @@ export class AccountRepository {
       this.database
         .prepare(
           `UPDATE accounts
-           SET active = 1, last_seen_at = ?
+           SET active = 1, hidden = 0, last_seen_at = ?
            WHERE bank_connection_id = ?
              AND provider_account_id IN (${placeholders})`
         )

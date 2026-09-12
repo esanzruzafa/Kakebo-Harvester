@@ -128,7 +128,8 @@ export interface SelectedCardFile {
 
 export interface AccountRemovalDesktopResult {
   removal: AccountRemovalOperationResult;
-  bootstrap: DesktopBootstrap;
+  bootstrap: DesktopBootstrap | null;
+  warnings: Array<{ step: "bootstrap-refresh"; message: string }>;
 }
 
 export interface KakeboDesktopApi {
