@@ -232,7 +232,7 @@ function validateStaticTypes(node: FormulaNode): StaticFormulaType {
   if (node.type === "identifier") {
     if (node.name === "amount") return "number";
     if (node.name === "reviewed") return "boolean";
-    return "unknown";
+    return "string";
   }
   if (node.type === "binary") {
     const left = validateStaticTypes(node.left);
@@ -301,6 +301,21 @@ function addDecimal(left: number, right: number): number {
   return decimalNumber(leftCoefficient + rightCoefficient, scale);
 }
 
+function divideDecimal(left: number, right: number): number {
+  const leftParts = decimalParts(left);
+  const rightParts = decimalParts(right);
+  if (rightParts.coefficient === 0n) throw new Error("Invalid custom formula value.");
+  const precision = 18;
+  const exponent = precision + rightParts.scale - leftParts.scale;
+  const numerator = exponent >= 0
+    ? leftParts.coefficient * 10n ** BigInt(exponent)
+    : leftParts.coefficient;
+  const denominator = exponent >= 0
+    ? rightParts.coefficient
+    : rightParts.coefficient * 10n ** BigInt(-exponent);
+  return decimalNumber(numerator / denominator, precision);
+}
+
 function textValue(value: CustomFormulaValue): string {
   return value === null ? "" : String(value);
 }
@@ -332,10 +347,9 @@ function evaluate(
     }
     const leftNumber = numberValue(left);
     const rightNumber = numberValue(right);
-    if (node.operator === "-") return finiteNumber(leftNumber - rightNumber);
+    if (node.operator === "-") return addDecimal(leftNumber, -rightNumber);
     if (node.operator === "*") return multiplyDecimal(leftNumber, rightNumber);
-    if (rightNumber === 0) throw new Error("Invalid custom formula value.");
-    return finiteNumber(leftNumber / rightNumber);
+    return divideDecimal(leftNumber, rightNumber);
   }
   if (node.name === "coalesce") {
     for (const argument of node.arguments) {
