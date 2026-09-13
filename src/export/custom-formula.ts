@@ -140,7 +140,9 @@ function tokenize(formula: string): Token[] {
     const number = /^(?:\d+\.\d*|\d*\.\d+|\d+)/u.exec(input)?.[0];
     if (number) {
       const value = Number(number);
-      if (!Number.isFinite(value)) throw new Error("Invalid custom formula.");
+      if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
+        throw new Error("Invalid custom formula.");
+      }
       tokens.push({ type: "number", value });
       position += number.length;
       continue;
