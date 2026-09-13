@@ -22,7 +22,9 @@ type StaticFormulaType = "number" | "string" | "boolean" | "null" | "unknown";
 function normalizeDecimalLiteral(input: string): string {
   const [coefficient, exponentText] = input.toLowerCase().split("e");
   const exponent = Number(exponentText ?? "0");
-  const [integer = "", fraction = ""] = coefficient?.split(".") ?? [];
+  const sign = coefficient?.startsWith("-") ? "-" : "";
+  const unsignedCoefficient = sign ? coefficient?.slice(1) : coefficient;
+  const [integer = "", fraction = ""] = unsignedCoefficient?.split(".") ?? [];
   const digits = `${integer}${fraction}`;
   const decimalIndex = integer.length + exponent;
   const expanded = decimalIndex <= 0
@@ -33,7 +35,8 @@ function normalizeDecimalLiteral(input: string): string {
   const [whole = "", decimal = ""] = expanded.split(".");
   const normalizedWhole = whole.replace(/^0+(?=\d)/u, "") || "0";
   const normalizedDecimal = decimal.replace(/0+$/u, "");
-  return normalizedDecimal ? `${normalizedWhole}.${normalizedDecimal}` : normalizedWhole;
+  const normalized = normalizedDecimal ? `${normalizedWhole}.${normalizedDecimal}` : normalizedWhole;
+  return sign && normalized !== "0" ? `${sign}${normalized}` : normalized;
 }
 
 const validFunctions = new Set(["upper", "lower", "coalesce", "concat", "round"]);
@@ -329,7 +332,9 @@ class Rational {
 
   public toNumber(): number {
     const decimal = this.terminatingDecimal();
-    const number = finiteNumber(decimal ? Number(decimal) : Number(this.numerator) / Number(this.denominator));
+    const converted = decimal ? Number(decimal) : Number(this.numerator) / Number(this.denominator);
+    if (this.numerator !== 0n && converted === 0) throw new Error("Invalid custom formula value.");
+    const number = finiteNumber(converted);
     if (decimal && normalizeDecimalLiteral(decimal) !== normalizeDecimalLiteral(number.toString())) {
       throw new Error("Invalid custom formula value.");
     }

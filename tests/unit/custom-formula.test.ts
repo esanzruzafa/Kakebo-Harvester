@@ -14,6 +14,7 @@ describe("custom export formulas", () => {
     expect(evaluateCustomFormula("0.3 / 0.1", {})).toBe(3);
     expect(evaluateCustomFormula("(10 / 3) + 1", {})).toBeCloseTo(13 / 3);
     expect(evaluateCustomFormula("(10 / 3) * 3", {})).toBe(10);
+    expect(evaluateCustomFormula("amount / 10000000", { amount: -1 })).toBe(-0.0000001);
     expect(evaluateCustomFormula("(amount + 1) * 2", { amount: 2 })).toBe(6);
     expect(
       evaluateCustomFormula("upper(description)", { description: "coffee" })
@@ -65,6 +66,8 @@ describe("custom export formulas", () => {
       /invalid custom formula value/i
     );
     expect(evaluateCustomFormula("0.000000001 / 9007199254740991", {})).toBeGreaterThan(0);
+    const underflow = `1${" / 9007199254740991".repeat(21)}`;
+    expect(() => evaluateCustomFormula(underflow, {})).toThrow(/invalid custom formula value/i);
   });
 
   it("rounds negative midpoint values away from zero", () => {
