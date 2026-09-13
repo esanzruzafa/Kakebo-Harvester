@@ -55,6 +55,12 @@ describe("custom export formulas", () => {
     expect(() => evaluateCustomFormula("9007199254740990 + 3", {})).toThrow(
       /invalid custom formula value/i
     );
+    expect(() => evaluateCustomFormula("900719925474099.1 * 3", {})).toThrow(
+      /invalid custom formula value/i
+    );
+    expect(() => evaluateCustomFormula("0.000000001 / 9007199254740991", {})).toThrow(
+      /invalid custom formula value/i
+    );
   });
 
   it("rounds negative midpoint values away from zero", () => {

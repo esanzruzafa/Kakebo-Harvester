@@ -277,13 +277,17 @@ function decimalParts(value: number): { coefficient: bigint; scale: number } {
   return { coefficient: sign * BigInt(`${whole ?? "0"}${fraction}`), scale: fraction.length };
 }
 
-function decimalNumber(coefficient: bigint, scale: number): number {
+function decimalNumber(coefficient: bigint, scale: number, requireExact = true): number {
   const sign = coefficient < 0n ? "-" : "";
   const digits = (coefficient < 0n ? -coefficient : coefficient).toString().padStart(scale + 1, "0");
   const value = scale === 0
     ? `${sign}${digits}`
     : `${sign}${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
-  return finiteNumber(Number(value));
+  const number = finiteNumber(Number(value));
+  if (requireExact && normalizeDecimalLiteral(value) !== normalizeDecimalLiteral(number.toString())) {
+    throw new Error("Invalid custom formula value.");
+  }
+  return number;
 }
 
 function multiplyDecimal(left: number, right: number): number {
@@ -313,7 +317,9 @@ function divideDecimal(left: number, right: number): number {
   const denominator = exponent >= 0
     ? rightParts.coefficient
     : rightParts.coefficient * 10n ** BigInt(-exponent);
-  return decimalNumber(numerator / denominator, precision);
+  const quotient = numerator / denominator;
+  if (numerator !== 0n && quotient === 0n) throw new Error("Invalid custom formula value.");
+  return decimalNumber(quotient, precision, false);
 }
 
 function textValue(value: CustomFormulaValue): string {
