@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { mergeEditableDrafts } from "../../src/desktop/dirty-refresh.js";
+import {
+  hasSurvivingAccountDraft,
+  mergeEditableDrafts
+} from "../../src/desktop/dirty-refresh.js";
 import type { EditableAccount } from "../../src/storage/repositories/account-repository.js";
 
 function account(id: string, alias: string): EditableAccount {
@@ -59,5 +62,14 @@ describe("dirty desktop refresh", () => {
       }),
       expect.objectContaining({ id: "new" })
     ]);
+  });
+
+  it("does not preserve an account draft when its account was removed", () => {
+    expect(
+      hasSurvivingAccountDraft([account("remaining", "")], [account("removed", "Unsaved alias")])
+    ).toBe(false);
+    expect(
+      hasSurvivingAccountDraft([account("remaining", "")], [account("remaining", "Unsaved alias")])
+    ).toBe(true);
   });
 });

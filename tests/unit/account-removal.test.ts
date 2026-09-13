@@ -300,16 +300,30 @@ describe("local account removal persistence", () => {
          provider_transaction_id, first_seen_at, last_seen_at
        ) VALUES ('profile-other', 'path', 'semantic', 1, 'transaction', ?, ?)`
     ).run(now, now);
+    await mkdir(config.rawDataDirectory, { recursive: true });
+    const workbookPath = join(config.rawDataDirectory, "selected-card.xlsx");
+    await writeFile(workbookPath, "workbook");
+    database.prepare(
+      `INSERT INTO transactions (
+         id, movement_key, reconciliation_key, provider, environment, bank_connection_id,
+         account_id, status, amount, currency, direction, first_seen_at, last_seen_at,
+         imported_at, raw_fingerprint, source_raw_file
+       ) VALUES ('manual-transaction', 'manual-movement', 'manual-reconciliation',
+                 'manual-card', 'sandbox', 'manual-connection', 'manual-account',
+                 'BOOK', '10', 'EUR', 'credit', ?, ?, ?, 'manual-fingerprint', ?)`
+    ).run(now, now, now, workbookPath);
 
     await removeLocalAccount({
       database,
       environment: "sandbox",
       accountId: "manual-account",
-      mode: "delete-history"
+      mode: "delete-history",
+      rawDataDirectory: config.rawDataDirectory
     });
 
     expect(database.prepare("SELECT COUNT(*) AS count FROM card_import_source_rows WHERE profile_id = 'profile-selected'").get()).toEqual({ count: 0 });
     expect(database.prepare("SELECT COUNT(*) AS count FROM card_import_source_rows WHERE profile_id = 'profile-other'").get()).toEqual({ count: 1 });
+    await expect(writeFile(workbookPath, "workbook", { flag: "wx" })).rejects.toMatchObject({ code: "EEXIST" });
     database.close();
   });
 

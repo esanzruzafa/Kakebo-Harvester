@@ -63,10 +63,17 @@ interface StoredAuditEvent extends AccountRemovalAuditEvent {
   id: string;
 }
 
-interface TableSnapshot {
-  table: string;
-  rows: Array<Record<string, unknown>>;
-}
+const rollbackTables = [
+  ["accounts", "id"],
+  ["balances", "account_id"],
+  ["transactions_raw", "account_id"],
+  ["transactions", "account_id"],
+  ["sync_runs", "account_id"],
+  ["desktop_run_accounts", "account_id"],
+  ["account_identification_hashes", "account_id"]
+] as const;
+
+const rollbackTableName = (table: string): string => `account_removal_rollback_${table}`;
 
 export function removeLocalAccount(
   input: RemoveLocalAccountInput
@@ -122,8 +129,8 @@ export function beginLocalAccountRemoval(
     const rawPaths = input.rawDataDirectory
       ? accountRawPaths(input.database, input.accountId)
       : [];
-    const snapshots = captureAccountRows(input.database, input.accountId);
     const { counts, audit } = input.database.transaction(() => {
+      createAccountRollbackStore(input.database, input.accountId);
       const counts = accounts.purgeLocalAccount(input.accountId, input.environment);
       if (!counts) {
         throw new Error("The account does not exist in the active environment.");
@@ -132,73 +139,71 @@ export function beginLocalAccountRemoval(
     })();
     return {
       rollback: () => {
-        restoreAccountRows(input.database, snapshots);
-        removeAuditEvent(input.database, audit.id);
+        input.database.transaction(() => {
+          restoreAccountRows(input.database);
+          removeAuditEvent(input.database, audit.id);
+          dropAccountRollbackStore(input.database);
+        })();
       },
-      finalize: async () => ({
-        status: "deleted",
-        counts,
-        rawCleanup: input.rawDataDirectory
-          ? await cleanupRawFiles(rawPaths, input.rawDataDirectory, (path) =>
-              hasOtherRawOwner(input.database, input.accountId, path)
-            )
-          : { removed: 0, warnings: [] },
-        audit: publicAuditEvent(audit)
-      })
+      finalize: async () => {
+        try {
+          let rawCleanup: AccountRemovalResult["rawCleanup"] = { removed: 0, warnings: [] };
+          if (input.rawDataDirectory) {
+            try {
+              const rawOwners = otherRawOwnerPaths(input.database);
+              rawCleanup = await cleanupRawFiles(rawPaths, input.rawDataDirectory, (path) =>
+                rawOwners.has(canonicalRawPath(path))
+              );
+            } catch {
+              rawCleanup = { removed: 0, warnings: ["cleanup-failed"] };
+            }
+          }
+          return {
+            status: "deleted" as const,
+            counts,
+            rawCleanup,
+            audit: publicAuditEvent(audit)
+          };
+        } finally {
+          dropAccountRollbackStore(input.database);
+        }
+      }
     };
   });
 }
 
-function captureAccountRows(database: SqliteDatabase, accountId: string): TableSnapshot[] {
-  const tables = [
-    ["accounts", "id"],
-    ["balances", "account_id"],
-    ["transactions_raw", "account_id"],
-    ["transactions", "account_id"],
-    ["sync_runs", "account_id"],
-    ["desktop_run_accounts", "account_id"],
-    ["account_identification_hashes", "account_id"]
-  ] as const;
-  const snapshots: TableSnapshot[] = tables.map(([table, column]) => ({
-    table,
-    rows: database
-      .prepare(`SELECT * FROM ${table} WHERE ${column} = ?`)
-      .all(accountId) as Array<Record<string, unknown>>
-  }));
-  const manualCardProfile = database
-    .prepare(
-      `SELECT a.provider_account_id AS profile_id
-       FROM accounts a
-       JOIN bank_connections c ON c.id = a.bank_connection_id
-       WHERE a.id = ? AND c.provider = 'manual-card'`
-    )
-    .get(accountId) as { profile_id: string } | undefined;
-  if (manualCardProfile) {
-    snapshots.push({
-      table: "card_import_source_rows",
-      rows: database
-        .prepare("SELECT * FROM card_import_source_rows WHERE profile_id = ?")
-        .all(manualCardProfile.profile_id) as Array<Record<string, unknown>>
-    });
+function createAccountRollbackStore(database: SqliteDatabase, accountId: string): void {
+  for (const [table, column] of rollbackTables) {
+    const rollbackTable = rollbackTableName(table);
+    database.exec(`DROP TABLE IF EXISTS temp.${rollbackTable}`);
+    database.prepare(
+      `CREATE TEMP TABLE ${rollbackTable} AS SELECT * FROM ${table} WHERE ${column} = ?`
+    ).run(accountId);
   }
-  return snapshots;
+  const rollbackTable = rollbackTableName("card_import_source_rows");
+  database.exec(`DROP TABLE IF EXISTS temp.${rollbackTable}`);
+  database.prepare(
+    `CREATE TEMP TABLE ${rollbackTable} AS
+     SELECT source.* FROM card_import_source_rows source
+     JOIN accounts a ON a.provider_account_id = source.profile_id
+     JOIN bank_connections c ON c.id = a.bank_connection_id
+     WHERE a.id = ? AND c.provider = 'manual-card'`
+  ).run(accountId);
 }
 
-function restoreAccountRows(database: SqliteDatabase, snapshots: TableSnapshot[]): void {
-  const restore = database.transaction(() => {
-    for (const snapshot of snapshots) {
-      for (const row of snapshot.rows) {
-        const columns = Object.keys(row);
-        const placeholders = columns.map(() => "?").join(", ");
-        database
-          .prepare(
-            `INSERT INTO ${snapshot.table} (${columns.join(", ")}) VALUES (${placeholders})`
-          )
-          .run(...columns.map((column) => row[column]));
-      }
-    }
-  });
-  restore();
+function restoreAccountRows(database: SqliteDatabase): void {
+  for (const [table] of rollbackTables) {
+    database.prepare(`INSERT INTO ${table} SELECT * FROM ${rollbackTableName(table)}`).run();
+  }
+  database.prepare(
+    `INSERT INTO card_import_source_rows SELECT * FROM ${rollbackTableName("card_import_source_rows")}`
+  ).run();
+}
+
+function dropAccountRollbackStore(database: SqliteDatabase): void {
+  for (const [table] of [...rollbackTables, ["card_import_source_rows", "profile_id"]] as const) {
+    database.exec(`DROP TABLE IF EXISTS temp.${rollbackTableName(table)}`);
+  }
 }
 
 function persistAuditEvent(
@@ -241,27 +246,34 @@ function accountRawPaths(database: SqliteDatabase, accountId: string): string[] 
          SELECT raw_response_path AS path FROM accounts WHERE id = ?
          UNION ALL SELECT raw_response_path FROM balances WHERE account_id = ?
          UNION ALL SELECT raw_response_path FROM transactions_raw WHERE account_id = ?
-         UNION ALL SELECT source_raw_file FROM transactions WHERE account_id = ?
+         UNION ALL
+         SELECT t.source_raw_file FROM transactions t
+         JOIN accounts a ON a.id = t.account_id
+         JOIN bank_connections c ON c.id = a.bank_connection_id
+         WHERE t.account_id = ? AND c.provider <> 'manual-card'
        ) WHERE path IS NOT NULL AND trim(path) <> ''`
     )
     .all(accountId, accountId, accountId, accountId)
     .map((row) => (row as { path: string }).path);
 }
 
-function hasOtherRawOwner(database: SqliteDatabase, accountId: string, path: string): boolean {
-  const candidate = canonicalRawPath(path);
+function otherRawOwnerPaths(database: SqliteDatabase): Set<string> {
   const rows = database
     .prepare(
       `SELECT path FROM (
          SELECT id AS account_id, raw_response_path AS path FROM accounts
          UNION ALL SELECT account_id, raw_response_path FROM balances
          UNION ALL SELECT account_id, raw_response_path FROM transactions_raw
-         UNION ALL SELECT account_id, source_raw_file FROM transactions
+         UNION ALL
+         SELECT t.account_id, t.source_raw_file FROM transactions t
+         JOIN accounts a ON a.id = t.account_id
+         JOIN bank_connections c ON c.id = a.bank_connection_id
+         WHERE c.provider <> 'manual-card'
          UNION ALL SELECT NULL AS account_id, raw_response_path FROM provider_sessions
-       ) WHERE (account_id IS NULL OR account_id <> ?) AND path IS NOT NULL`
+       ) WHERE path IS NOT NULL AND trim(path) <> ''`
     )
-    .all(accountId) as Array<{ path: string }>;
-  return rows.some((row) => canonicalRawPath(row.path) === candidate);
+    .all() as Array<{ path: string }>;
+  return new Set(rows.map((row) => canonicalRawPath(row.path)));
 }
 
 function canonicalRawPath(path: string): string {

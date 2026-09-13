@@ -42,6 +42,7 @@ import type {
 } from "../sync/sync-runner.js";
 import type { FollowUpWarning } from "./committed-operations.js";
 import {
+  hasSurvivingAccountDraft,
   mergeEditableDrafts,
   type EditableDrafts
 } from "./dirty-refresh.js";
@@ -2032,7 +2033,10 @@ function applyAccountRemovalBootstrap(bootstrap: DesktopBootstrap): void {
   applyTranslations();
   renderAll();
   for (const tab of editableTabs) {
-    if (dirtyTabs.has(tab)) {
+    const preserveDraft =
+      dirtyTabs.has(tab) &&
+      (tab !== "accounts" || hasSurvivingAccountDraft(bootstrap.accounts, drafts.accounts));
+    if (preserveDraft) {
       const snapshot = priorSnapshots.get(tab);
       if (snapshot === undefined) savedTabSnapshots.delete(tab);
       else savedTabSnapshots.set(tab, snapshot);
