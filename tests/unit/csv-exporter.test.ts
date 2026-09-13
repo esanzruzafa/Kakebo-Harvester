@@ -102,6 +102,13 @@ describe("CSV export", () => {
           kind: "manual",
           header: "Manual note",
           enabled: true
+        },
+        {
+          id: "33333333-3333-4333-8333-333333333333",
+          kind: "formula",
+          header: "Tiny number",
+          enabled: true,
+          formula: "1 / 9007199254740991"
         }
       );
       await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
@@ -161,6 +168,9 @@ describe("CSV export", () => {
         expect(values.get("movement-one")?.[manualIndex]).toBe("  Edited manual  ");
         expect(values.get("movement-two")?.[formulaIndex]).toBe("=TEA");
         expect(values.get("movement-two")?.[manualIndex]).toBeNull();
+        const workbook = unzipSync(await readFile(second.path));
+        const styles = Buffer.from(workbook["xl/styles.xml"] ?? []).toString("utf8");
+        expect(styles).not.toContain("#,##0.###############");
       }
     }
   );

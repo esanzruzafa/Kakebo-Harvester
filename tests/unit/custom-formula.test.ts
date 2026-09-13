@@ -27,6 +27,8 @@ describe("custom export formulas", () => {
     expect(() => customFormulaSchema.parse("9007199254740993 - 9007199254740992")).toThrow(
       /invalid/i
     );
+    expect(() => customFormulaSchema.parse("1.0000000000000001")).toThrow(/invalid/i);
+    expect(() => customFormulaSchema.parse("900719925474099.3")).toThrow(/invalid/i);
   });
 
   it("rounds decimal boundaries and short-circuits coalesce", () => {
@@ -38,6 +40,9 @@ describe("custom export formulas", () => {
   it("rejects arithmetic results outside the finite number range", () => {
     const formula = Array.from({ length: 20 }, () => "9007199254740991").join(" * ");
     expect(() => evaluateCustomFormula(formula, {})).toThrow(
+      /invalid custom formula value/i
+    );
+    expect(() => evaluateCustomFormula("9007199254740990 + 3", {})).toThrow(
       /invalid custom formula value/i
     );
   });

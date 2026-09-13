@@ -721,7 +721,7 @@ export class CsvExporter {
             return { value, type: Date, format: "yyyy-mm-dd", ...background };
           }
           if (typeof value === "number") {
-            return { value, type: Number, format: "#,##0.###############", ...background };
+            return { value, type: Number, ...background };
           }
           if (typeof value === "boolean") {
             return { value, type: Boolean, ...background };

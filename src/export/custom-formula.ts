@@ -16,6 +16,23 @@ type Token =
   | { type: "punctuation"; value: "(" | ")" | "," }
   | { type: "end" };
 
+function normalizeDecimalLiteral(input: string): string {
+  const [coefficient, exponentText] = input.toLowerCase().split("e");
+  const exponent = Number(exponentText ?? "0");
+  const [integer = "", fraction = ""] = coefficient?.split(".") ?? [];
+  const digits = `${integer}${fraction}`;
+  const decimalIndex = integer.length + exponent;
+  const expanded = decimalIndex <= 0
+    ? `0.${"0".repeat(-decimalIndex)}${digits}`
+    : decimalIndex >= digits.length
+      ? `${digits}${"0".repeat(decimalIndex - digits.length)}`
+      : `${digits.slice(0, decimalIndex)}.${digits.slice(decimalIndex)}`;
+  const [whole = "", decimal = ""] = expanded.split(".");
+  const normalizedWhole = whole.replace(/^0+(?=\d)/u, "") || "0";
+  const normalizedDecimal = decimal.replace(/0+$/u, "");
+  return normalizedDecimal ? `${normalizedWhole}.${normalizedDecimal}` : normalizedWhole;
+}
+
 const validFunctions = new Set(["upper", "lower", "coalesce", "concat", "round"]);
 const validIdentifiers = new Set([
   "movementKey", "date", "valueDate", "bank", "account", "accountAlias", "productType",
@@ -140,7 +157,9 @@ function tokenize(formula: string): Token[] {
     const number = /^(?:\d+\.\d*|\d*\.\d+|\d+)/u.exec(input)?.[0];
     if (number) {
       const value = Number(number);
-      if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
+      if (!Number.isFinite(value) ||
+          (Number.isInteger(value) && !Number.isSafeInteger(value)) ||
+          normalizeDecimalLiteral(number) !== normalizeDecimalLiteral(value.toString())) {
         throw new Error("Invalid custom formula.");
       }
       tokens.push({ type: "number", value });
@@ -207,7 +226,9 @@ function numberValue(value: CustomFormulaValue): number {
 }
 
 function finiteNumber(value: number): number {
-  if (!Number.isFinite(value)) throw new Error("Invalid custom formula value.");
+  if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
+    throw new Error("Invalid custom formula value.");
+  }
   return value;
 }
 
