@@ -319,6 +319,17 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+async function assertUnlinkedExportDirectory(directory: string): Promise<void> {
+  try {
+    if ((await lstat(directory)).isSymbolicLink()) {
+      throw new ExportError("Refusing to regenerate exports through a symbolic link directory.");
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+}
+
 async function archiveOutput(
   config: AppConfig,
   path: string,
@@ -590,6 +601,9 @@ export class CsvExporter {
     let destinationInstalled = false;
     let committed = false;
     try {
+      if (options.discardPreviousOutput) {
+        await assertUnlinkedExportDirectory(this.config.exportDirectory);
+      }
       await mkdir(this.config.exportDirectory, { recursive: true });
       const previous = await readExportState(statePath);
       const compatible = previous?.fingerprint === fingerprint && previous.format === settings.format;

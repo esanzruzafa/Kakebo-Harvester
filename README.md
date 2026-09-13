@@ -106,12 +106,12 @@ its local provider session.
   fails, the completed local deletion is retained and the application shows a
   warning.
 
-When deleting history, Kakebo Harvester may remove a raw response only when it
-is a regular file directly inside the configured raw-data folder and no other
-local record owns it. Shared, missing, linked, outside-folder, ambiguous, or
-locked/failed raw files are never removed recursively; they are retained and
-reported as warnings. Account removal is scoped to the current local
-environment.
+When deleting history, Kakebo Harvester may remove an exclusively owned regular
+raw response directly inside the configured raw-data folder or in RawStore's
+`<date>/<account>/<file>` layout. Shared, missing, linked, outside-folder,
+ambiguous, or locked/failed raw files are never removed recursively; they are
+retained and reported as warnings. Account removal is scoped to the current
+local environment.
 
 When an ASPSP returns `WRONG_TRANSACTIONS_PERIOD`, Kakebo Harvester retries that account with Enable Banking's `longest` strategy. Pagination continues with the same request parameters, and only movements inside the date interval selected in the application are added to SQLite and exports. Movements without any valid booking, transaction, or value date are excluded because they cannot be proven to belong to that interval; the optional raw response remains available for diagnosis.
 

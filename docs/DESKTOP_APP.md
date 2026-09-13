@@ -258,12 +258,12 @@ current export is regenerated. Export failure is reported as a follow-up
 warning and does not reverse the committed local database deletion.
 
 Raw-file cleanup runs only after the destructive database transaction. It can
-unlink only a regular file directly below `rawDataDirectory` when the selected
-account is its sole local owner. It refuses and warns for shared, missing,
-symbolic-link/junction, outside-root, ambiguous, or failed paths. It never
-follows links and never recursively removes a directory, so an unsafe raw file
-does not broaden the deletion or make the completed database operation appear
-to have failed.
+unlink an exclusively owned regular file directly below `rawDataDirectory` or
+in RawStore's `<date>/<account>/<file>` layout. It verifies each accepted
+parent directory without following links, and refuses and warns for shared,
+missing, symbolic-link/junction, outside-root, ambiguous, or failed paths. It
+never recursively removes a directory, so an unsafe raw file does not broaden
+the deletion or make the completed database operation appear to have failed.
 
 Account identity reconciliation is deliberately conservative. An unchanged provider UID always updates its existing account. A changed UID can reuse an existing account only when the provider supplies that account's previously stored canonical hash, the hash descriptor is based on `account.account_id.iban`, and the masked IBAN also agrees. Name-, bank-, and country-based hashes are never identity evidence, and historical alternate-hash mappings are not authoritative. Ambiguity therefore creates a separate account instead of destructively merging two real accounts.
 

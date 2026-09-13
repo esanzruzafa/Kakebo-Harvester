@@ -237,6 +237,27 @@ describe("CSV export", () => {
     database.close();
   });
 
+  it("refuses a privacy purge regeneration through a linked export directory", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-purge-linked-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = "csv";
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+    const linkedTarget = join(root, "linked-export-target");
+    await mkdir(linkedTarget, { recursive: true });
+    await writeFile(join(linkedTarget, "kakebo_movements.csv"), "must remain");
+    await symlink(linkedTarget, config.exportDirectory, "junction");
+
+    await expect(
+      new CsvExporter(config, database).export({ discardPreviousOutput: true })
+    ).rejects.toThrow("Kakebo Harvester could not generate the export file.");
+    await expect(
+      readFile(join(linkedTarget, "kakebo_movements.csv"), "utf8")
+    ).resolves.toBe("must remain");
+    database.close();
+  });
+
   it("resets source-key baselines when regenerating after a privacy purge", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-export-purge-baseline-"));
     const config = testConfig(root);
