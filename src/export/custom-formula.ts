@@ -16,6 +16,8 @@ type Token =
   | { type: "punctuation"; value: "(" | ")" | "," }
   | { type: "end" };
 
+type StaticFormulaType = "number" | "string" | "boolean" | "null" | "unknown";
+
 function normalizeDecimalLiteral(input: string): string {
   const [coefficient, exponentText] = input.toLowerCase().split("e");
   const exponent = Number(exponentText ?? "0");
@@ -215,7 +217,36 @@ function tokenize(formula: string): Token[] {
 }
 
 export function parseCustomFormula(formula: string): FormulaNode {
-  return new FormulaParser(tokenize(formula)).parse();
+  const expression = new FormulaParser(tokenize(formula)).parse();
+  validateStaticTypes(expression);
+  return expression;
+}
+
+function validateStaticTypes(node: FormulaNode): StaticFormulaType {
+  if (node.type === "literal") {
+    if (node.value === null) return "null";
+    if (typeof node.value === "number") return "number";
+    if (typeof node.value === "string") return "string";
+    return "boolean";
+  }
+  if (node.type === "identifier") return "unknown";
+  if (node.type === "binary") {
+    const left = validateStaticTypes(node.left);
+    const right = validateStaticTypes(node.right);
+    if (node.operator !== "+" &&
+        (left !== "number" && left !== "unknown" || right !== "number" && right !== "unknown")) {
+      throw new Error("Invalid custom formula.");
+    }
+    return node.operator === "+" && (left !== "number" || right !== "number") ? "string" : "number";
+  }
+  const arguments_ = node.arguments.map(validateStaticTypes);
+  if (node.name === "round") {
+    const valueType = arguments_[0];
+    if (valueType !== "number" && valueType !== "unknown") throw new Error("Invalid custom formula.");
+    return "number";
+  }
+  if (node.name === "upper" || node.name === "lower" || node.name === "concat") return "string";
+  return "unknown";
 }
 
 function numberValue(value: CustomFormulaValue): number {
@@ -232,13 +263,36 @@ function finiteNumber(value: number): number {
   return value;
 }
 
+function decimalParts(value: number): { coefficient: bigint; scale: number } {
+  const sign = value < 0 ? -1n : 1n;
+  const [whole, fraction = ""] = normalizeDecimalLiteral(Math.abs(value).toString()).split(".");
+  return { coefficient: sign * BigInt(`${whole ?? "0"}${fraction}`), scale: fraction.length };
+}
+
+function decimalNumber(coefficient: bigint, scale: number): number {
+  const sign = coefficient < 0n ? "-" : "";
+  const digits = (coefficient < 0n ? -coefficient : coefficient).toString().padStart(scale + 1, "0");
+  const value = scale === 0
+    ? `${sign}${digits}`
+    : `${sign}${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
+  return finiteNumber(Number(value));
+}
+
+function multiplyDecimal(left: number, right: number): number {
+  const leftParts = decimalParts(left);
+  const rightParts = decimalParts(right);
+  return decimalNumber(leftParts.coefficient * rightParts.coefficient, leftParts.scale + rightParts.scale);
+}
+
 function textValue(value: CustomFormulaValue): string {
   return value === null ? "" : String(value);
 }
 
 function shiftDecimal(value: number, exponent: number): number {
   const [coefficient, currentExponent = "0"] = value.toString().split("e");
-  return finiteNumber(Number(`${coefficient ?? "0"}e${Number(currentExponent) + exponent}`));
+  const shifted = Number(`${coefficient ?? "0"}e${Number(currentExponent) + exponent}`);
+  if (!Number.isFinite(shifted)) throw new Error("Invalid custom formula value.");
+  return shifted;
 }
 
 function evaluate(
@@ -262,7 +316,7 @@ function evaluate(
     const leftNumber = numberValue(left);
     const rightNumber = numberValue(right);
     if (node.operator === "-") return finiteNumber(leftNumber - rightNumber);
-    if (node.operator === "*") return finiteNumber(leftNumber * rightNumber);
+    if (node.operator === "*") return multiplyDecimal(leftNumber, rightNumber);
     if (rightNumber === 0) throw new Error("Invalid custom formula value.");
     return finiteNumber(leftNumber / rightNumber);
   }
@@ -292,7 +346,7 @@ function evaluate(
       const value = numberValue(arguments_[0] ?? null);
       const shifted = shiftDecimal(Math.abs(value), precision);
       const rounded = Math.round(shifted);
-      return shiftDecimal(value < 0 ? -rounded : rounded, -precision);
+      return finiteNumber(shiftDecimal(value < 0 ? -rounded : rounded, -precision));
     }
   }
 }

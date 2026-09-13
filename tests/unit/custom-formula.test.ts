@@ -8,6 +8,7 @@ import {
 describe("custom export formulas", () => {
   it("evaluates arithmetic, source values, and approved functions", () => {
     expect(evaluateCustomFormula("amount * 2", { amount: 12 })).toBe(24);
+    expect(evaluateCustomFormula("0.07 * 3", {})).toBe(0.21);
     expect(
       evaluateCustomFormula("upper(description)", { description: "coffee" })
     ).toBe("COFFEE");
@@ -29,6 +30,8 @@ describe("custom export formulas", () => {
     );
     expect(() => customFormulaSchema.parse("1.0000000000000001")).toThrow(/invalid/i);
     expect(() => customFormulaSchema.parse("900719925474099.3")).toThrow(/invalid/i);
+    expect(() => customFormulaSchema.parse('round("x")')).toThrow(/invalid/i);
+    expect(() => customFormulaSchema.parse('1 / "x"')).toThrow(/invalid/i);
   });
 
   it("rounds decimal boundaries and short-circuits coalesce", () => {
@@ -51,6 +54,7 @@ describe("custom export formulas", () => {
     expect(evaluateCustomFormula("round(1.005, 2)", {})).toBe(1.01);
     expect(evaluateCustomFormula("round(amount, 2)", { amount: -1.005 })).toBe(-1.01);
     expect(evaluateCustomFormula("round(0.0000001, 2)", {})).toBe(0);
+    expect(evaluateCustomFormula("round(10, 15)", {})).toBe(10);
   });
 
 });
