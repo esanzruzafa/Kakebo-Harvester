@@ -197,16 +197,6 @@ export function parseCustomFormula(formula: string): FormulaNode {
   return new FormulaParser(tokenize(formula)).parse();
 }
 
-export function customFormulaReferences(formula: string, identifier: string): boolean {
-  const references = (node: FormulaNode): boolean => {
-    if (node.type === "identifier") return node.name === identifier;
-    if (node.type === "literal") return false;
-    if (node.type === "binary") return references(node.left) || references(node.right);
-    return node.arguments.some(references);
-  };
-  return references(parseCustomFormula(formula));
-}
-
 function numberValue(value: CustomFormulaValue): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error("Invalid custom formula value.");
@@ -223,12 +213,24 @@ function textValue(value: CustomFormulaValue): string {
   return value === null ? "" : String(value);
 }
 
-function evaluate(node: FormulaNode, values: Readonly<Record<string, CustomFormulaValue>>): CustomFormulaValue {
+function shiftDecimal(value: number, exponent: number): number {
+  const [coefficient, currentExponent = "0"] = value.toString().split("e");
+  return finiteNumber(Number(`${coefficient ?? "0"}e${Number(currentExponent) + exponent}`));
+}
+
+function evaluate(
+  node: FormulaNode,
+  values: Readonly<Record<string, CustomFormulaValue>>,
+  onIdentifier?: (identifier: string) => void
+): CustomFormulaValue {
   if (node.type === "literal") return node.value;
-  if (node.type === "identifier") return values[node.name] ?? null;
+  if (node.type === "identifier") {
+    onIdentifier?.(node.name);
+    return values[node.name] ?? null;
+  }
   if (node.type === "binary") {
-    const left = evaluate(node.left, values);
-    const right = evaluate(node.right, values);
+    const left = evaluate(node.left, values, onIdentifier);
+    const right = evaluate(node.right, values, onIdentifier);
     if (node.operator === "+") {
       return typeof left === "number" && typeof right === "number"
         ? finiteNumber(left + right)
@@ -243,12 +245,12 @@ function evaluate(node: FormulaNode, values: Readonly<Record<string, CustomFormu
   }
   if (node.name === "coalesce") {
     for (const argument of node.arguments) {
-      const value = evaluate(argument, values);
+      const value = evaluate(argument, values, onIdentifier);
       if (value !== null) return value;
     }
     return null;
   }
-  const arguments_ = node.arguments.map((argument) => evaluate(argument, values));
+  const arguments_ = node.arguments.map((argument) => evaluate(argument, values, onIdentifier));
   switch (node.name) {
     case "upper":
       if (arguments_.length !== 1) throw new Error("Invalid custom formula.");
@@ -265,18 +267,19 @@ function evaluate(node: FormulaNode, values: Readonly<Record<string, CustomFormu
         throw new Error("Invalid custom formula value.");
       }
       const value = numberValue(arguments_[0] ?? null);
-      const shifted = finiteNumber(Number(`${Math.abs(value)}e${precision}`));
+      const shifted = shiftDecimal(Math.abs(value), precision);
       const rounded = Math.round(shifted);
-      return finiteNumber(Number(`${value < 0 ? -rounded : rounded}e-${precision}`));
+      return shiftDecimal(value < 0 ? -rounded : rounded, -precision);
     }
   }
 }
 
 export function evaluateCustomFormula(
   formula: string,
-  values: Readonly<Record<string, CustomFormulaValue>>
+  values: Readonly<Record<string, CustomFormulaValue>>,
+  onIdentifier?: (identifier: string) => void
 ): CustomFormulaValue {
-  return evaluate(parseCustomFormula(formula), values);
+  return evaluate(parseCustomFormula(formula), values, onIdentifier);
 }
 
 export const customFormulaSchema = z.string().trim().min(1).max(500).superRefine((formula, context) => {

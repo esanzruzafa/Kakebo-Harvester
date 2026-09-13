@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  customFormulaReferences,
   customFormulaSchema,
   evaluateCustomFormula,
   parseCustomFormula
@@ -42,10 +41,7 @@ describe("custom export formulas", () => {
   it("rounds negative midpoint values away from zero", () => {
     expect(evaluateCustomFormula("round(1.005, 2)", {})).toBe(1.01);
     expect(evaluateCustomFormula("round(amount, 2)", { amount: -1.005 })).toBe(-1.01);
+    expect(evaluateCustomFormula("round(0.0000001, 2)", {})).toBe(0);
   });
 
-  it("recognizes identifiers without matching text in string literals", () => {
-    expect(customFormulaReferences('concat("amount: ", description)', "amount")).toBe(false);
-    expect(customFormulaReferences("amount * 2", "amount")).toBe(true);
-  });
 });

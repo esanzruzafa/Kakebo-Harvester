@@ -21,7 +21,6 @@ import { z } from "zod";
 import type { AppConfig } from "../config.js";
 import { ExportError } from "../errors.js";
 import {
-  customFormulaReferences,
   evaluateCustomFormula,
   type CustomFormulaValue
 } from "./custom-formula.js";
@@ -311,14 +310,15 @@ function customValue(
   if (persisted !== undefined) return persisted;
   if (column.kind === "manual") return "";
   if (!column.formula) throw new Error("Formula export columns require a formula.");
-  if (customFormulaReferences(column.formula, "amount") && exactSpreadsheetNumber(row.amount) === null) {
-    throw new Error("Custom formulas cannot use an amount that is not exactly representable.");
-  }
-  return evaluateCustomFormula(column.formula, formulaValues(row));
+  return evaluateCustomFormula(column.formula, formulaValues(row), (identifier) => {
+    if (identifier === "amount" && exactSpreadsheetNumber(row.amount) === null) {
+      throw new Error("Custom formulas cannot use an amount that is not exactly representable.");
+    }
+  });
 }
 
 function safeCustomValue(value: CustomExportValue): CustomExportValue {
-  return typeof value === "string" ? safeSpreadsheetText(value) : value;
+  return value;
 }
 
 function csvCustomValue(value: CustomExportValue, decimalSeparator: "." | ","): ExportValue {
@@ -396,7 +396,7 @@ async function previousCustomValues(
     rows = parseCsv((await readFile(path, "utf8")).replace(/^\uFEFF/u, ""), settings.csv.fieldSeparator);
   } else {
     try {
-      rows = await readSheet(path, "Movements");
+      rows = await readSheet(path, "Movements", { trim: false });
     } catch (error) {
       if (error instanceof Error && error.name === "SheetNotFoundError") return new Map();
       throw error;

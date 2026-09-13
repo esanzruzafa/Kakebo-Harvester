@@ -95,7 +95,7 @@ describe("CSV export", () => {
           kind: "formula",
           header: "Formula label",
           enabled: true,
-          formula: "upper(description)"
+          formula: 'concat("=", upper(description))'
         },
         {
           id: "22222222-2222-4222-8222-222222222222",
@@ -125,7 +125,7 @@ describe("CSV export", () => {
           header.map((column) => ({
             value: "field" in column
               ? column.field === "movementKey" ? "movement-one" : "source value"
-              : column.kind === "formula" ? "Edited formula" : "Edited manual",
+              : column.kind === "formula" ? "Edited formula" : "  Edited manual  ",
             type: String
           }))
         ];
@@ -148,18 +148,18 @@ describe("CSV export", () => {
         const values = new Map(rows.slice(1).map((row) => [row[movementIndex], row]));
         expect(values.get("movement-one")?.[formulaIndex]).toBe("Edited formula");
         expect(values.get("movement-one")?.[manualIndex]).toBe("Edited manual");
-        expect(values.get("movement-two")?.[formulaIndex]).toBe("TEA");
+        expect(values.get("movement-two")?.[formulaIndex]).toBe("'=TEA");
         expect(values.get("movement-two")?.[manualIndex]).toBe("");
       } else {
-        const rows = await readSheet(second.path);
+        const rows = await readSheet(second.path, { trim: false });
         const header = rows[0]?.map(String) ?? [];
         const formulaIndex = header.indexOf("Formula label");
         const manualIndex = header.indexOf("Manual note");
         const movementIndex = header.indexOf("MovementKey");
         const values = new Map(rows.slice(1).map((row) => [String(row[movementIndex]), row]));
         expect(values.get("movement-one")?.[formulaIndex]).toBe("Edited formula");
-        expect(values.get("movement-one")?.[manualIndex]).toBe("Edited manual");
-        expect(values.get("movement-two")?.[formulaIndex]).toBe("TEA");
+        expect(values.get("movement-one")?.[manualIndex]).toBe("  Edited manual  ");
+        expect(values.get("movement-two")?.[formulaIndex]).toBe("=TEA");
         expect(values.get("movement-two")?.[manualIndex]).toBeNull();
       }
     }
@@ -209,12 +209,19 @@ describe("CSV export", () => {
       header: "Literal",
       enabled: true,
       formula: 'concat("amount: ", description)'
+    }, {
+      id: "22222222-2222-4222-8222-222222222222",
+      kind: "formula",
+      header: "Coalesced",
+      enabled: true,
+      formula: "coalesce(description, amount)"
     });
     await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
 
     const result = await new CsvExporter(config, database).export();
 
     await expect(readFile(result.path, "utf8")).resolves.toContain("amount: Coffee");
+    await expect(readFile(result.path, "utf8")).resolves.toContain("Coffee");
     database.close();
   });
 
