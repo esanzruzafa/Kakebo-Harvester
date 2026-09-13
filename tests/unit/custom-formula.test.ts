@@ -12,6 +12,8 @@ describe("custom export formulas", () => {
     expect(evaluateCustomFormula("0.1 + 0.2", {})).toBe(0.3);
     expect(evaluateCustomFormula("0.3 - 0.1", {})).toBe(0.2);
     expect(evaluateCustomFormula("0.3 / 0.1", {})).toBe(3);
+    expect(evaluateCustomFormula("(10 / 3) + 1", {})).toBeCloseTo(13 / 3);
+    expect(evaluateCustomFormula("(10 / 3) * 3", {})).toBe(10);
     expect(evaluateCustomFormula("(amount + 1) * 2", { amount: 2 })).toBe(6);
     expect(
       evaluateCustomFormula("upper(description)", { description: "coffee" })
@@ -39,6 +41,10 @@ describe("custom export formulas", () => {
     expect(() => customFormulaSchema.parse('round(coalesce("x", 1))')).toThrow(/invalid/i);
     expect(() => customFormulaSchema.parse("round(description)")).toThrow(/invalid/i);
     expect(() => customFormulaSchema.parse("description - 1")).toThrow(/invalid/i);
+    expect(() => customFormulaSchema.parse("1 / 0")).toThrow(/invalid/i);
+    expect(() => customFormulaSchema.parse("9007199254740991 * 2")).toThrow(/invalid/i);
+    expect(() => customFormulaSchema.parse('concat(description, 9007199254740991 * 2)')).toThrow(/invalid/i);
+    expect(() => customFormulaSchema.parse('coalesce("kept", 1 / 0)')).not.toThrow();
   });
 
   it("rounds decimal boundaries and short-circuits coalesce", () => {
@@ -58,9 +64,7 @@ describe("custom export formulas", () => {
     expect(() => evaluateCustomFormula("900719925474099.1 * 3", {})).toThrow(
       /invalid custom formula value/i
     );
-    expect(() => evaluateCustomFormula("0.000000001 / 9007199254740991", {})).toThrow(
-      /invalid custom formula value/i
-    );
+    expect(evaluateCustomFormula("0.000000001 / 9007199254740991", {})).toBeGreaterThan(0);
   });
 
   it("rounds negative midpoint values away from zero", () => {
@@ -68,6 +72,7 @@ describe("custom export formulas", () => {
     expect(evaluateCustomFormula("round(amount, 2)", { amount: -1.005 })).toBe(-1.01);
     expect(evaluateCustomFormula("round(0.0000001, 2)", {})).toBe(0);
     expect(evaluateCustomFormula("round(10, 15)", {})).toBe(10);
+    expect(evaluateCustomFormula("round(999999999999999.1, 1)", {})).toBe(999999999999999.1);
   });
 
 });

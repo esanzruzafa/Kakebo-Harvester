@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export type CustomFormulaValue = string | number | boolean | null;
+type EvaluationValue = string | boolean | null | Rational;
 
 type FormulaNode =
   | { type: "literal"; value: CustomFormulaValue }
@@ -219,6 +220,7 @@ function tokenize(formula: string): Token[] {
 export function parseCustomFormula(formula: string): FormulaNode {
   const expression = new FormulaParser(tokenize(formula)).parse();
   validateStaticTypes(expression);
+  validateConstantValues(expression);
   return expression;
 }
 
@@ -257,13 +259,6 @@ function validateStaticTypes(node: FormulaNode): StaticFormulaType {
   return "null";
 }
 
-function numberValue(value: CustomFormulaValue): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error("Invalid custom formula value.");
-  }
-  return value;
-}
-
 function finiteNumber(value: number): number {
   if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
     throw new Error("Invalid custom formula value.");
@@ -277,85 +272,137 @@ function decimalParts(value: number): { coefficient: bigint; scale: number } {
   return { coefficient: sign * BigInt(`${whole ?? "0"}${fraction}`), scale: fraction.length };
 }
 
-function decimalNumber(coefficient: bigint, scale: number, requireExact = true): number {
-  const sign = coefficient < 0n ? "-" : "";
-  const digits = (coefficient < 0n ? -coefficient : coefficient).toString().padStart(scale + 1, "0");
-  const value = scale === 0
-    ? `${sign}${digits}`
-    : `${sign}${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
-  const number = finiteNumber(Number(value));
-  if (requireExact && normalizeDecimalLiteral(value) !== normalizeDecimalLiteral(number.toString())) {
-    throw new Error("Invalid custom formula value.");
+function greatestCommonDivisor(left: bigint, right: bigint): bigint {
+  let dividend = left < 0n ? -left : left;
+  let divisor = right < 0n ? -right : right;
+  while (divisor !== 0n) [dividend, divisor] = [divisor, dividend % divisor];
+  return dividend;
+}
+
+class Rational {
+  public readonly numerator: bigint;
+  public readonly denominator: bigint;
+
+  public constructor(numerator: bigint, denominator = 1n) {
+    if (denominator === 0n) throw new Error("Invalid custom formula value.");
+    const sign = denominator < 0n ? -1n : 1n;
+    const divisor = greatestCommonDivisor(numerator, denominator);
+    this.numerator = sign * numerator / divisor;
+    this.denominator = sign * denominator / divisor;
   }
-  return number;
+
+  public static fromNumber(value: number): Rational {
+    if (!Number.isFinite(value)) throw new Error("Invalid custom formula value.");
+    const { coefficient, scale } = decimalParts(value);
+    return new Rational(coefficient, 10n ** BigInt(scale));
+  }
+
+  public add(other: Rational): Rational {
+    return new Rational(
+      this.numerator * other.denominator + other.numerator * this.denominator,
+      this.denominator * other.denominator
+    );
+  }
+
+  public subtract(other: Rational): Rational {
+    return new Rational(
+      this.numerator * other.denominator - other.numerator * this.denominator,
+      this.denominator * other.denominator
+    );
+  }
+
+  public multiply(other: Rational): Rational {
+    return new Rational(this.numerator * other.numerator, this.denominator * other.denominator);
+  }
+
+  public divide(other: Rational): Rational {
+    if (other.numerator === 0n) throw new Error("Invalid custom formula value.");
+    return new Rational(this.numerator * other.denominator, this.denominator * other.numerator);
+  }
+
+  public round(precision: number): Rational {
+    const scale = 10n ** BigInt(precision);
+    const absolute = this.numerator < 0n ? -this.numerator : this.numerator;
+    const rounded = (absolute * scale * 2n + this.denominator) / (this.denominator * 2n);
+    return new Rational(this.numerator < 0n ? -rounded : rounded, scale);
+  }
+
+  public toNumber(): number {
+    const decimal = this.terminatingDecimal();
+    const number = finiteNumber(decimal ? Number(decimal) : Number(this.numerator) / Number(this.denominator));
+    if (decimal && normalizeDecimalLiteral(decimal) !== normalizeDecimalLiteral(number.toString())) {
+      throw new Error("Invalid custom formula value.");
+    }
+    return number;
+  }
+
+  private terminatingDecimal(): string | undefined {
+    let denominator = this.denominator;
+    let twos = 0;
+    let fives = 0;
+    while (denominator % 2n === 0n) {
+      denominator /= 2n;
+      twos += 1;
+    }
+    while (denominator % 5n === 0n) {
+      denominator /= 5n;
+      fives += 1;
+    }
+    if (denominator !== 1n) return undefined;
+    const scale = Math.max(twos, fives);
+    const coefficient = this.numerator * 2n ** BigInt(scale - twos) * 5n ** BigInt(scale - fives);
+    const sign = coefficient < 0n ? "-" : "";
+    const digits = (coefficient < 0n ? -coefficient : coefficient).toString().padStart(scale + 1, "0");
+    return scale === 0 ? `${sign}${digits}` : `${sign}${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
+  }
 }
 
-function multiplyDecimal(left: number, right: number): number {
-  const leftParts = decimalParts(left);
-  const rightParts = decimalParts(right);
-  return decimalNumber(leftParts.coefficient * rightParts.coefficient, leftParts.scale + rightParts.scale);
+function rationalValue(value: EvaluationValue): Rational {
+  if (!(value instanceof Rational)) throw new Error("Invalid custom formula value.");
+  return value;
 }
 
-function addDecimal(left: number, right: number): number {
-  const leftParts = decimalParts(left);
-  const rightParts = decimalParts(right);
-  const scale = Math.max(leftParts.scale, rightParts.scale);
-  const leftCoefficient = leftParts.coefficient * 10n ** BigInt(scale - leftParts.scale);
-  const rightCoefficient = rightParts.coefficient * 10n ** BigInt(scale - rightParts.scale);
-  return decimalNumber(leftCoefficient + rightCoefficient, scale);
+function integerValue(value: EvaluationValue): number {
+  const rational = rationalValue(value);
+  if (rational.denominator !== 1n) throw new Error("Invalid custom formula value.");
+  return finiteNumber(Number(rational.numerator));
 }
 
-function divideDecimal(left: number, right: number): number {
-  const leftParts = decimalParts(left);
-  const rightParts = decimalParts(right);
-  if (rightParts.coefficient === 0n) throw new Error("Invalid custom formula value.");
-  const precision = 18;
-  const exponent = precision + rightParts.scale - leftParts.scale;
-  const numerator = exponent >= 0
-    ? leftParts.coefficient * 10n ** BigInt(exponent)
-    : leftParts.coefficient;
-  const denominator = exponent >= 0
-    ? rightParts.coefficient
-    : rightParts.coefficient * 10n ** BigInt(-exponent);
-  const quotient = numerator / denominator;
-  if (numerator !== 0n && quotient === 0n) throw new Error("Invalid custom formula value.");
-  return decimalNumber(quotient, precision, false);
+function textValue(value: EvaluationValue): string {
+  if (value === null) return "";
+  return value instanceof Rational ? String(value.toNumber()) : String(value);
 }
 
-function textValue(value: CustomFormulaValue): string {
-  return value === null ? "" : String(value);
-}
-
-function shiftDecimal(value: number, exponent: number): number {
-  const [coefficient, currentExponent = "0"] = value.toString().split("e");
-  const shifted = Number(`${coefficient ?? "0"}e${Number(currentExponent) + exponent}`);
-  if (!Number.isFinite(shifted)) throw new Error("Invalid custom formula value.");
-  return shifted;
+function externalValue(value: EvaluationValue): CustomFormulaValue {
+  return value instanceof Rational ? value.toNumber() : value;
 }
 
 function evaluate(
   node: FormulaNode,
   values: Readonly<Record<string, CustomFormulaValue>>,
   onIdentifier?: (identifier: string) => void
-): CustomFormulaValue {
-  if (node.type === "literal") return node.value;
+): EvaluationValue {
+  if (node.type === "literal") {
+    return typeof node.value === "number" ? Rational.fromNumber(node.value) : node.value;
+  }
   if (node.type === "identifier") {
     onIdentifier?.(node.name);
-    return values[node.name] ?? null;
+    const value = values[node.name] ?? null;
+    return typeof value === "number" ? Rational.fromNumber(value) : value;
   }
   if (node.type === "binary") {
     const left = evaluate(node.left, values, onIdentifier);
     const right = evaluate(node.right, values, onIdentifier);
     if (node.operator === "+") {
-      return typeof left === "number" && typeof right === "number"
-        ? addDecimal(left, right)
+      return left instanceof Rational && right instanceof Rational
+        ? left.add(right)
         : textValue(left) + textValue(right);
     }
-    const leftNumber = numberValue(left);
-    const rightNumber = numberValue(right);
-    if (node.operator === "-") return addDecimal(leftNumber, -rightNumber);
-    if (node.operator === "*") return multiplyDecimal(leftNumber, rightNumber);
-    return divideDecimal(leftNumber, rightNumber);
+    const leftNumber = rationalValue(left);
+    const rightNumber = rationalValue(right);
+    if (node.operator === "-") return leftNumber.subtract(rightNumber);
+    if (node.operator === "*") return leftNumber.multiply(rightNumber);
+    return leftNumber.divide(rightNumber);
   }
   if (node.name === "coalesce") {
     for (const argument of node.arguments) {
@@ -376,16 +423,58 @@ function evaluate(
       return arguments_.map(textValue).join("");
     case "round": {
       if (arguments_.length < 1 || arguments_.length > 2) throw new Error("Invalid custom formula.");
-      const precision = arguments_.length === 2 ? numberValue(arguments_[1] ?? null) : 0;
+      const precision = arguments_.length === 2 ? integerValue(arguments_[1] ?? null) : 0;
       if (!Number.isInteger(precision) || precision < 0 || precision > 15) {
         throw new Error("Invalid custom formula value.");
       }
-      const value = numberValue(arguments_[0] ?? null);
-      const shifted = shiftDecimal(Math.abs(value), precision);
-      const rounded = Math.round(shifted);
-      return finiteNumber(shiftDecimal(value < 0 ? -rounded : rounded, -precision));
+      return rationalValue(arguments_[0] ?? null).round(precision);
     }
   }
+}
+
+type ConstantEvaluation = { constant: true; value: EvaluationValue } | { constant: false };
+
+function validateConstantValues(node: FormulaNode): void {
+  const result = evaluateConstant(node);
+  if (result.constant) externalValue(result.value);
+}
+
+function evaluateConstant(node: FormulaNode): ConstantEvaluation {
+  if (node.type === "literal") {
+    return { constant: true, value: typeof node.value === "number" ? Rational.fromNumber(node.value) : node.value };
+  }
+  if (node.type === "identifier") return { constant: false };
+  if (node.type === "binary") {
+    const left = evaluateConstant(node.left);
+    const right = evaluateConstant(node.right);
+    if (!left.constant || !right.constant) return { constant: false };
+    return { constant: true, value: validatedConstantValue(node) };
+  }
+  if (node.name === "coalesce") {
+    let allPreviousValuesWereConstant = true;
+    for (const argument of node.arguments) {
+      const result = evaluateConstant(argument);
+      if (!result.constant) {
+        allPreviousValuesWereConstant = false;
+        continue;
+      }
+      if (result.value !== null) {
+        return allPreviousValuesWereConstant
+          ? { constant: true, value: result.value }
+          : { constant: false };
+      }
+    }
+    return allPreviousValuesWereConstant ? { constant: true, value: null } : { constant: false };
+  }
+  const arguments_ = node.arguments.map(evaluateConstant);
+  if (arguments_.some((argument) => !argument.constant)) return { constant: false };
+  return { constant: true, value: validatedConstantValue(node) };
+}
+
+function validatedConstantValue(node: FormulaNode): EvaluationValue {
+  const value = evaluate(node, {});
+  externalValue(value);
+  return value;
 }
 
 export function evaluateCustomFormula(
@@ -393,7 +482,7 @@ export function evaluateCustomFormula(
   values: Readonly<Record<string, CustomFormulaValue>>,
   onIdentifier?: (identifier: string) => void
 ): CustomFormulaValue {
-  return evaluate(parseCustomFormula(formula), values, onIdentifier);
+  return externalValue(evaluate(parseCustomFormula(formula), values, onIdentifier));
 }
 
 export const customFormulaSchema = z.string().trim().min(1).max(500).superRefine((formula, context) => {
