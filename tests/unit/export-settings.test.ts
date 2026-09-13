@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ExportSettingsStore,
-  createDefaultExportSettings
+  createDefaultExportSettings,
+  exportSettingsFingerprint
 } from "../../src/settings/export-settings-store.js";
 import { exportSettingsSchema } from "../../src/settings/export-settings-store.js";
 
@@ -20,12 +21,15 @@ describe("export settings custom columns", () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-export-settings-"));
     const path = join(root, "export-settings.json");
     const defaults = createDefaultExportSettings(".");
-    await writeFile(path, JSON.stringify({ ...defaults, schemaVersion: undefined }));
+    const legacy = { ...defaults };
+    delete legacy.schemaVersion;
+    await writeFile(path, JSON.stringify(legacy));
 
     const loaded = await new ExportSettingsStore(path, defaults).load();
 
     expect(loaded.schemaVersion).toBe(2);
     expect(loaded.columns).toEqual(defaults.columns);
+    expect(exportSettingsFingerprint(loaded)).toBe(exportSettingsFingerprint(legacy));
   });
 
   it("requires one enabled movement key when an enabled custom column is present", async () => {

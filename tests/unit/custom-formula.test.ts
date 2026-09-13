@@ -16,6 +16,8 @@ describe("custom export formulas", () => {
     expect(evaluateCustomFormula("(10 / 3) * 3", {})).toBe(10);
     expect(evaluateCustomFormula("(amount * 9007199254740991 - 19) / 3", { amount: 2 }))
       .toBe(6004799503160654);
+    expect(evaluateCustomFormula("4604895721461865 / 2826355478429782", {}))
+      .toBe(1.629269834104581);
     expect(evaluateCustomFormula("amount / 10000000", { amount: -1 })).toBe(-0.0000001);
     expect(evaluateCustomFormula("(amount + 1) * 2", { amount: 2 })).toBe(6);
     expect(
@@ -46,6 +48,7 @@ describe("custom export formulas", () => {
     expect(() => customFormulaSchema.parse("description - 1")).toThrow(/invalid/i);
     expect(() => customFormulaSchema.parse("1 / 0")).toThrow(/invalid/i);
     expect(() => customFormulaSchema.parse("amount / 0")).toThrow(/invalid/i);
+    expect(() => customFormulaSchema.parse("(9007199254740991 * 2) / 2")).not.toThrow();
     expect(() => customFormulaSchema.parse("9007199254740991 * 2")).toThrow(/invalid/i);
     expect(() => customFormulaSchema.parse('concat(description, 9007199254740991 * 2)')).toThrow(/invalid/i);
     expect(() => customFormulaSchema.parse('coalesce("kept", 1 / 0)')).not.toThrow();

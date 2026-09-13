@@ -343,27 +343,37 @@ class Rational {
 
   private approximateNumber(): number {
     const absolute = this.numerator < 0n ? -this.numerator : this.numerator;
-    let exponent = absolute.toString().length - this.denominator.toString().length;
+    let exponent = absolute.toString(2).length - this.denominator.toString(2).length;
     const left = exponent >= 0
       ? absolute
-      : absolute * 10n ** BigInt(-exponent);
+      : absolute << BigInt(-exponent);
     const right = exponent >= 0
-      ? this.denominator * 10n ** BigInt(exponent)
+      ? this.denominator << BigInt(exponent)
       : this.denominator;
     if (left < right) exponent -= 1;
-    const significantDigits = 18;
-    const shift = significantDigits - 1 - exponent;
-    const numerator = shift >= 0 ? absolute * 10n ** BigInt(shift) : absolute;
-    const denominator = shift >= 0 ? this.denominator : this.denominator * 10n ** BigInt(-shift);
-    let digits = (numerator * 2n + denominator) / (denominator * 2n);
-    const limit = 10n ** BigInt(significantDigits);
-    if (digits >= limit) {
-      digits /= 10n;
+    if (exponent < -1022) {
+      const significand = this.roundedQuotient(absolute << 1074n, this.denominator);
+      return (this.numerator < 0n ? -1 : 1) * Number(significand) * 2 ** -1074;
+    }
+    const shift = 52 - exponent;
+    let significand = shift >= 0
+      ? this.roundedQuotient(absolute << BigInt(shift), this.denominator)
+      : this.roundedQuotient(absolute, this.denominator << BigInt(-shift));
+    if (significand === 2n ** 53n) {
+      significand = 2n ** 52n;
       exponent += 1;
     }
-    const coefficient = digits.toString().padStart(significantDigits, "0");
-    const sign = this.numerator < 0n ? "-" : "";
-    return Number(`${sign}${coefficient[0]}.${coefficient.slice(1)}e${exponent}`);
+    return (this.numerator < 0n ? -1 : 1) * Number(significand) * 2 ** (exponent - 52);
+  }
+
+  private roundedQuotient(numerator: bigint, denominator: bigint): bigint {
+    const quotient = numerator / denominator;
+    const remainder = numerator % denominator;
+    const doubledRemainder = remainder * 2n;
+    return doubledRemainder > denominator ||
+        (doubledRemainder === denominator && quotient % 2n !== 0n)
+      ? quotient + 1n
+      : quotient;
   }
 
   private terminatingDecimal(): string | undefined {
@@ -481,6 +491,10 @@ function evaluateConstant(node: FormulaNode): ConstantEvaluation {
         right.value instanceof Rational && right.value.numerator === 0n) {
       throw new Error("Invalid custom formula value.");
     }
+    if (node.operator === "+" && validateStaticTypes(node) === "string") {
+      if (left.constant) externalValue(left.value);
+      if (right.constant) externalValue(right.value);
+    }
     if (!left.constant || !right.constant) return { constant: false };
     return { constant: true, value: validatedConstantValue(node) };
   }
@@ -501,14 +515,15 @@ function evaluateConstant(node: FormulaNode): ConstantEvaluation {
     return allPreviousValuesWereConstant ? { constant: true, value: null } : { constant: false };
   }
   const arguments_ = node.arguments.map(evaluateConstant);
+  if (node.name === "upper" || node.name === "lower" || node.name === "concat") {
+    for (const argument of arguments_) if (argument.constant) externalValue(argument.value);
+  }
   if (arguments_.some((argument) => !argument.constant)) return { constant: false };
   return { constant: true, value: validatedConstantValue(node) };
 }
 
 function validatedConstantValue(node: FormulaNode): EvaluationValue {
-  const value = evaluate(node, {});
-  externalValue(value);
-  return value;
+  return evaluate(node, {});
 }
 
 export function evaluateCustomFormula(

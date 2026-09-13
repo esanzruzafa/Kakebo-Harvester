@@ -203,8 +203,10 @@ export function createDefaultExportSettings(
 }
 
 export function exportSettingsFingerprint(settings: ExportSettings): string {
+  const fingerprintedSettings = { ...settings };
+  delete fingerprintedSettings.schemaVersion;
   return createHash("sha256")
-    .update(JSON.stringify(settings))
+    .update(JSON.stringify(fingerprintedSettings))
     .digest("hex")
     .slice(0, 12);
 }
