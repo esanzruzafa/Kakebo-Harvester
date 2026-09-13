@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("kakebo", {
   resolveAccountFailure: (input) =>
     ipcRenderer.invoke("sync:account-failure:resolve", input),
   saveAccounts: (accounts) => ipcRenderer.invoke("accounts:save", accounts),
+  removeAccount: (input) => ipcRenderer.invoke("accounts:remove", input),
   saveCategorization: (configuration) =>
     ipcRenderer.invoke("categorization:save", configuration),
   saveExportSettings: (settings) =>

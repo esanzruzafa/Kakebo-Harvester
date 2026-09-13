@@ -320,6 +320,7 @@ export class DesktopRunRepository {
   public clear(): number {
     return this.database.transaction(() => {
       this.database.prepare("DELETE FROM desktop_run_accounts").run();
+      this.database.prepare("DELETE FROM local_account_removal_audit_events").run();
       return this.database.prepare("DELETE FROM desktop_runs").run().changes;
     })();
   }

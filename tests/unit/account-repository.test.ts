@@ -23,6 +23,32 @@ afterEach(async () => {
 });
 
 describe("account synchronization eligibility", () => {
+  it("rejects stale settings updates for a hidden account", () => {
+    const database = createDatabase(":memory:");
+    const now = new Date().toISOString();
+    database.prepare(
+      `INSERT INTO bank_connections (
+         id, provider, environment, bank_name, bank_country, psu_type, alias, status, created_at
+       ) VALUES ('connection', 'enable-banking', 'sandbox', 'Bank', 'ES', 'personal', 'Personal', 'AUTHORIZED', ?)`
+    ).run(now);
+    database.prepare(
+      `INSERT INTO accounts (
+         id, bank_connection_id, provider_account_id, name, hidden, sync_enabled, export_enabled,
+         active, first_seen_at, last_seen_at
+       ) VALUES ('hidden-account', 'connection', 'provider-account', 'Hidden', 1, 0, 0, 1, ?, ?)`
+    ).run(now, now);
+
+    expect(() => new AccountRepository(database).updateSettings([{
+      id: "hidden-account",
+      alias: "stale",
+      syncEnabled: true,
+      exportEnabled: true
+    }])).toThrow("Unknown account: hidden-account");
+    expect(database.prepare("SELECT hidden, sync_enabled, export_enabled FROM accounts WHERE id = 'hidden-account'").get())
+      .toEqual({ hidden: 1, sync_enabled: 0, export_enabled: 0 });
+    database.close();
+  });
+
   it("excludes accounts from revoked or reauthorization-required connections", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-account-repository-"));
     const config = testConfig(root);

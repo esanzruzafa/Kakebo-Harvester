@@ -18,6 +18,15 @@ export interface EditableDesktopState {
 
 export type EditableDrafts = Partial<EditableDesktopState>;
 
+export function hasSurvivingAccountDraft(
+  accounts: EditableAccount[],
+  drafts: EditableAccount[] | undefined
+): boolean {
+  if (!drafts) return false;
+  const accountIds = new Set(accounts.map((account) => account.id));
+  return drafts.some((draft) => accountIds.has(draft.id));
+}
+
 export function mergeEditableDrafts(
   fresh: EditableDesktopState,
   drafts: EditableDrafts

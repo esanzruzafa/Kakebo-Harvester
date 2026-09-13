@@ -81,6 +81,10 @@ describe("resetLocalData", () => {
         id, started_at, status, date_from, date_to, steps_json
       ) VALUES ('desktop-run', ?, 'SUCCESS', '2026-01-01', '2026-01-01', '[]')`)
       .run(now);
+    database
+      .prepare(`INSERT INTO local_account_removal_audit_events (id, action, outcome, occurred_at)
+        VALUES ('removal-audit', 'local-account-removal', 'deleted', ?)`)
+      .run(now);
     await mkdir(join(config.rawDataDirectory, "transactions"), { recursive: true });
     await writeFile(join(config.rawDataDirectory, ".gitkeep"), "");
     await writeFile(join(config.rawDataDirectory, "transactions", "sample.json"), "{}");
@@ -117,7 +121,8 @@ describe("resetLocalData", () => {
       "transactions_raw",
       "balances",
       "sync_runs",
-      "desktop_runs"
+      "desktop_runs",
+      "local_account_removal_audit_events"
     ]) {
       expect(database.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get()).toEqual({ total: 0 });
     }
