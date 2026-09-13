@@ -229,7 +229,11 @@ function validateStaticTypes(node: FormulaNode): StaticFormulaType {
     if (typeof node.value === "string") return "string";
     return "boolean";
   }
-  if (node.type === "identifier") return "unknown";
+  if (node.type === "identifier") {
+    if (node.name === "amount") return "number";
+    if (node.name === "reviewed") return "boolean";
+    return "unknown";
+  }
   if (node.type === "binary") {
     const left = validateStaticTypes(node.left);
     const right = validateStaticTypes(node.right);
@@ -246,7 +250,11 @@ function validateStaticTypes(node: FormulaNode): StaticFormulaType {
     return "number";
   }
   if (node.name === "upper" || node.name === "lower" || node.name === "concat") return "string";
-  return "unknown";
+  for (const argument of arguments_) {
+    if (argument === "null") continue;
+    return argument;
+  }
+  return "null";
 }
 
 function numberValue(value: CustomFormulaValue): number {
@@ -284,6 +292,15 @@ function multiplyDecimal(left: number, right: number): number {
   return decimalNumber(leftParts.coefficient * rightParts.coefficient, leftParts.scale + rightParts.scale);
 }
 
+function addDecimal(left: number, right: number): number {
+  const leftParts = decimalParts(left);
+  const rightParts = decimalParts(right);
+  const scale = Math.max(leftParts.scale, rightParts.scale);
+  const leftCoefficient = leftParts.coefficient * 10n ** BigInt(scale - leftParts.scale);
+  const rightCoefficient = rightParts.coefficient * 10n ** BigInt(scale - rightParts.scale);
+  return decimalNumber(leftCoefficient + rightCoefficient, scale);
+}
+
 function textValue(value: CustomFormulaValue): string {
   return value === null ? "" : String(value);
 }
@@ -310,7 +327,7 @@ function evaluate(
     const right = evaluate(node.right, values, onIdentifier);
     if (node.operator === "+") {
       return typeof left === "number" && typeof right === "number"
-        ? finiteNumber(left + right)
+        ? addDecimal(left, right)
         : textValue(left) + textValue(right);
     }
     const leftNumber = numberValue(left);
