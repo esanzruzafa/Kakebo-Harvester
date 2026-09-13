@@ -332,13 +332,38 @@ class Rational {
 
   public toNumber(): number {
     const decimal = this.terminatingDecimal();
-    const converted = decimal ? Number(decimal) : Number(this.numerator) / Number(this.denominator);
+    const converted = decimal ? Number(decimal) : this.approximateNumber();
     if (this.numerator !== 0n && converted === 0) throw new Error("Invalid custom formula value.");
     const number = finiteNumber(converted);
     if (decimal && normalizeDecimalLiteral(decimal) !== normalizeDecimalLiteral(number.toString())) {
       throw new Error("Invalid custom formula value.");
     }
     return number;
+  }
+
+  private approximateNumber(): number {
+    const absolute = this.numerator < 0n ? -this.numerator : this.numerator;
+    let exponent = absolute.toString().length - this.denominator.toString().length;
+    const left = exponent >= 0
+      ? absolute
+      : absolute * 10n ** BigInt(-exponent);
+    const right = exponent >= 0
+      ? this.denominator * 10n ** BigInt(exponent)
+      : this.denominator;
+    if (left < right) exponent -= 1;
+    const significantDigits = 18;
+    const shift = significantDigits - 1 - exponent;
+    const numerator = shift >= 0 ? absolute * 10n ** BigInt(shift) : absolute;
+    const denominator = shift >= 0 ? this.denominator : this.denominator * 10n ** BigInt(-shift);
+    let digits = (numerator * 2n + denominator) / (denominator * 2n);
+    const limit = 10n ** BigInt(significantDigits);
+    if (digits >= limit) {
+      digits /= 10n;
+      exponent += 1;
+    }
+    const coefficient = digits.toString().padStart(significantDigits, "0");
+    const sign = this.numerator < 0n ? "-" : "";
+    return Number(`${sign}${coefficient[0]}.${coefficient.slice(1)}e${exponent}`);
   }
 
   private terminatingDecimal(): string | undefined {
@@ -452,6 +477,10 @@ function evaluateConstant(node: FormulaNode): ConstantEvaluation {
   if (node.type === "binary") {
     const left = evaluateConstant(node.left);
     const right = evaluateConstant(node.right);
+    if (node.operator === "/" && right.constant &&
+        right.value instanceof Rational && right.value.numerator === 0n) {
+      throw new Error("Invalid custom formula value.");
+    }
     if (!left.constant || !right.constant) return { constant: false };
     return { constant: true, value: validatedConstantValue(node) };
   }
