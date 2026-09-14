@@ -52,7 +52,7 @@
     "safe-regex2": "^5.1.1",
     "unzipper-esm": "^0.13.3",
     "write-excel-file": "^4.1.1",
-    "zod": "^4.5.4"
+    "zod": "^4.6.2"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
