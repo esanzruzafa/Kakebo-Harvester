@@ -203,10 +203,27 @@ export function createDefaultExportSettings(
 }
 
 export function exportSettingsFingerprint(settings: ExportSettings): string {
-  const fingerprintedSettings = { ...settings };
-  delete fingerprintedSettings.schemaVersion;
+  const fingerprintedSettings = {
+    format: settings.format,
+    columns: settings.columns.filter((column) => column.enabled),
+    ...(settings.format === "csv" ? { csv: settings.csv } : {})
+  };
+  return fingerprint(fingerprintedSettings);
+}
+
+export function exportSettingsFingerprintCandidates(settings: ExportSettings): readonly string[] {
+  const current = exportSettingsFingerprint(settings);
+  const legacy = fingerprint({
+    format: settings.format,
+    csv: settings.csv,
+    columns: settings.columns
+  });
+  return legacy === current ? [current] : [current, legacy];
+}
+
+function fingerprint(settings: unknown): string {
   return createHash("sha256")
-    .update(JSON.stringify(fingerprintedSettings))
+    .update(JSON.stringify(settings))
     .digest("hex")
     .slice(0, 12);
 }

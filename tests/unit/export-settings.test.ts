@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,7 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ExportSettingsStore,
   createDefaultExportSettings,
-  exportSettingsFingerprint
+  exportSettingsFingerprint,
+  exportSettingsFingerprintCandidates,
+  type ExportSettings
 } from "../../src/settings/export-settings-store.js";
 import { exportSettingsSchema } from "../../src/settings/export-settings-store.js";
 
@@ -29,7 +32,11 @@ describe("export settings custom columns", () => {
 
     expect(loaded.schemaVersion).toBe(2);
     expect(loaded.columns).toEqual(defaults.columns);
-    expect(exportSettingsFingerprint(loaded)).toBe(exportSettingsFingerprint(legacy));
+    const legacyFingerprint = createHash("sha256")
+      .update(JSON.stringify(legacy))
+      .digest("hex")
+      .slice(0, 12);
+    expect(exportSettingsFingerprintCandidates(loaded)).toContain(legacyFingerprint);
   });
 
   it("requires one enabled movement key when an enabled custom column is present", async () => {
@@ -57,5 +64,22 @@ describe("export settings custom columns", () => {
     await expect(new ExportSettingsStore(path, settings).save(settings)).rejects.toThrow(
       /not valid/i
     );
+  });
+
+  it("ignores inactive-format options and disabled columns in export fingerprints", () => {
+    const settings = createDefaultExportSettings(".");
+    settings.format = "xlsx";
+    settings.columns = settings.columns.map((column, index) =>
+      index === 0 ? { ...column, enabled: false } : column
+    );
+    const changed: ExportSettings = {
+      ...settings,
+      csv: { ...settings.csv, fieldSeparator: ";" },
+      columns: settings.columns.map((column, index) =>
+        index === 0 ? { ...column, header: "Ignored disabled column" } : column
+      )
+    };
+
+    expect(exportSettingsFingerprint(changed)).toBe(exportSettingsFingerprint(settings));
   });
 });

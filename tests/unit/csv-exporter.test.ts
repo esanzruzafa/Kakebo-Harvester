@@ -139,6 +139,13 @@ describe("CSV export", () => {
         await writeXlsxFile(data, { sheet: "Movements" }).toFile(first.path);
       }
 
+      if (format === "xlsx") {
+        await new ExportSettingsStore(config.exportSettingsPath, settings).save({
+          ...settings,
+          csv: { ...settings.csv, fieldSeparator: "|" }
+        });
+      }
+
       addMovement("two", "Tea");
       const second = await exporter.export();
       database.close();

@@ -300,6 +300,20 @@ class Rational {
     return new Rational(coefficient, 10n ** BigInt(scale));
   }
 
+  private static fromBinaryNumber(value: number): Rational {
+    const view = new DataView(new ArrayBuffer(8));
+    view.setFloat64(0, value, false);
+    const bits = view.getBigUint64(0, false);
+    const sign = bits >> 63n === 0n ? 1n : -1n;
+    const exponentBits = Number((bits >> 52n) & 0x7ffn);
+    const fraction = bits & ((1n << 52n) - 1n);
+    const significand = exponentBits === 0 ? fraction : (1n << 52n) | fraction;
+    const exponent = exponentBits === 0 ? -1074 : exponentBits - 1075;
+    return exponent >= 0
+      ? new Rational(sign * (significand << BigInt(exponent)))
+      : new Rational(sign * significand, 1n << BigInt(-exponent));
+  }
+
   public add(other: Rational): Rational {
     return new Rational(
       this.numerator * other.denominator + other.numerator * this.denominator,
@@ -335,7 +349,10 @@ class Rational {
     const converted = decimal ? Number(decimal) : this.approximateNumber();
     if (this.numerator !== 0n && converted === 0) throw new Error("Invalid custom formula value.");
     const number = finiteNumber(converted);
-    if (decimal && normalizeDecimalLiteral(decimal) !== normalizeDecimalLiteral(number.toString())) {
+    if (decimal &&
+        normalizeDecimalLiteral(decimal) !== normalizeDecimalLiteral(number.toString()) &&
+        (this.numerator !== Rational.fromBinaryNumber(number).numerator ||
+         this.denominator !== Rational.fromBinaryNumber(number).denominator)) {
       throw new Error("Invalid custom formula value.");
     }
     return number;

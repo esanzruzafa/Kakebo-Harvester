@@ -28,6 +28,7 @@ import {
   ExportSettingsStore,
   createDefaultExportSettings,
   exportSettingsFingerprint,
+  exportSettingsFingerprintCandidates,
   type CustomExportColumn,
   type ExportField,
   type ExportSettings
@@ -752,6 +753,7 @@ export class CsvExporter {
     const rows = this.rows();
     const settings = await this.settingsStore.ensure();
     const fingerprint = exportSettingsFingerprint(settings);
+    const compatibleFingerprints = exportSettingsFingerprintCandidates(settings);
     const destination = exportOutputPath(this.config, settings);
     const temporary = join(
       this.config.exportDirectory,
@@ -767,7 +769,9 @@ export class CsvExporter {
     try {
       await mkdir(this.config.exportDirectory, { recursive: true });
       const previous = await readExportState(statePath);
-      const compatible = previous?.fingerprint === fingerprint && previous.format === settings.format;
+      const compatible = previous !== undefined &&
+        compatibleFingerprints.includes(previous.fingerprint) &&
+        previous.format === settings.format;
       const currentKeys = sourceKeys(rows);
       const knownKeys = compatible && previous.sourceMovementKeys
         ? previous.sourceMovementKeys
