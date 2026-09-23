@@ -82,4 +82,19 @@ describe("export settings custom columns", () => {
 
     expect(exportSettingsFingerprint(changed)).toBe(exportSettingsFingerprint(settings));
   });
+
+  it("accepts the legacy fingerprint from settings before an inactive option changed", () => {
+    const previous = createDefaultExportSettings(",", ";");
+    previous.format = "xlsx";
+    const changed: ExportSettings = {
+      ...previous,
+      csv: { ...previous.csv, fieldSeparator: "|" }
+    };
+    const legacyFingerprint = createHash("sha256")
+      .update(JSON.stringify({ format: previous.format, csv: previous.csv, columns: previous.columns }))
+      .digest("hex")
+      .slice(0, 12);
+
+    expect(exportSettingsFingerprintCandidates(changed, previous)).toContain(legacyFingerprint);
+  });
 });

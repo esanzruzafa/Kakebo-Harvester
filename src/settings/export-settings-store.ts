@@ -211,14 +211,27 @@ export function exportSettingsFingerprint(settings: ExportSettings): string {
   return fingerprint(fingerprintedSettings);
 }
 
-export function exportSettingsFingerprintCandidates(settings: ExportSettings): readonly string[] {
-  const current = exportSettingsFingerprint(settings);
-  const legacy = fingerprint({
+function legacyExportSettingsFingerprint(settings: ExportSettings): string {
+  return fingerprint({
     format: settings.format,
     csv: settings.csv,
     columns: settings.columns
   });
-  return legacy === current ? [current] : [current, legacy];
+}
+
+export function exportSettingsFingerprintCandidates(
+  settings: ExportSettings,
+  previousSettings?: ExportSettings
+): readonly string[] {
+  const current = exportSettingsFingerprint(settings);
+  const fingerprints = [current, legacyExportSettingsFingerprint(settings)];
+  if (
+    previousSettings !== undefined &&
+    exportSettingsFingerprint(previousSettings) === current
+  ) {
+    fingerprints.push(legacyExportSettingsFingerprint(previousSettings));
+  }
+  return [...new Set(fingerprints)];
 }
 
 function fingerprint(settings: unknown): string {
@@ -255,6 +268,16 @@ export class ExportSettingsStore {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       return await this.save(this.defaults);
+    }
+  }
+
+  public async loadBackup(): Promise<ExportSettings | undefined> {
+    try {
+      return parseSettings(
+        migrateSettings(JSON.parse(await readFile(`${this.path}.backup`, "utf8")) as unknown)
+      );
+    } catch {
+      return undefined;
     }
   }
 

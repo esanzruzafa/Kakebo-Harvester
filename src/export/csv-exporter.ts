@@ -369,6 +369,7 @@ function parseCsv(content: string, separator: string): string[][] {
       value += character;
     }
   }
+  if (quoted) throw new Error("The CSV export contains an unterminated quoted field.");
   if (value.length > 0 || row.length > 0) {
     row.push(value);
     rows.push(row);
@@ -753,7 +754,10 @@ export class CsvExporter {
     const rows = this.rows();
     const settings = await this.settingsStore.ensure();
     const fingerprint = exportSettingsFingerprint(settings);
-    const compatibleFingerprints = exportSettingsFingerprintCandidates(settings);
+    const compatibleFingerprints = exportSettingsFingerprintCandidates(
+      settings,
+      await this.settingsStore.loadBackup()
+    );
     const destination = exportOutputPath(this.config, settings);
     const temporary = join(
       this.config.exportDirectory,

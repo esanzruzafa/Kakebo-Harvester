@@ -9,6 +9,7 @@ import {
   symlink,
   writeFile
 } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -140,6 +141,13 @@ describe("CSV export", () => {
       }
 
       if (format === "xlsx") {
+        const statePath = `${config.exportSettingsPath}.state.json`;
+        const state = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+        state.fingerprint = createHash("sha256")
+          .update(JSON.stringify({ format: settings.format, csv: settings.csv, columns: settings.columns }))
+          .digest("hex")
+          .slice(0, 12);
+        await writeFile(statePath, JSON.stringify(state));
         await new ExportSettingsStore(config.exportSettingsPath, settings).save({
           ...settings,
           csv: { ...settings.csv, fieldSeparator: "|" }
@@ -148,7 +156,6 @@ describe("CSV export", () => {
 
       addMovement("two", "Tea");
       const second = await exporter.export();
-      database.close();
       if (format === "csv") {
         const rows = (await readFile(second.path, "utf8"))
           .replace(/^\uFEFF/u, "")
@@ -164,6 +171,11 @@ describe("CSV export", () => {
         expect(values.get("movement-one")?.[manualIndex]).toBe("Edited manual");
         expect(values.get("movement-two")?.[formulaIndex]).toBe("'=TEA");
         expect(values.get("movement-two")?.[manualIndex]).toBe("");
+        await writeFile(second.path, '"unterminated');
+        await expect(exporter.export()).rejects.toThrow(
+          "Kakebo Harvester could not generate the export file."
+        );
+        expect(await readFile(second.path, "utf8")).toBe('"unterminated');
       } else {
         const rows = await readSheet(second.path, { trim: false });
         const header = rows[0]?.map(String) ?? [];
@@ -179,6 +191,7 @@ describe("CSV export", () => {
         const styles = Buffer.from(workbook["xl/styles.xml"] ?? []).toString("utf8");
         expect(styles).not.toContain("#,##0.###############");
       }
+      database.close();
     }
   );
 
