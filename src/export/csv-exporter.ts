@@ -28,6 +28,7 @@ import {
 } from "../settings/export-settings-store.js";
 import type { SqliteDatabase } from "../storage/database.js";
 import { currencyFractionDigits } from "../utils/currency.js";
+import { expenseContribution } from "../transactions/economic-treatment.js";
 
 interface ExportRow {
   movement_key: string;
@@ -49,6 +50,9 @@ interface ExportRow {
   reviewed: number;
   provider: string;
   imported_at: string;
+  economic_treatment: "normal" | "internal-transfer" | "review-required";
+  representative: number;
+  reconciliation_reference: string | null;
 }
 
 interface ExportState {
@@ -237,6 +241,7 @@ function rowValue(
   settings: ExportSettings,
   forSpreadsheet: boolean
 ): ExportValue {
+  const expenseAmount = expenseContribution({ amount: row.amount, treatment: row.economic_treatment, representative: row.representative === 1 });
   const values: Record<ExportField, ExportValue> = {
     movementKey: row.movement_key,
     date: forSpreadsheet
@@ -255,6 +260,9 @@ function rowValue(
     amount: forSpreadsheet
       ? Number(row.amount)
       : formatMoney(row.amount, row.currency, settings.csv.decimalSeparator),
+    expenseAmount: forSpreadsheet ? Number(expenseAmount) : formatMoney(expenseAmount, row.currency, settings.csv.decimalSeparator),
+    economicTreatment: row.economic_treatment,
+    reconciliationReference: row.reconciliation_reference,
     direction: row.direction,
     status: row.status,
     categoryAuto: row.category_auto,
@@ -264,7 +272,7 @@ function rowValue(
     importedAt: row.imported_at
   };
   const value = values[field];
-  return typeof value === "string" && field !== "amount"
+  return typeof value === "string" && field !== "amount" && field !== "expenseAmount"
     ? safeSpreadsheetText(value)
     : value;
 }
@@ -421,15 +429,27 @@ export class CsvExporter {
   private rows(): ExportRow[] {
     return this.database
       .prepare(
-        `SELECT
+        `WITH valid_reconciliations AS (
+           SELECT r.reference FROM transaction_reconciliations r
+           JOIN transactions t ON t.movement_key=r.movement_key
+           LEFT JOIN accounts paired_account ON paired_account.id=t.account_id
+           LEFT JOIN cards paired_card ON paired_card.id=t.account_id
+           GROUP BY r.reference HAVING COUNT(*)=2 AND SUM(CASE
+             WHEN t.amount=r.amount_snapshot AND t.currency=r.currency_snapshot
+               AND t.status IN ('booked','unknown')
+               AND COALESCE(paired_account.export_enabled, paired_card.export_enabled,
+                 CASE WHEN t.provider='kutxabank-browser' AND t.card_last4_snapshot IS NOT NULL THEN 1 END)=1
+               THEN 1 ELSE 0 END)=2
+         ) SELECT
            t.movement_key,
            COALESCE(t.booking_date, substr(t.transaction_datetime, 1, 10), t.value_date)
              AS movement_date,
            t.value_date,
            c.bank_name,
-           COALESCE(a.display_name, a.name) AS account_name,
-           a.account_alias,
-           COALESCE(a.product_type, a.account_type) AS product_type,
+           COALESCE(a.display_name, a.name, card.alias, t.card_alias_snapshot) AS account_name,
+           COALESCE(a.account_alias, card.alias, t.card_alias_snapshot) AS account_alias,
+           COALESCE(a.product_type, a.account_type, '•••• ' || card.last4,
+             '•••• ' || t.card_last4_snapshot) AS product_type,
            t.description_raw,
            t.merchant_name,
            CASE WHEN t.direction = 'expense' THEN t.creditor_name ELSE t.debtor_name END
@@ -442,11 +462,21 @@ export class CsvExporter {
            t.subcategory_auto,
            t.reviewed,
            t.provider,
-           t.imported_at
+           t.imported_at,
+           CASE WHEN r.reference IS NOT NULL AND v.reference IS NULL THEN 'review-required'
+             WHEN r.kind='settlement' AND v.reference IS NOT NULL THEN 'internal-transfer'
+             WHEN t.provider='kutxabank-browser' AND v.reference IS NULL THEN 'review-required'
+             ELSE 'normal' END AS economic_treatment,
+           CASE WHEN v.reference IS NOT NULL THEN r.representative ELSE 1 END AS representative,
+           r.reference AS reconciliation_reference
          FROM transactions t
-         JOIN accounts a ON a.id = t.account_id
+         LEFT JOIN accounts a ON a.id = t.account_id
+         LEFT JOIN cards card ON card.id = t.account_id
          JOIN bank_connections c ON c.id = t.bank_connection_id
-         WHERE a.export_enabled = 1
+         LEFT JOIN transaction_reconciliations r ON r.movement_key=t.movement_key
+         LEFT JOIN valid_reconciliations v ON v.reference=r.reference
+         WHERE COALESCE(a.export_enabled, card.export_enabled,
+           CASE WHEN t.provider='kutxabank-browser' AND t.card_last4_snapshot IS NOT NULL THEN 1 END) = 1
          ORDER BY movement_date, c.bank_name, account_name, t.movement_key`
       )
       .all() as ExportRow[];
@@ -511,12 +541,15 @@ export class CsvExporter {
           const background = isNew
             ? { backgroundColor: HIGHLIGHT_COLORS[source] }
             : {};
-          if (column.field === "amount") {
-            const exactNumber = exactSpreadsheetNumber(row.amount);
+          if (column.field === "amount" || column.field === "expenseAmount") {
+            const amount = column.field === "amount" ? row.amount : expenseContribution({
+              amount: row.amount, treatment: row.economic_treatment, representative: row.representative === 1
+            });
+            const exactNumber = exactSpreadsheetNumber(amount);
             if (exactNumber === null) {
               return {
                 value: safeSpreadsheetText(
-                  formatMoney(row.amount, row.currency, ".")
+                  formatMoney(amount, row.currency, ".")
                 ),
                 type: String,
                 format: "@",

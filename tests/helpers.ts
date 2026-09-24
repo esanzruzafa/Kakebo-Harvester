@@ -33,6 +33,7 @@ export function testConfig(root: string): AppConfig {
     exportKeepBackup: false,
     categorizationRulesPath: join(sandboxRoot, "categorization-rules.json"),
     accountsConfigPath: join(sandboxRoot, "accounts.json"),
+    cardsConfigPath: join(sandboxRoot, "cards.json"),
     categoriesConfigPath: join(sandboxRoot, "categories.json"),
     exportSettingsPath: join(sandboxRoot, "export-settings.json"),
     cardImportProfilesPath: join(sandboxRoot, "card-import-profiles.json"),

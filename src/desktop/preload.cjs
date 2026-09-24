@@ -1,6 +1,31 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("kakebo", {
+  openKutxabank: () => ipcRenderer.invoke("kutxabank:open"),
+  inspectKutxabank: () => ipcRenderer.invoke("kutxabank:inspect"),
+  listKutxabankCatalog: () => ipcRenderer.invoke("kutxabank:catalog"),
+  saveKutxabankCatalog: () => ipcRenderer.invoke("kutxabank:catalog-save"),
+  onKutxabankCatalogUpdated: (listener) => {
+    const handler = (_event, result) => listener(result);
+    ipcRenderer.on("kutxabank:catalog-updated", handler);
+    return () => ipcRenderer.removeListener("kutxabank:catalog-updated", handler);
+  },
+  onKutxabankCatalogError: (listener) => {
+    const handler = (_event, code) => listener(code);
+    ipcRenderer.on("kutxabank:catalog-error", handler);
+    return () => ipcRenderer.removeListener("kutxabank:catalog-error", handler);
+  },
+  setKutxabankCardSyncEnabled: (input) => ipcRenderer.invoke("kutxabank:card-sync-enabled", input),
+  setKutxabankCardAlias: (input) => ipcRenderer.invoke("kutxabank:card-alias", input),
+  deleteKutxabankCard: (input) => ipcRenderer.invoke("kutxabank:card-delete", input),
+  syncKutxabankCatalog: (input) => ipcRenderer.invoke("kutxabank:catalog-sync", input),
+  syncKutxabank: (input) => ipcRenderer.invoke("kutxabank:sync", input),
+  forgetKutxabankDevice: () => ipcRenderer.invoke("kutxabank:forget-device"),
+  disconnectKutxabank: (connectionId) =>
+    ipcRenderer.invoke("kutxabank:disconnect", connectionId),
+  listReconciliation: (input) => ipcRenderer.invoke("reconciliation:list", input),
+  confirmReconciliation: (input) => ipcRenderer.invoke("reconciliation:confirm", input),
+  undoReconciliation: (reference) => ipcRenderer.invoke("reconciliation:undo", reference),
   bootstrap: () => ipcRenderer.invoke("app:bootstrap"),
   startSync: (request) => ipcRenderer.invoke("sync:start", request),
   resolveAccountFailure: (input) =>

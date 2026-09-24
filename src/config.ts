@@ -116,6 +116,7 @@ export interface AppConfig {
   tlsPfxPassphrasePath?: string;
   categorizationRulesPath: string;
   accountsConfigPath: string;
+  cardsConfigPath: string;
   categoriesConfigPath: string;
   exportSettingsPath: string;
   cardImportProfilesPath: string;
@@ -391,6 +392,7 @@ export function loadConfig(
       env.ACCOUNTS_CONFIG_PATH ?? "config/accounts.json",
       baseDirectory
     ),
+    cardsConfigPath: absolutePath("config/cards.json", baseDirectory),
     categoriesConfigPath: absolutePath(
       env.CATEGORIES_CONFIG_PATH ?? "config/categories.json",
       baseDirectory

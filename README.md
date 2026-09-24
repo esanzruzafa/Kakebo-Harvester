@@ -272,6 +272,7 @@ Kakebo-Harvester/
 │   └── local-https-production-ca.thumbprint
 ├── config/
 │   ├── accounts.json
+│   ├── cards.json
 │   ├── categorization-rules.json
 │   ├── categories.json
 │   ├── card-import-profiles.json
@@ -285,10 +286,19 @@ Kakebo-Harvester/
             └── archive/
 ```
 
-`accounts.json`, `categories.json`, `card-import-profiles.json`,
+`accounts.json`, `cards.json`, `categories.json`, `card-import-profiles.json`,
 `export-settings.json`, and `ui-settings.json` are created when needed. SQLite is
 authoritative for account aliases and switches; `accounts.json` is a readable
 snapshot.
+`cards.json` is the readable snapshot of Kutxabank card aliases and sync choices;
+`card-import-profiles.json` keeps the separate manual XLSX import mappings.
+
+Before upgrading an existing installation to 2.0.0, close Kakebo Harvester and
+make a private copy of its `data/` and `config/` directories. Version 2.0.0
+upgrades the SQLite schema from 13 to 17. Version 1.0.2 cannot open a database
+after that upgrade; returning to 1.0.2 requires restoring the pre-upgrade copy.
+See the [2.0.0 upgrade notes](docs/releases/2.0.0.md) for the changes and
+rollback procedure.
 
 The executable searches for `private/.env.production` in this order:
 
@@ -468,11 +478,12 @@ This repository includes:
 - `.github/workflows/release.yml`: builds the Windows portable executable for tags matching `v*` only when the ref is an existing tag, its version matches `package.json`, it points to the checked-out commit, and that commit belongs to `main`; it then creates the public `complete-package` starter ZIP, generates SHA-256 files for both downloads, and uploads all four files to GitHub Releases;
 - `.github/workflows/pages.yml`: deploys only when files under `legal/` or the Pages workflow change.
 
-Create a release after updating `package.json`:
+Create a release only after merging and validating the versioned change on
+`main`. For version 2.0.0:
 
 ```powershell
-git tag v1.0.0
-git push origin v1.0.0
+git tag v2.0.0
+git push origin v2.0.0
 ```
 
 GitHub Releases is the recommended home for each portable version. The Pages website links to `/releases/latest`, so it always points to the most recent published version without storing binaries in the Git repository.
@@ -523,6 +534,8 @@ npm run build
 Tests use temporary SQLite databases, fictional fixtures, and mocked HTTP calls. They never call production.
 
 Technical implementation details are documented in [`docs/DESKTOP_APP.md`](docs/DESKTOP_APP.md).
+
+The Kutxabank card integration has a [Spanish usage guide and current limits](docs/banking/kutxabank-card-sync.md). Its interactive card synchronization was confirmed by the account holder in Electron; the latest catalog, balance, and deletion changes still need a fresh bank-session check. Account synchronization continues through Enable Banking.
 
 ## License
 

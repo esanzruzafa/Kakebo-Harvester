@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   runCardImportOperation,
+  runMovementImportOperation,
   runConnectionOperation,
   runDisconnectOperation,
   runRecategorizationOperation
@@ -16,6 +17,16 @@ const imported = {
 };
 
 describe("committed desktop operations", () => {
+  it("keeps a committed import successful if audit finalization fails", async () => {
+    const result = await runMovementImportOperation({
+      ingest: () => ({ inserted: 1 }),
+      exportMovements: () => Promise.resolve({ path: "result.xlsx" }),
+      saveAccounts: () => Promise.resolve(),
+      finishAudit: () => { throw new Error("private database detail"); }
+    });
+    expect(result).toEqual({ inserted: 1, exportPath: "result.xlsx",
+      warnings: [{ step: "audit", message: "AUDIT_FINALIZATION_FAILED" }] });
+  });
   it("reports a committed card import when every follow-up succeeds", async () => {
     const result = await runCardImportOperation({
       importCards: vi.fn().mockResolvedValue(imported),

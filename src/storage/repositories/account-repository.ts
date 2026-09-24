@@ -506,6 +506,7 @@ export class AccountRepository {
            c.provider
          FROM accounts a
          JOIN bank_connections c ON c.id = a.bank_connection_id
+         WHERE c.provider = 'enable-banking'
          ORDER BY c.bank_name, account_name`
       )
       .all() as Array<{
@@ -536,7 +537,9 @@ export class AccountRepository {
       currency: row.currency,
       productType: row.product_type,
       alias: row.account_alias ?? "",
-      providerActive: row.active === 1 && row.provider === "enable-banking",
+      providerActive:
+        row.active === 1 &&
+        (row.provider === "enable-banking" || row.provider === "kutxabank-browser"),
       syncEnabled: row.sync_enabled === 1,
       exportEnabled: row.export_enabled === 1,
       lastError:

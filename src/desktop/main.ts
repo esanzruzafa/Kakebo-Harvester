@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -11,6 +11,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  session,
   shell,
   type IpcMainInvokeEvent,
   type MessageBoxOptions
@@ -35,6 +36,7 @@ import {
   exportOutputPath
 } from "../export/csv-exporter.js";
 import { AccountsConfigStore } from "../settings/accounts-config-store.js";
+import { CardsConfigStore } from "../settings/cards-config-store.js";
 import {
   CardImportProfilesStore,
   cardImportProfileSchema
@@ -96,6 +98,12 @@ import {
   runRecategorizationOperation
 } from "./committed-operations.js";
 import { runtimeRootDirectory } from "./runtime-paths.js";
+import { KutxabankBrowserController, createElectronKutxabankBrowserDriver, kutxabankNavigationPolicy } from "./kutxabank-browser.js";
+import { KutxabankSyncService } from "../cards/kutxabank-sync-service.js";
+import { Categorizer } from "../transactions/categorization.js";
+import { executeKutxabankBatchSync, executeKutxabankSync, kutxabankBatchSyncRequestSchema, kutxabankSyncRequestSchema } from "./kutxabank-workflow.js";
+import { runMovementImportOperation } from "./committed-operations.js";
+import { SourceReconciliationService } from "../transactions/source-reconciliation.js";
 
 const UI_ZOOM_FACTOR = 0.945;
 
@@ -380,6 +388,8 @@ class AuthorizationCoordinator {
 }
 
 let domainApplication: KakeboApplication | undefined;
+let kutxabankBrowser: KutxabankBrowserController | undefined;
+let kutxabankCancellation: AbortController | undefined;
 let callbackServer: Awaited<ReturnType<typeof startCallbackServer>> | undefined;
 let mainWindow: BrowserWindow | undefined;
 let auditWindow: BrowserWindow | undefined;
@@ -740,11 +750,11 @@ function currentYearBounds(now = new Date()): { start: Date; end: Date } {
 async function bootstrap(application: KakeboApplication): Promise<DesktopBootstrap> {
   const accountRepository = new AccountRepository(application.database);
   const accounts = accountRepository.listEditable();
-  if (!existsSync(application.config.accountsConfigPath)) {
-    await new AccountsConfigStore(application.config.accountsConfigPath).save(
-      accounts
-    );
-  }
+  await new AccountsConfigStore(application.config.accountsConfigPath).save(accounts);
+  const cards = new KutxabankSyncService(application.database, application.config,
+    new Categorizer(application.config.categorizationRulesPath));
+  await new CardsConfigStore(application.config.cardsConfigPath).save(
+    cards.listConnections().flatMap(connection => connection.cards));
   const rulesStore = new CategorizationRulesStore(
     application.config.categorizationRulesPath
   );
@@ -806,6 +816,7 @@ async function bootstrap(application: KakeboApplication): Promise<DesktopBootstr
       exportFile: exportOutputPath(application.config, exportSettings),
       categorizationRules: application.config.categorizationRulesPath,
       accountsConfig: application.config.accountsConfigPath,
+      cardsConfig: application.config.cardsConfigPath,
       categoriesConfig: application.config.categoriesConfigPath,
       exportSettings: application.config.exportSettingsPath,
       cardImportProfiles: application.config.cardImportProfilesPath,
@@ -818,6 +829,7 @@ async function bootstrap(application: KakeboApplication): Promise<DesktopBootstr
 function registerIpc(application: KakeboApplication): void {
   const accountRepository = new AccountRepository(application.database);
   const accountsStore = new AccountsConfigStore(application.config.accountsConfigPath);
+  const cardsStore = new CardsConfigStore(application.config.cardsConfigPath);
   const rulesStore = new CategorizationRulesStore(
     application.config.categorizationRulesPath
   );
@@ -838,6 +850,311 @@ function registerIpc(application: KakeboApplication): void {
     application.database,
     application.sync
   );
+
+  const cardData = () => new KutxabankSyncService(application.database, application.config,
+    new Categorizer(application.config.categorizationRulesPath));
+  const saveCards = async (): Promise<void> => await cardsStore.save(
+    cardData().listConnections().flatMap(connection => connection.cards));
+  let bankBusy = false;
+  let autoCatalogGeneration = 0;
+  const localAppData = process.env.LOCALAPPDATA ?? join(app.getPath("home"), "AppData", "Local");
+  const bankSession = session.fromPath(join(localAppData, "KakeboHarvester", "KutxabankBrowser"));
+  kutxabankBrowser = new KutxabankBrowserController(createElectronKutxabankBrowserDriver({
+    BrowserWindow,
+    browserSession: bankSession,
+    onDiagnostics: entries => {
+      writeFileSync(join(dirname(application.config.databasePath), "kutxabank-browser-diagnostic.json"),
+        JSON.stringify({ format: 1, entries }, null, 2), { encoding: "utf8", mode: 0o600 });
+    },
+    ...kutxabankNavigationPolicy
+  }), { onClosed: () => {
+    autoCatalogGeneration += 1;
+    kutxabankCancellation?.abort();
+  }, fingerprintKey: application.config.sessionEncryptionKey });
+  const bankBrowser = kutxabankBrowser;
+  const bankOperation = async <T>(operation: () => Promise<T>): Promise<T> => {
+    if (bankBusy || activeSync) throw new Error("SOURCE_BUSY");
+    bankBusy = true;
+    try { return await operation(); } finally { bankBusy = false; }
+  };
+  const bankErrorCode = (error: unknown): string => {
+    const code = error instanceof Error ? error.message : "";
+    return new Set([
+      "AUTHENTICATION_REQUIRED", "AUTHORIZATION_REQUIRED", "REAUTHENTICATION_REQUIRED",
+      "SOURCE_NOT_READY", "SOURCE_UNAVAILABLE", "SOURCE_BUSY", "CANCELLED", "INCOMPLETE_PAGE",
+      "QUERY_CHANGED", "INVALID_QUERY", "INVALID_CONNECTION", "INVALID_ACCOUNT",
+      "CARD_ASSOCIATION_CHANGED", "FORMAT_CHANGED", "WINDOW_CLOSED", "NAVIGATION_BLOCKED",
+      "LOCAL_STORAGE_FAILED"
+      , "INVALID_ALIAS", "INVALID_LAST4", "INVALID_MOVEMENT", "CONNECTION_UNAVAILABLE", "ACCOUNT_UNAVAILABLE",
+      "BROWSER_CLOSED", "BANK_LOAD_FAILED", "BANK_PROCESS_GONE", "SELECTION_EXPIRED", "INVALID_RECONCILIATION", "ALREADY_RECONCILED"
+    ]).has(code) ? code : "SOURCE_UNAVAILABLE";
+  };
+  const saveAvailableCards = async () => await bankOperation(async () => {
+    let discovered;
+    try { discovered = await bankBrowser.discoverCards(); }
+    catch (error) { throw new Error(bankErrorCode(error)); }
+    if (discovered.length === 0) throw new Error("SOURCE_NOT_READY");
+    try {
+      const data = cardData();
+      return await withSynchronizationLock(application, async () => {
+        const result = await runConnectionOperation({
+          connect: () => application.database.transaction(() => {
+            const connectionId = data.reusableConnectionId() ?? data.createConnection("Kutxabank").id;
+            data.reconcileDiscoveredCards(connectionId, discovered);
+          })(),
+          saveAccounts: saveCards,
+          configurationStep: "cards-config"
+        });
+        return { connections: data.listConnections(), warnings: result.warnings };
+      });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      throw new Error(code === "CARD_ASSOCIATION_CHANGED" ? code : "LOCAL_STORAGE_FAILED");
+    }
+  });
+  const watchBankLogin = (generation: number): void => {
+    let attempts = 0;
+    const tick = async (): Promise<void> => {
+      if (generation !== autoCatalogGeneration || ++attempts > 600) return;
+      if (bankBusy || activeSync) { setTimeout(() => void tick(), 3000); return; }
+      try {
+        const result = await saveAvailableCards();
+        if (generation === autoCatalogGeneration && mainWindow && !mainWindow.isDestroyed())
+          mainWindow.webContents.send("kutxabank:catalog-updated", result);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (generation === autoCatalogGeneration && ["AUTHENTICATION_REQUIRED", "SOURCE_NOT_READY",
+          "SOURCE_UNAVAILABLE", "SOURCE_BUSY"].includes(code)) setTimeout(() => void tick(), 3000);
+        else if (generation === autoCatalogGeneration && mainWindow && !mainWindow.isDestroyed())
+          mainWindow.webContents.send("kutxabank:catalog-error", bankErrorCode(error));
+      }
+    };
+    setTimeout(() => void tick(), 3000);
+  };
+  ipcMain.handle("kutxabank:open", async event => {
+    assertTrustedSender(event);
+    return await trackOperation(bankOperation(async () => {
+      try {
+        await bankBrowser.open();
+        watchBankLogin(++autoCatalogGeneration);
+      } catch (error) { throw new Error(bankErrorCode(error)); }
+    }));
+  });
+  ipcMain.handle("kutxabank:inspect", async event => {
+    assertTrustedSender(event);
+    return await trackOperation(bankOperation(async () => {
+      try {
+        const cards = (await bankBrowser.discoverCards()).map(
+          ({ selectionToken, last4, alias, balance }) => ({ selectionToken, last4, alias, balance })
+        );
+        return { cards, connections: cardData().listConnections() };
+      }
+      catch (error) { throw new Error(bankErrorCode(error)); }
+    }));
+  });
+  ipcMain.handle("kutxabank:catalog", event => {
+    assertTrustedSender(event);
+    return cardData().listConnections();
+  });
+  ipcMain.handle("kutxabank:catalog-save", async event => {
+    assertTrustedSender(event);
+    return await trackOperation(saveAvailableCards());
+  });
+  ipcMain.handle("kutxabank:card-sync-enabled", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    const parsed = z.object({ connectionId: z.uuid(), accountId: z.uuid(), enabled: z.boolean() }).strict().safeParse(input);
+    if (!parsed.success) throw new Error("INVALID_QUERY");
+    return await trackOperation(withSynchronizationLock(application, async () => {
+      const data = cardData();
+      const result = await runConnectionOperation({
+        connect: () => data.setCardSyncEnabled(parsed.data.connectionId, parsed.data.accountId, parsed.data.enabled),
+        saveAccounts: saveCards,
+        configurationStep: "cards-config"
+      });
+      return { connections: data.listConnections(), warnings: result.warnings };
+    }));
+  });
+  ipcMain.handle("kutxabank:card-alias", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    const parsed = z.object({ connectionId: z.uuid(), accountId: z.uuid(),
+      alias: z.string().trim().min(1).max(120) }).strict().safeParse(input);
+    if (!parsed.success) throw new Error("INVALID_ALIAS");
+    return await trackOperation(withSynchronizationLock(application, async () => {
+      const data = cardData();
+      const result = await runConnectionOperation({
+        connect: () => data.setCardAlias(parsed.data.connectionId, parsed.data.accountId, parsed.data.alias),
+        saveAccounts: saveCards,
+        configurationStep: "cards-config"
+      });
+      return { connections: data.listConnections(), warnings: result.warnings };
+    }));
+  });
+  ipcMain.handle("kutxabank:card-delete", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    const parsed = z.object({ connectionId: z.uuid(), accountId: z.uuid() }).strict().safeParse(input);
+    if (!parsed.success) throw new Error("INVALID_ACCOUNT");
+    return await trackOperation(withSynchronizationLock(application, async () => {
+      const data = cardData();
+      const result = await runConnectionOperation({
+        connect: () => data.deleteCard(parsed.data.connectionId, parsed.data.accountId),
+        saveAccounts: saveCards,
+        configurationStep: "cards-config"
+      });
+      return { connections: data.listConnections(), warnings: result.warnings };
+    }));
+  });
+  ipcMain.handle("kutxabank:catalog-sync", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    const parsed = kutxabankBatchSyncRequestSchema.safeParse(input);
+    if (!parsed.success) throw new Error("INVALID_QUERY");
+    return await trackOperation(bankOperation(async () => await withSynchronizationLock(application, async () => {
+      const cancellation = new AbortController();
+      kutxabankCancellation = cancellation;
+      const runId = audit.begin({ dateFrom: parsed.data.dateFrom, dateTo: parsed.data.dateTo,
+        steps: ["transactions", "export"] });
+      try {
+        const data = cardData();
+        let cardWarnings = 0;
+        return await runMovementImportOperation({
+          ingest: async () => {
+            const result = await executeKutxabankBatchSync(parsed.data, {
+              listConnections: () => data.listConnectionsForSync(),
+              discoverCards: async () => await bankBrowser.discoverCards(),
+              selectCard: async token => {
+                const selected = await bankBrowser.selectCard(token);
+                return { productKey: selected.selectionToken, last4: selected.last4,
+                  fingerprint: selected.fingerprint };
+              },
+              reader: token => bankBrowser.reader(token),
+              transaction: operation => application.database.transaction(operation)(),
+              createConnection: alias => data.createConnection(alias),
+              createCard: (id, alias, last4, fingerprint) =>
+                data.createCard(id, alias, last4, undefined, undefined, fingerprint),
+              ingest: request => data.ingest(request)
+            }, cancellation.signal);
+            cardWarnings = result.cardWarnings.length;
+            return result;
+          },
+          exportMovements: async () => await new CsvExporter(application.config, application.database)
+            .export({ highlightSource: "banking" }),
+          saveAccounts: saveCards,
+          finishAudit: hasWarnings => audit.finish(runId,
+            hasWarnings || cardWarnings > 0 ? "SUCCESS_WITH_WARNINGS" : "SUCCESS")
+        });
+      } catch (error) {
+        const code = bankErrorCode(error);
+        audit.finish(runId, "FAILED", code, code);
+        throw new Error(code);
+      } finally {
+        if (kutxabankCancellation === cancellation) kutxabankCancellation = undefined;
+      }
+    })));
+  });
+  ipcMain.handle("kutxabank:forget-device", async event => {
+    assertTrustedSender(event);
+    if (bankBusy || activeSync) throw new Error("SOURCE_BUSY");
+    if (bankBrowser.isOpen) throw new Error("BANK_WINDOW_OPEN");
+    const options: MessageBoxOptions = {
+      type: "warning",
+      title: tr("kutxabank.forget.title", "Forget this device"),
+      message: tr("kutxabank.forget.message", "Delete the saved Kutxabank browser profile for everyone using this app?"),
+      detail: tr("kutxabank.forget.detail", "Close the bank window first. Saved cards and movements will remain in Kakebo."),
+      buttons: [tr("common.cancel", "Cancel"), tr("kutxabank.forget.confirm", "Forget device")],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    };
+    const confirmation = mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showMessageBox(mainWindow, options)
+      : await dialog.showMessageBox(options);
+    if (confirmation.response !== 1) return false;
+    return await trackOperation(bankOperation(async () => {
+      await bankBrowser.forgetDevice();
+      return true;
+    }));
+  });
+  ipcMain.handle("kutxabank:disconnect", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    const parsed = z.uuid().safeParse(input);
+    if (!parsed.success) throw new Error("INVALID_CONNECTION");
+    return await trackOperation(bankOperation(async () => {
+      return await withSynchronizationLock(application, async () => await runConnectionOperation({
+        connect: () => { cardData().disconnect(parsed.data); },
+        saveAccounts: saveCards,
+        configurationStep: "cards-config"
+      }));
+    }));
+  });
+  const reconciler = new SourceReconciliationService(application.database, application.config.appEnv);
+  ipcMain.handle("reconciliation:list", (event, input: unknown) => {
+    assertTrustedSender(event);
+    const parsed = z.object({ dateFrom: z.iso.date(), dateTo: z.iso.date() }).strict().safeParse(input);
+    if (!parsed.success) throw new Error("INVALID_QUERY");
+    const rows = reconciler.list(parsed.data.dateFrom, parsed.data.dateTo);
+    return { movements: rows.slice(0, 500), truncated: rows.length > 500 };
+  });
+  ipcMain.handle("reconciliation:confirm", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    const parsed = z.object({ firstKey: z.string().min(1).max(128), secondKey: z.string().min(1).max(128),
+      kind: z.enum(["settlement", "duplicate"]) }).strict().safeParse(input);
+    if (!parsed.success) throw new Error("INVALID_RECONCILIATION");
+    return await trackOperation(withSynchronizationLock(application, async () => await runMovementImportOperation({
+      ingest: () => ({ reference: reconciler.confirm(parsed.data.firstKey, parsed.data.secondKey, parsed.data.kind) }),
+      exportMovements: async () => await new CsvExporter(application.config, application.database).export(),
+      saveAccounts: async () => { /* Reconciliation does not alter account settings. */ }
+    })));
+  });
+  ipcMain.handle("reconciliation:undo", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    const parsed = z.uuid().safeParse(input);
+    if (!parsed.success) throw new Error("INVALID_RECONCILIATION");
+    return await trackOperation(withSynchronizationLock(application, async () => await runMovementImportOperation({
+      ingest: () => { reconciler.undo(parsed.data); return {}; },
+      exportMovements: async () => await new CsvExporter(application.config, application.database).export(),
+      saveAccounts: async () => { /* Reconciliation does not alter account settings. */ }
+    })));
+  });
+  ipcMain.handle("kutxabank:sync", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    const parsed = kutxabankSyncRequestSchema.safeParse(input);
+    if (!parsed.success) throw new Error("INVALID_QUERY");
+    return await trackOperation(bankOperation(async () => await withSynchronizationLock(application, async () => {
+      const cancellation = new AbortController();
+      kutxabankCancellation = cancellation;
+      const runId = audit.begin({ dateFrom: parsed.data.dateFrom, dateTo: parsed.data.dateTo,
+        steps: ["transactions", "export"] });
+      try {
+        const data = cardData();
+        const result = await runMovementImportOperation({
+          ingest: async () => await executeKutxabankSync(parsed.data, {
+            listConnections: () => data.listConnectionsForSync(),
+            selectCard: async token => {
+              const selected = await bankBrowser.selectCard(token);
+              return { productKey: selected.selectionToken, last4: selected.last4,
+                fingerprint: selected.fingerprint };
+            },
+            reader: token => bankBrowser.reader(token),
+            transaction: operation => application.database.transaction(operation)(),
+            createConnection: alias => data.createConnection(alias),
+            createCard: (id, alias, last4, fingerprint) =>
+              data.createCard(id, alias, last4, undefined, undefined, fingerprint),
+            ingest: request => data.ingest(request)
+          }, cancellation.signal),
+          exportMovements: async () => await new CsvExporter(application.config, application.database)
+            .export({ highlightSource: "banking" }),
+          saveAccounts: saveCards,
+          finishAudit: hasWarnings => audit.finish(runId, hasWarnings ? "SUCCESS_WITH_WARNINGS" : "SUCCESS")
+        });
+        return result;
+      } catch (error) {
+        const code = bankErrorCode(error);
+        audit.finish(runId, "FAILED", code, code);
+        throw new Error(code);
+      } finally {
+        if (kutxabankCancellation === cancellation) kutxabankCancellation = undefined;
+      }
+    })));
+  });
 
   ipcMain.handle("app:bootstrap", async (event) => {
     assertTrustedSender(event);
@@ -1505,6 +1822,7 @@ async function createWindow(): Promise<void> {
   mainWindow.on("closed", () => {
     resolvePendingAccountFailureDecision("stop");
     mainWindow = undefined;
+    app.quit();
   });
   mainWindow.on("close", (event) => {
     if (closeConfirmed || quitting) return;
@@ -1682,6 +2000,8 @@ app.on("before-quit", (event) => {
   coordinator?.cancelAll("The application is closing.");
   shutdownPromise ??= (async () => {
     const failures: unknown[] = [];
+    kutxabankCancellation?.abort();
+    try { await kutxabankBrowser?.close(); } catch { failures.push(new Error("BANK_WINDOW_CLEANUP_FAILED")); }
     for (const result of await Promise.allSettled([...activeOperations])) {
       if (result.status === "rejected") failures.push(result.reason);
     }
