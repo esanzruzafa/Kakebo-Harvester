@@ -892,7 +892,7 @@ function registerIpc(application: KakeboApplication): void {
   const saveAvailableCards = async () => await bankOperation(async () => {
     let discovered;
     try { discovered = await bankBrowser.discoverCards(); }
-    catch (error) { throw new Error(bankErrorCode(error)); }
+    catch (error) { throw new Error(bankErrorCode(error), { cause: error }); }
     if (discovered.length === 0) throw new Error("SOURCE_NOT_READY");
     try {
       const data = cardData();
@@ -909,7 +909,7 @@ function registerIpc(application: KakeboApplication): void {
       });
     } catch (error) {
       const code = error instanceof Error ? error.message : "";
-      throw new Error(code === "CARD_ASSOCIATION_CHANGED" ? code : "LOCAL_STORAGE_FAILED");
+      throw new Error(code === "CARD_ASSOCIATION_CHANGED" ? code : "LOCAL_STORAGE_FAILED", { cause: error });
     }
   });
   const watchBankLogin = (generation: number): void => {
@@ -937,7 +937,7 @@ function registerIpc(application: KakeboApplication): void {
       try {
         await bankBrowser.open();
         watchBankLogin(++autoCatalogGeneration);
-      } catch (error) { throw new Error(bankErrorCode(error)); }
+      } catch (error) { throw new Error(bankErrorCode(error), { cause: error }); }
     }));
   });
   ipcMain.handle("kutxabank:inspect", async event => {
@@ -949,7 +949,7 @@ function registerIpc(application: KakeboApplication): void {
         );
         return { cards, connections: cardData().listConnections() };
       }
-      catch (error) { throw new Error(bankErrorCode(error)); }
+      catch (error) { throw new Error(bankErrorCode(error), { cause: error }); }
     }));
   });
   ipcMain.handle("kutxabank:catalog", event => {
@@ -1044,7 +1044,7 @@ function registerIpc(application: KakeboApplication): void {
       } catch (error) {
         const code = bankErrorCode(error);
         audit.finish(runId, "FAILED", code, code);
-        throw new Error(code);
+        throw new Error(code, { cause: error });
       } finally {
         if (kutxabankCancellation === cancellation) kutxabankCancellation = undefined;
       }
@@ -1149,7 +1149,7 @@ function registerIpc(application: KakeboApplication): void {
       } catch (error) {
         const code = bankErrorCode(error);
         audit.finish(runId, "FAILED", code, code);
-        throw new Error(code);
+        throw new Error(code, { cause: error });
       } finally {
         if (kutxabankCancellation === cancellation) kutxabankCancellation = undefined;
       }

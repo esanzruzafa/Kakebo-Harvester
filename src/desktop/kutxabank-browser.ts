@@ -687,7 +687,7 @@ export function createElectronKutxabankBrowserDriver(input: {
         }
         if (!openedWindow.isDestroyed()) openedWindow.destroy();
         if (window === openedWindow) window = undefined;
-        throw new Error(navigationBlocked ? "NAVIGATION_BLOCKED" : "BANK_LOAD_FAILED");
+        throw new Error(navigationBlocked ? "NAVIGATION_BLOCKED" : "BANK_LOAD_FAILED", { cause: error });
       }
     },
     close() {
