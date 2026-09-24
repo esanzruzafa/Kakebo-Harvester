@@ -172,6 +172,17 @@ function errorMessage(error: unknown): string {
     "AUTHENTICATION_REQUIRED",
     "AUTHORIZATION_REQUIRED",
     "REAUTHENTICATION_REQUIRED",
+    "SOURCE_NOT_READY",
+    "SOURCE_UNAVAILABLE",
+    "SOURCE_BUSY",
+    "CANCELLED",
+    "INCOMPLETE_PAGE",
+    "QUERY_CHANGED",
+    "INVALID_QUERY",
+    "INVALID_CONNECTION",
+    "INVALID_ACCOUNT",
+    "FORMAT_CHANGED",
+    "WINDOW_CLOSED",
     "INVALID_RECONCILIATION",
     "ALREADY_RECONCILED",
     "INVALID_ALIAS",
@@ -2700,25 +2711,25 @@ function setupActions(): void {
   connectionWizard.addEventListener("keydown", (event) =>
     handleDialogKeydown(event, connectionWizard, closeConnectionWizard)
   );
-  const saveAvailableKutxabankCards = async (): Promise<void> => {
-    const result = await window.kakebo.saveKutxabankCatalog();
+  const showSavedKutxabankCatalog = async (result: {
+    connections: KutxabankCatalogConnection[]; warnings: FollowUpWarning[]
+  }): Promise<void> => {
     kutxabankCatalog = result.connections;
-    await refresh();
+    const refreshFailures = await refreshKutxabankAfterCommit(() => refresh());
     renderKutxabank();
-    showToast(result.warnings.length
-      ? `${t("kutxabank.catalogSaved", "Available cards saved locally.")} ${followUpWarningMessage(result.warnings)}`
-      : t("kutxabank.catalogSaved", "Available cards saved locally."),
-    result.warnings.length ? "warning" : false);
+    const warnings = [
+      ...(result.warnings.length ? [followUpWarningMessage(result.warnings)] : []),
+      ...(refreshFailures.length ? [t("kutxabank.catalogRefreshFailed",
+        "The cards were saved, but the view could not be refreshed. Reopen this tab to retry.")] : [])
+    ];
+    showToast([t("kutxabank.catalogSaved", "Available cards saved locally."), ...warnings].join(" "),
+      warnings.length ? "warning" : false);
+  };
+  const saveAvailableKutxabankCards = async (): Promise<void> => {
+    await showSavedKutxabankCatalog(await window.kakebo.saveKutxabankCatalog());
   };
   window.kakebo.onKutxabankCatalogUpdated(result => {
-    kutxabankCatalog = result.connections;
-    void refresh().then(() => {
-      renderKutxabank();
-      showToast(result.warnings.length
-        ? `${t("kutxabank.catalogSaved", "Available cards saved locally.")} ${followUpWarningMessage(result.warnings)}`
-        : t("kutxabank.catalogSaved", "Available cards saved locally."),
-      result.warnings.length ? "warning" : false);
-    });
+    void showSavedKutxabankCatalog(result).catch((error: unknown) => showToast(errorMessage(error), "warning"));
   });
   window.kakebo.onKutxabankCatalogError(code => {
     showToast(errorMessage(new Error(code)), "warning");

@@ -57,6 +57,14 @@ it('refuses to overwrite a confirmed relationship',async()=>{
   expect(()=>service.confirm('purchase','manual','duplicate')).toThrow('ALREADY_RECONCILED');
 });
 
+it('lists movements by the effective export date when booking date is absent',async()=>{
+  const {service,database}=await setup();
+  database.prepare("UPDATE transactions SET booking_date=NULL,value_date='2026-09-04' WHERE movement_key='debit'").run();
+  database.prepare("UPDATE transactions SET booking_date=NULL,transaction_datetime='2026-09-06T12:00:00Z' WHERE movement_key='manual'").run();
+  expect(service.list('2026-09-04','2026-09-06').map(row=>[row.movementKey,row.date]))
+    .toEqual([['manual','2026-09-06'],['debit','2026-09-04']]);
+});
+
 it('exports confirmed economic amounts and invalidates treatment if a source amount changes',async()=>{
   const {service,database}=await setup();
   if (!root) throw new Error('Test fixture missing');

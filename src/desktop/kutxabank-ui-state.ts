@@ -58,7 +58,7 @@ export function selectKutxabankConnectionMode(
 
 export async function refreshKutxabankAfterCommit(
   refreshApp: () => Promise<void>,
-  refreshInspection: () => Promise<void>
+  refreshInspection?: () => Promise<void>
 ): Promise<Array<"app" | "inspection">> {
   const failures: Array<"app" | "inspection"> = [];
   try {
@@ -66,10 +66,12 @@ export async function refreshKutxabankAfterCommit(
   } catch {
     failures.push("app");
   }
-  try {
-    await refreshInspection();
-  } catch {
-    failures.push("inspection");
+  if (refreshInspection) {
+    try {
+      await refreshInspection();
+    } catch {
+      failures.push("inspection");
+    }
   }
   return failures;
 }

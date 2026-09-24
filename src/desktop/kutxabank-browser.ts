@@ -494,17 +494,24 @@ export function createElectronKutxabankBrowserDriver(input: {
     bankWindow.webContents.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, ...point });
     bankWindow.webContents.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, ...point });
   };
-  const clickLabelAndWait = async (id: string, labelText: RegExp): Promise<void> => {
+  const clickLabelAndWait = async (id: string, labelText: RegExp, requireTableUpdate = false): Promise<void> => {
     const alreadySelected = await execute<boolean>(`(() => {
       const control = document.getElementById(${JSON.stringify(id)});
       if (!(control instanceof HTMLInputElement) || control.type !== 'radio') throw new Error('missing-control');
       return control.checked;
     })()`);
-    if (alreadySelected) return;
+    if (alreadySelected && !requireTableUpdate) return;
     await execute(`(() => {
       globalThis.__kakeboReadAction?.observer?.disconnect();
       const state = { changed: false, at: Date.now(), observer: undefined };
-      state.observer = new MutationObserver(() => { state.changed = true; state.at = Date.now(); });
+      const previousTable = document.getElementById('formListado:dataContent');
+      state.observer = new MutationObserver(records => {
+        if (${JSON.stringify(requireTableUpdate)} && previousTable &&
+            document.getElementById('formListado:dataContent') === previousTable &&
+            !records.some(record => previousTable.contains(record.target) &&
+              (record.type === 'childList' || record.type === 'characterData'))) return;
+        state.changed = true; state.at = Date.now();
+      });
       state.observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
       globalThis.__kakeboReadAction = state;
     })()`);
@@ -850,7 +857,30 @@ export function createElectronKutxabankBrowserDriver(input: {
               !(document.getElementById(found.htmlFor) instanceof HTMLInputElement)) throw new Error('missing-control');
           return found.htmlFor;
         })()`);
-        await clickLabelAndWait(controlId, label);
+        const alreadySelected = await execute<boolean>(`(() => {
+          const control = document.getElementById(${JSON.stringify(controlId)});
+          return control instanceof HTMLInputElement && control.checked;
+        })()`);
+        if (alreadySelected) {
+          const switchedAt = Date.now();
+          await clickLabelFor("formCriterios:criteriosMovimientos:_5", /Entre fechas/iu);
+          // The bank may still be processing this radio's AJAX update. Do not
+          // attribute its response to the query submitted by the next click.
+          for (let attempt = 0; attempt < 150; attempt += 1) {
+            if (!activeBankRequests.size && !page().webContents.isLoading() &&
+                Date.now() - Math.max(lastBankRequestAt, switchedAt) >= 2000) break;
+            if (attempt === 149) throw new Error("bank-busy");
+            await wait(100);
+          }
+          const toggled = await execute<boolean>(`(() => {
+            const chosen = document.getElementById(${JSON.stringify(controlId)});
+            const between = document.getElementById('formCriterios:criteriosMovimientos:_5');
+            return chosen instanceof HTMLInputElement && between instanceof HTMLInputElement &&
+              !chosen.checked && between.checked;
+          })()`);
+          if (!toggled) throw new Error("page-update-timeout");
+        }
+        await clickLabelAndWait(controlId, label, true);
       });
     },
     async showResults() { await runAction("show-results", async () => await click("formCriterios:mostrar")); },

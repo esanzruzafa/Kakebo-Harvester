@@ -156,6 +156,11 @@ describe("Kutxabank UI selection", () => {
     expect(failures).toEqual(["app", "inspection"]);
   });
 
+  it("keeps a committed catalog update successful when its app refresh fails", async () => {
+    await expect(refreshKutxabankAfterCommit(() => Promise.reject(new Error("cards.json unavailable"))))
+      .resolves.toEqual(["app"]);
+  });
+
   it("maps two distinct movement choices to an explicit reconciliation", () => {
     expect(buildReconciliationConfirmation("movement-a", "movement-b", "duplicate")).toEqual({
       firstKey: "movement-a",

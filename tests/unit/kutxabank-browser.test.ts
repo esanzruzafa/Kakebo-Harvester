@@ -696,6 +696,18 @@ describe("KutxabankBrowserController", () => {
     const addInput = (id: string) => { const item = new FakeInput(); item.id = id; values.set(id, item); return item; };
     const between = addInput("formCriterios:criteriosMovimientos:_5");
     const week = addInput("formCriterios:criteriosMovimientos:_1");
+    let betweenPending = false;
+    between.click = () => {
+      between.clicks += 1; between.checked = true; week.checked = false; mutation?.();
+      if (between.clicks === 2) {
+        betweenPending = true;
+        setTimeout(() => { betweenPending = false; }, 350);
+      }
+    };
+    week.click = () => {
+      if (betweenPending) throw new Error("overlapping-bank-queries");
+      week.clicks += 1; week.checked = true; between.checked = false; mutation?.();
+    };
     const movements = addInput("formMenu:movimientos");
     const secondCard = addInput("formMenuOpciones:PanelSeries:0:SelectRadioMenuContratos:_1");
     const cardLabel = new FakeLabel(); cardLabel.htmlFor = secondCard.id;
@@ -743,8 +755,10 @@ describe("KutxabankBrowserController", () => {
     await driver.showMovements();
     await driver.setDateRange("2026-06-01", "2026-09-15");
     await driver.setPeriod?.("week");
+    await driver.setPeriod?.("week");
+    await driver.selectCard(secondCard.id);
     expect({ card: secondCard.clicks, movements: movements.clicks, between: between.clicks, week: week.clicks })
-      .toEqual({ card: 1, movements: 1, between: 1, week: 1 });
+      .toEqual({ card: 1, movements: 1, between: 2, week: 2 });
     expect(cardScrolled).toBe(true);
     expect(values.get("formCriterios:calendarioDesde_cmb_dias")?.value).toBe("01");
     expect(values.get("formCriterios:calendarioHasta_cmb_anyo")?.value).toBe("2026");

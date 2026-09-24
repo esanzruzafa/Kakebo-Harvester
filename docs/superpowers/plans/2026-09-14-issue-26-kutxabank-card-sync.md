@@ -301,4 +301,4 @@ La entrega inicial añadió la spec y este plan, con revisión de fuentes, refer
 - [x] Mostrar el catálogo sin sesión bancaria y sincronizarlo mediante una nueva detección interna, sin exigir «Actualizar tarjetas» para cada ejecución.
 - [x] Reproducir en la ventana bancaria la opción de periodo elegida entre las seis observadas. «Entre fechas» conserva su formulario. Las pruebas sintéticas comprueban la selección nativa y el aislamiento por tarjeta.
 - [x] Ejecutar `npm run check`: 62 archivos, 386 pruebas pasadas y 2 omitidas.
-- [ ] Validar en el portable actualizado las casillas persistentes, la ausencia de una tarjeta y los cinco periodos predefinidos. Comprobar el resultado y la exportación de cada tarjeta frente al portal.
+- [ ] Validar en el portable actualizado las casillas persistentes, la ausencia de una tarjeta y los cuatro periodos predefinidos disponibles. Comprobar el resultado y la exportación de cada tarjeta frente al portal.

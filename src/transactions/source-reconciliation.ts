@@ -32,7 +32,8 @@ export class SourceReconciliationService {
     assertIsoDate(dateFrom, "Fecha inicial");
     assertIsoDate(dateTo, "Fecha final");
     if (dateFrom > dateTo) throw new Error("INVALID_QUERY");
-    return this.database.prepare(`SELECT t.movement_key AS movementKey, t.booking_date AS date,
+    return this.database.prepare(`SELECT t.movement_key AS movementKey,
+      COALESCE(t.booking_date, substr(t.transaction_datetime, 1, 10), t.value_date) AS date,
       COALESCE(NULLIF(a.account_alias, ''), a.display_name, a.name, c.alias,
         t.card_alias_snapshot, c.id) AS account,
       t.provider AS source, COALESCE(t.description_raw, '') AS description,
@@ -40,8 +41,8 @@ export class SourceReconciliationService {
       FROM transactions t LEFT JOIN accounts a ON a.id=t.account_id
       LEFT JOIN cards c ON c.id=t.account_id
       LEFT JOIN transaction_reconciliations r ON r.movement_key=t.movement_key
-      WHERE t.environment=? AND t.booking_date BETWEEN ? AND ?
-      ORDER BY t.booking_date DESC, t.movement_key LIMIT 501`).all(this.environment, dateFrom, dateTo) as ReconciliationMovement[];
+      WHERE t.environment=? AND COALESCE(t.booking_date, substr(t.transaction_datetime, 1, 10), t.value_date) BETWEEN ? AND ?
+      ORDER BY date DESC, t.movement_key LIMIT 501`).all(this.environment, dateFrom, dateTo) as ReconciliationMovement[];
   }
 
   confirm(firstKey: string, secondKey: string, kind: "settlement" | "duplicate"): string {
