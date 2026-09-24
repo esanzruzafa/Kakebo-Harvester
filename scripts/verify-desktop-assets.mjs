@@ -1,6 +1,7 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 import {
   desktopAssetDirectories,
   desktopAssetFiles,
@@ -99,5 +100,22 @@ assertSameFiles(
   migrationFiles,
   "Database migration manifest"
 );
+
+const visitedRendererModules = new Set();
+async function verifyRendererModule(modulePath) {
+  const absolute = resolve(modulePath);
+  if (visitedRendererModules.has(absolute)) return;
+  visitedRendererModules.add(absolute);
+  const source = await readFile(absolute, "utf8");
+  const imports = ts.preProcessFile(source, true, true).importedFiles;
+  for (const imported of imports) {
+    const specifier = imported.fileName;
+    if (!specifier.startsWith(".")) {
+      throw new Error(`Renderer module ${relative(projectRoot, absolute)} imports a bare specifier: ${specifier}`);
+    }
+    await verifyRendererModule(resolve(dirname(absolute), specifier));
+  }
+}
+await verifyRendererModule(resolve(projectRoot, "dist/src/desktop/renderer.js"));
 
 console.log("Desktop build assets verified.");

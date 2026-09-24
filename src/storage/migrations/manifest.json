@@ -32,5 +32,21 @@
   {
     "version": 13,
     "filename": "013_card_import_source_row_identity.sql"
+  },
+  {
+    "version": 14,
+    "filename": "014_transaction_reconciliation.sql"
+  },
+  {
+    "version": 15,
+    "filename": "015_separate_kutxabank_cards.sql"
+  },
+  {
+    "version": 16,
+    "filename": "016_card_balance.sql"
+  },
+  {
+    "version": 17,
+    "filename": "017_card_identity_fingerprint.sql"
   }
 ]

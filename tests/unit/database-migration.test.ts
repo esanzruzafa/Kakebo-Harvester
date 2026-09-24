@@ -18,6 +18,84 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("upgrades a v16 card catalog without losing balances or preventing same-digit cards", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-fingerprint-migration-"));
+    const config = testConfig(root);
+    const legacy = new Database(config.databasePath);
+    const manifest = JSON.parse(readFileSync(resolve("src", "storage", "migrations", "manifest.json"), "utf8")) as
+      Array<{ version: number; filename: string }>;
+    for (const entry of manifest.filter(item => item.version <= 16))
+      legacy.exec(readFileSync(resolve("src", "storage", "migrations", entry.filename), "utf8"));
+    legacy.pragma("user_version = 16");
+    const now = "2026-09-20T10:00:00.000Z";
+    legacy.prepare(`INSERT INTO bank_connections
+      (id, provider, environment, bank_name, bank_country, psu_type, alias, status, created_at)
+      VALUES ('bank', 'kutxabank-browser', 'sandbox', 'Kutxabank', 'ES', 'personal',
+        'Kutxabank', 'LOCAL', ?)` ).run(now);
+    legacy.prepare(`INSERT INTO cards
+      (id, bank_connection_id, alias, last4, first_seen_at, last_seen_at,
+       balance_text, balance_is_red, balance_read_at)
+      VALUES ('first', 'bank', 'Original', '1234', ?, ?, '194,55 €', 1, ?)`
+    ).run(now, now, now);
+    legacy.close();
+
+    const upgraded = createDatabase(config.databasePath);
+    expect(upgraded.prepare(`SELECT id, alias, last4, balance_text, balance_is_red,
+      balance_read_at, identity_fingerprint FROM cards`).all()).toEqual([{
+      id: "first", alias: "Original", last4: "1234", balance_text: "194,55 €",
+      balance_is_red: 1, balance_read_at: now, identity_fingerprint: null
+    }]);
+    upgraded.prepare(`INSERT INTO cards (id, bank_connection_id, alias, last4,
+      first_seen_at, last_seen_at, identity_fingerprint)
+      VALUES ('second', 'bank', 'Other', '1234', ?, ?, ?)`
+    ).run(now, now, "a".repeat(64));
+    expect(upgraded.prepare("SELECT COUNT(*) AS total FROM cards WHERE last4 = '1234'").get())
+      .toEqual({ total: 2 });
+    expect(upgraded.pragma("foreign_key_check")).toEqual([]);
+    upgraded.close();
+  });
+
+  it("moves an existing Kutxabank card out of accounts without losing its movements", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-separate-cards-"));
+    const config = testConfig(root);
+    const legacy = new Database(config.databasePath);
+    for (const filename of [
+      "001_initial.sql", "002_desktop.sql", "003_audit_and_exports.sql",
+      "004_provider_errors.sql", "005_psu_context.sql", "006_account_sync_errors.sql",
+      "007_correct_legacy_rate_limit_backfill.sql", "008_account_identification_hashes.sql",
+      "009_transaction_fallback_occurrence.sql", "010_card_import_source_rows.sql",
+      "011_verified_account_identification_hashes.sql", "012_counterparty_identification_hash.sql",
+      "013_card_import_source_row_identity.sql", "014_transaction_reconciliation.sql"
+    ]) legacy.exec(readFileSync(resolve("src", "storage", "migrations", filename), "utf8"));
+    legacy.pragma("user_version = 14");
+    const now = new Date().toISOString();
+    legacy.prepare(`INSERT INTO bank_connections
+      (id, provider, environment, bank_name, bank_country, psu_type, alias, status, created_at)
+      VALUES ('bank', 'kutxabank-browser', 'sandbox', 'Kutxabank', 'ES', 'personal',
+        'Kutxabank', 'LOCAL', ?)`).run(now);
+    legacy.prepare(`INSERT INTO accounts
+      (id, bank_connection_id, provider_account_id, name, account_alias, account_type,
+       product_type, first_seen_at, last_seen_at, sync_enabled, export_enabled)
+      VALUES ('card', 'bank', 'card', 'Compras', 'Mi tarjeta', 'CARD', '•••• 1234',
+        ?, ?, 0, 1)`).run(now, now);
+    legacy.prepare(`INSERT INTO transactions
+      (id, movement_key, reconciliation_key, provider, environment, bank_connection_id,
+       account_id, status, amount, currency, direction, first_seen_at, last_seen_at,
+       imported_at, raw_fingerprint)
+      VALUES ('movement', 'movement-key', 'reconciliation-key', 'kutxabank-browser',
+       'sandbox', 'bank', 'card', 'unknown', '-1', 'EUR', 'expense', ?, ?, ?, 'fingerprint')`
+    ).run(now, now, now);
+    legacy.close();
+
+    const migrated = createDatabase(config.databasePath);
+    expect(migrated.prepare("SELECT id, alias, last4, sync_enabled FROM cards").all())
+      .toEqual([{ id: "card", alias: "Mi tarjeta", last4: "1234", sync_enabled: 0 }]);
+    expect(migrated.prepare("SELECT id FROM accounts WHERE id = 'card'").get()).toBeUndefined();
+    expect(migrated.prepare("SELECT account_id FROM transactions WHERE id = 'movement'").get())
+      .toEqual({ account_id: "card" });
+    expect(migrated.pragma("foreign_key_check")).toEqual([]);
+    migrated.close();
+  });
   it.runIf(platform() !== "win32")(
     "restricts newly created SQLite files to their owner on POSIX",
     async () => {

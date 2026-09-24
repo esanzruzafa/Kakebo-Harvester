@@ -979,6 +979,119 @@ th:last-child .tooltip-help::after {
   min-width: 760px;
 }
 
+.cards-panel-summary {
+  display: block;
+  position: relative;
+  padding-right: 34px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.cards-panel-summary::-webkit-details-marker { display: none; }
+.cards-panel-summary::after {
+  content: "⌄";
+  position: absolute;
+  right: 0;
+  top: 6px;
+  color: var(--green);
+  font-size: 26px;
+  line-height: 1;
+}
+.cards-collapsible[open] > .cards-panel-summary { margin-bottom: 16px; }
+.cards-collapsible[open] > .cards-panel-summary::after { transform: rotate(180deg); }
+.cards-panel-summary:focus-visible { outline: 2px solid var(--green); outline-offset: 5px; }
+
+.kutxabank-grid {
+  display: grid;
+  margin-bottom: 18px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  gap: 16px;
+}
+
+#view-cards [hidden] {
+  display: none !important;
+}
+
+.kutxabank-choice {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: var(--muted);
+  gap: 8px;
+  font-size: 12px;
+}
+
+.kutxabank-choice legend {
+  margin-bottom: 7px;
+  font-weight: 700;
+}
+
+.kutxabank-choice label {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 5px;
+}
+
+.kutxabank-actions {
+  margin-top: 18px;
+}
+
+.kutxabank-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 18px;
+  margin: 18px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.kutxabank-filters legend { font-weight: 700; }
+.kutxabank-filters label, .kutxabank-catalog-cards label { display: flex; align-items: center; gap: 7px; }
+.kutxabank-filter-dates { grid-column: 1 / -1; margin-top: 4px; }
+.kutxabank-filters .kutxabank-filter-dates .field { display: grid; align-items: stretch; }
+.kutxabank-catalog { margin: 18px 0; }
+.kutxabank-catalog-cards { display: grid; gap: 8px; margin: 12px 0; }
+.kutxabank-card-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.kutxabank-card-row label { flex-wrap: wrap; }
+.kutxabank-card-row .input { max-width: 260px; }
+.kutxabank-card-balance { margin-left: 8px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kutxabank-card-balance.is-red { color: var(--danger); font-weight: 700; }
+.kutxabank-balance-time { margin-left: 4px; color: var(--muted); white-space: nowrap; }
+.kutxabank-edit-alias, .kutxabank-delete-card {
+  display: inline-grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+.kutxabank-edit-alias { font-size: 19px; }
+.kutxabank-delete-card { color: var(--danger); }
+.kutxabank-delete-card svg { width: 19px; height: 19px; }
+.kutxabank-edit-alias:focus-visible, .kutxabank-delete-card:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+
+.reconciliation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.reconciliation-grid .field:nth-child(3),
+.reconciliation-grid .field:nth-child(4) {
+  grid-column: span 2;
+}
+
+.reconciliation-actions {
+  margin-top: 18px;
+}
+
 .card-files-table td:nth-child(2) {
   width: 55%;
 }
@@ -1332,6 +1445,10 @@ body[data-export-format="xlsx"] .csv-option {
 
   .connection-wizard-grid {
     grid-template-columns: 1fr;
+  }
+
+  .kutxabank-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .connection-wizard-reload .button {

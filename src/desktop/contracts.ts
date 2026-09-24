@@ -27,6 +27,7 @@ import type {
   CardImportOperationResult,
   ConnectionOperationResult,
   DisconnectOperationResult,
+  FollowUpWarning,
   RecategorizationOperationResult
 } from "./committed-operations.js";
 
@@ -90,6 +91,7 @@ export interface DesktopBootstrap {
     exportFile: string;
     categorizationRules: string;
     accountsConfig: string;
+    cardsConfig: string;
     categoriesConfig: string;
     exportSettings: string;
     cardImportProfiles: string;
@@ -125,7 +127,89 @@ export interface SelectedCardFile {
   name: string;
 }
 
+export interface KutxabankInspection {
+  cards: Array<{ selectionToken: string; last4: string; alias?: string;
+    balance?: { text: string; isRed: boolean } }>;
+  connections: Array<{ id: string; alias: string;
+    cards: Array<{ id: string; alias: string; last4: string | null }> }>;
+}
+
+export interface KutxabankCatalogConnection {
+  id: string;
+  alias: string;
+  cards: Array<{ id: string; connectionId: string; alias: string; last4: string; syncEnabled: boolean;
+    balance: { text: string; isRed: boolean; readAt: string } | null }>;
+}
+
+export interface KutxabankSyncInput {
+  selectionToken: string;
+  connectionId?: string;
+  connectionAlias?: string;
+  accountId?: string;
+  accountAlias?: string;
+  dateFrom: string;
+  dateTo: string;
+  period?: import("./kutxabank-period.js").KutxabankPeriod;
+}
+
+export interface KutxabankSyncResult {
+  rows: number;
+  inserted: number;
+  updated: number;
+  duplicates: number;
+  reconciled: number;
+  exportPath: string | null;
+  warnings: FollowUpWarning[];
+  cardWarnings?: Array<{ accountId: string; code: string }>;
+}
+
+export interface ReconciliationMovement {
+  movementKey: string;
+  date: string | null;
+  account: string;
+  source: string;
+  description: string;
+  amount: string;
+  currency: string;
+  status: string;
+  reference: string | null;
+}
+
+export interface ReconciliationList {
+  movements: ReconciliationMovement[];
+  truncated: boolean;
+}
+
+export interface ReconciliationOperationResult {
+  reference?: string;
+  exportPath: string | null;
+  warnings: FollowUpWarning[];
+}
+
 export interface KakeboDesktopApi {
+  openKutxabank: () => Promise<void>;
+  inspectKutxabank: () => Promise<KutxabankInspection>;
+  listKutxabankCatalog: () => Promise<KutxabankCatalogConnection[]>;
+  saveKutxabankCatalog: () => Promise<{
+    connections: KutxabankCatalogConnection[]; warnings: FollowUpWarning[] }>;
+  onKutxabankCatalogUpdated: (listener: (result: {
+    connections: KutxabankCatalogConnection[]; warnings: FollowUpWarning[]
+  }) => void) => () => void;
+  onKutxabankCatalogError: (listener: (code: string) => void) => () => void;
+  setKutxabankCardSyncEnabled: (input: { connectionId: string; accountId: string; enabled: boolean }) => Promise<{
+    connections: KutxabankCatalogConnection[]; warnings: FollowUpWarning[] }>;
+  setKutxabankCardAlias: (input: { connectionId: string; accountId: string; alias: string }) => Promise<{
+    connections: KutxabankCatalogConnection[]; warnings: FollowUpWarning[] }>;
+  deleteKutxabankCard: (input: { connectionId: string; accountId: string }) => Promise<{
+    connections: KutxabankCatalogConnection[]; warnings: FollowUpWarning[] }>;
+  syncKutxabankCatalog: (input: { dateFrom: string; dateTo: string;
+    period: import("./kutxabank-period.js").KutxabankPeriod }) => Promise<KutxabankSyncResult>;
+  syncKutxabank: (input: KutxabankSyncInput) => Promise<KutxabankSyncResult>;
+  forgetKutxabankDevice: () => Promise<boolean>;
+  disconnectKutxabank: (connectionId: string) => Promise<ConnectionOperationResult>;
+  listReconciliation: (input: { dateFrom: string; dateTo: string }) => Promise<ReconciliationList>;
+  confirmReconciliation: (input: { firstKey: string; secondKey: string; kind: "settlement" | "duplicate" }) => Promise<ReconciliationOperationResult>;
+  undoReconciliation: (reference: string) => Promise<ReconciliationOperationResult>;
   bootstrap: () => Promise<DesktopBootstrap>;
   startSync: (request: SyncRequest) => Promise<SyncRunResult>;
   resolveAccountFailure: (input: {
