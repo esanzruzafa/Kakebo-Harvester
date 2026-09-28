@@ -7,8 +7,7 @@ CREATE TABLE cards (
   sync_enabled INTEGER NOT NULL DEFAULT 1,
   export_enabled INTEGER NOT NULL DEFAULT 1,
   first_seen_at TEXT NOT NULL,
-  last_seen_at TEXT NOT NULL,
-  UNIQUE(bank_connection_id, last4)
+  last_seen_at TEXT NOT NULL
 );
 
 INSERT INTO cards (id, bank_connection_id, alias, last4, active, sync_enabled,

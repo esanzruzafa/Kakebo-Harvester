@@ -503,7 +503,7 @@ describe("KutxabankSyncService", () => {
     await new CardsConfigStore(cardsPath).save(service.listCards(connection.id));
     expect(JSON.parse(await readFile(accountsPath, "utf8"))).toEqual({ version: 1, accounts: [] });
     expect(JSON.parse(await readFile(cardsPath, "utf8"))).toEqual({ version: 1,
-      cards: [{ id: card.id, alias: "Compras", last4: "1234", syncEnabled: true, balance: null }] });
+      cards: [{ id: card.id, alias: "Compras", last4: "1234", syncEnabled: true, exportEnabled: true, balance: null }] });
   });
 
   it("exports a card movement using its card alias after the catalogue is separated", async () => {
@@ -518,5 +518,11 @@ describe("KutxabankSyncService", () => {
     await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
     const output = await new CsvExporter(config, database).export();
     expect(await readFile(output.path, "utf8")).toContain("Viajes");
+    service.setCardExportEnabled(connection.id, card.id, false);
+    expect(service.listCards(connection.id)[0]).toMatchObject({ syncEnabled: true, exportEnabled: false });
+    const excluded = await new CsvExporter(config, database).export();
+    expect(await readFile(excluded.path, "utf8")).not.toContain("Viajes");
+    service.setCardExportEnabled(connection.id, card.id, true);
+    expect(service.listCards(connection.id)[0]).toMatchObject({ exportEnabled: true });
   });
 });

@@ -28,6 +28,7 @@ export interface KutxabankLocalCard {
   last4: string;
   active: boolean;
   syncEnabled: boolean;
+  exportEnabled: boolean;
   balance: { text: string; isRed: boolean; readAt: string } | null;
 }
 
@@ -175,7 +176,7 @@ export class KutxabankSyncService {
     ).run(id, connectionId, alias, last4, now, now,
       balance?.text ?? null, balance ? Number(balance.isRed) : null, balance ? now : null,
       fingerprint ?? null);
-    return { id, connectionId, alias, last4, active: true, syncEnabled: true,
+    return { id, connectionId, alias, last4, active: true, syncEnabled: true, exportEnabled: true,
       balance: balance ? { ...balance, readAt: now } : null };
   }
 
@@ -198,7 +199,7 @@ export class KutxabankSyncService {
 
   public listCards(connectionId: string): KutxabankLocalCard[] {
     const rows = this.database.prepare(
-      `SELECT a.id, a.bank_connection_id, a.alias, a.last4, a.active, a.sync_enabled,
+      `SELECT a.id, a.bank_connection_id, a.alias, a.last4, a.active, a.sync_enabled, a.export_enabled,
         a.balance_text, a.balance_is_red, a.balance_read_at
        FROM cards a JOIN bank_connections c ON c.id = a.bank_connection_id
        WHERE a.bank_connection_id = ? AND c.provider = ? AND c.environment = ?
@@ -206,7 +207,7 @@ export class KutxabankSyncService {
        ORDER BY a.first_seen_at, a.rowid`
     ).all(connectionId, PROVIDER, this.config.appEnv) as Array<{
       id: string; bank_connection_id: string; alias: string;
-      last4: string; active: number; sync_enabled: number;
+      last4: string; active: number; sync_enabled: number; export_enabled: number;
       balance_text: string | null; balance_is_red: number | null; balance_read_at: string | null;
     }>;
     return rows.map((row) => ({
@@ -216,6 +217,7 @@ export class KutxabankSyncService {
       last4: row.last4,
       active: row.active === 1,
       syncEnabled: row.sync_enabled === 1,
+      exportEnabled: row.export_enabled === 1,
       balance: row.balance_text && row.balance_read_at
         ? { text: row.balance_text, isRed: row.balance_is_red === 1, readAt: row.balance_read_at } : null
     }));
@@ -310,6 +312,14 @@ export class KutxabankSyncService {
     this.requireConnection(connectionId);
     const updated = this.database.prepare(
       `UPDATE cards SET sync_enabled = ? WHERE id = ? AND bank_connection_id = ? AND active = 1`
+    ).run(enabled ? 1 : 0, accountId, connectionId);
+    if (updated.changes !== 1) throw new Error("ACCOUNT_UNAVAILABLE");
+  }
+
+  public setCardExportEnabled(connectionId: string, accountId: string, enabled: boolean): void {
+    this.requireConnection(connectionId);
+    const updated = this.database.prepare(
+      `UPDATE cards SET export_enabled = ? WHERE id = ? AND bank_connection_id = ? AND active = 1`
     ).run(enabled ? 1 : 0, accountId, connectionId);
     if (updated.changes !== 1) throw new Error("ACCOUNT_UNAVAILABLE");
   }

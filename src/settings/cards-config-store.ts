@@ -3,7 +3,7 @@ import { writeJsonAtomically } from "./atomic-json-file.js";
 
 interface CardsConfigFile {
   version: 1;
-  cards: Array<Pick<KutxabankLocalCard, "id" | "alias" | "last4" | "syncEnabled" | "balance">>;
+  cards: Array<Pick<KutxabankLocalCard, "id" | "alias" | "last4" | "syncEnabled" | "exportEnabled" | "balance">>;
 }
 
 export class CardsConfigStore {
@@ -12,8 +12,8 @@ export class CardsConfigStore {
   public async save(cards: KutxabankLocalCard[]): Promise<void> {
     const content: CardsConfigFile = {
       version: 1,
-      cards: cards.map(({ id, alias, last4, syncEnabled, balance }) => ({
-        id, alias, last4, syncEnabled, balance
+      cards: cards.map(({ id, alias, last4, syncEnabled, exportEnabled, balance }) => ({
+        id, alias, last4, syncEnabled, exportEnabled, balance
       }))
     };
     await writeJsonAtomically(this.path, content);

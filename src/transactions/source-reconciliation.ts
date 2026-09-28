@@ -71,12 +71,38 @@ export class SourceReconciliationService {
         (movement_key,reference,kind,representative,amount_snapshot,currency_snapshot,confirmed_at) VALUES(?,?,?,?,?,?,?)`);
       for (const [index,row] of [first,second].entries()) insert.run(row.movement_key,reference,kind,
         kind === "duplicate" && index === 1 ? 0 : 1,row.amount,row.currency,new Date().toISOString());
+      this.database.prepare(`INSERT INTO transaction_reconciliation_events
+        (id, reference, action, kind, first_movement_key, second_movement_key,
+         first_amount_snapshot, second_amount_snapshot, currency_snapshot, confirmed_at,
+         environment, recorded_at)
+        VALUES (?, ?, 'confirm', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(randomUUID(), reference, kind, firstKey, secondKey, first.amount, second.amount,
+          first.currency, new Date().toISOString(), this.environment, new Date().toISOString());
       return reference;
     })();
   }
 
   undo(reference: string): void {
-    this.database.prepare(`DELETE FROM transaction_reconciliations WHERE reference=?
-      AND movement_key IN (SELECT movement_key FROM transactions WHERE environment=?)`).run(reference, this.environment);
+    this.database.transaction(() => {
+      const rows = this.database.prepare(`SELECT r.movement_key, r.kind, r.amount_snapshot,
+        r.currency_snapshot, r.confirmed_at FROM transaction_reconciliations r
+        JOIN transactions t ON t.movement_key = r.movement_key
+        WHERE r.reference = ? AND t.environment = ? ORDER BY r.confirmed_at, r.movement_key`)
+        .all(reference, this.environment) as Array<{ movement_key: string; kind: "settlement" | "duplicate";
+          amount_snapshot: string; currency_snapshot: string; confirmed_at: string }>;
+      if (rows.length !== 2 || rows[0]?.kind !== rows[1]?.kind) throw new Error("INVALID_RECONCILIATION");
+      const [first, second] = rows as [typeof rows[number], typeof rows[number]];
+      const deleted = this.database.prepare(`DELETE FROM transaction_reconciliations WHERE reference=?
+        AND movement_key IN (SELECT movement_key FROM transactions WHERE environment=?)`).run(reference, this.environment);
+      if (deleted.changes !== 2) throw new Error("INVALID_RECONCILIATION");
+      this.database.prepare(`INSERT INTO transaction_reconciliation_events
+        (id, reference, action, kind, first_movement_key, second_movement_key,
+         first_amount_snapshot, second_amount_snapshot, currency_snapshot, confirmed_at,
+         environment, recorded_at)
+        VALUES (?, ?, 'undo', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(randomUUID(), reference, first.kind, first.movement_key, second.movement_key,
+          first.amount_snapshot, second.amount_snapshot, first.currency_snapshot, first.confirmed_at,
+          this.environment, new Date().toISOString());
+    })();
   }
 }

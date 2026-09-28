@@ -976,6 +976,20 @@ async function registerIpc(application: KakeboApplication): Promise<void> {
       return { connections: data.listConnections(), warnings: result.warnings };
     }));
   });
+  ipcMain.handle("kutxabank:card-export-enabled", async (event, input: unknown) => {
+    assertTrustedSender(event);
+    const parsed = z.object({ connectionId: z.uuid(), accountId: z.uuid(), enabled: z.boolean() }).strict().safeParse(input);
+    if (!parsed.success) throw new Error("INVALID_QUERY");
+    return await trackOperation(withSynchronizationLock(application, async () => {
+      const data = cardData();
+      const result = await runConnectionOperation({
+        connect: () => data.setCardExportEnabled(parsed.data.connectionId, parsed.data.accountId, parsed.data.enabled),
+        saveAccounts: saveCards,
+        configurationStep: "cards-config"
+      });
+      return { connections: data.listConnections(), warnings: result.warnings };
+    }));
+  });
   ipcMain.handle("kutxabank:card-alias", async (event, input: unknown) => {
     assertTrustedSender(event);
     const parsed = z.object({ connectionId: z.uuid(), accountId: z.uuid(),

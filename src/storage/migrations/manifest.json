@@ -48,5 +48,9 @@
   {
     "version": 17,
     "filename": "017_card_identity_fingerprint.sql"
+  },
+  {
+    "version": 18,
+    "filename": "018_reconciliation_events.sql"
   }
 ]

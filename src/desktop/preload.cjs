@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("kakebo", {
     return () => ipcRenderer.removeListener("kutxabank:catalog-error", handler);
   },
   setKutxabankCardSyncEnabled: (input) => ipcRenderer.invoke("kutxabank:card-sync-enabled", input),
+  setKutxabankCardExportEnabled: (input) => ipcRenderer.invoke("kutxabank:card-export-enabled", input),
   setKutxabankCardAlias: (input) => ipcRenderer.invoke("kutxabank:card-alias", input),
   deleteKutxabankCard: (input) => ipcRenderer.invoke("kutxabank:card-delete", input),
   syncKutxabankCatalog: (input) => ipcRenderer.invoke("kutxabank:catalog-sync", input),

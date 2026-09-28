@@ -93,6 +93,7 @@
   "kutxabank.saveAlias": "Save alias",
   "kutxabank.cardEnding": "Card ending in {last4}",
   "kutxabank.balanceReadAt": "Last read: {date}",
+  "kutxabank.cardExport": "Export",
   "kutxabank.deleteCard.label": "Delete card ending in {last4}",
   "kutxabank.deleteCard.title": "Delete card ending in {last4}?",
   "kutxabank.deleteCard.detail": "The card is removed from the catalog. Previously imported movements stay saved. If found again, the card will be recreated.",

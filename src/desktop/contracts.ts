@@ -137,7 +137,7 @@ export interface KutxabankInspection {
 export interface KutxabankCatalogConnection {
   id: string;
   alias: string;
-  cards: Array<{ id: string; connectionId: string; alias: string; last4: string; syncEnabled: boolean;
+  cards: Array<{ id: string; connectionId: string; alias: string; last4: string; syncEnabled: boolean; exportEnabled: boolean;
     balance: { text: string; isRed: boolean; readAt: string } | null }>;
 }
 
@@ -197,6 +197,8 @@ export interface KakeboDesktopApi {
   }) => void) => () => void;
   onKutxabankCatalogError: (listener: (code: string) => void) => () => void;
   setKutxabankCardSyncEnabled: (input: { connectionId: string; accountId: string; enabled: boolean }) => Promise<{
+    connections: KutxabankCatalogConnection[]; warnings: FollowUpWarning[] }>;
+  setKutxabankCardExportEnabled: (input: { connectionId: string; accountId: string; enabled: boolean }) => Promise<{
     connections: KutxabankCatalogConnection[]; warnings: FollowUpWarning[] }>;
   setKutxabankCardAlias: (input: { connectionId: string; accountId: string; alias: string }) => Promise<{
     connections: KutxabankCatalogConnection[]; warnings: FollowUpWarning[] }>;

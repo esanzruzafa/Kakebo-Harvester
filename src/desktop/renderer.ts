@@ -1571,6 +1571,26 @@ function renderKutxabankCatalog(): void {
       label.append(readAt);
     }
     row.append(label);
+    const exportLabel = document.createElement("label");
+    exportLabel.className = "kutxabank-card-export";
+    const exportCheckbox = document.createElement("input");
+    exportCheckbox.type = "checkbox";
+    exportCheckbox.checked = card.exportEnabled;
+    exportCheckbox.disabled = kutxabankBusy;
+    exportCheckbox.addEventListener("change", () => { void (async () => {
+      kutxabankBusy = true;
+      renderKutxabank();
+      try {
+        const result = await window.kakebo.setKutxabankCardExportEnabled({
+          connectionId: card.connectionId, accountId: card.id, enabled: exportCheckbox.checked
+        });
+        kutxabankCatalog = result.connections;
+        if (result.warnings.length) showToast(followUpWarningMessage(result.warnings), "warning");
+      } catch (error) { showToast(errorMessage(error), true); }
+      finally { kutxabankBusy = false; renderKutxabank(); }
+    })(); });
+    exportLabel.append(exportCheckbox, document.createTextNode(t("kutxabank.cardExport", "Export")));
+    row.append(exportLabel);
     if (kutxabankEditingCardId === card.id) {
       const input = document.createElement("input");
       input.className = "input";

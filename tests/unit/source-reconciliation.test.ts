@@ -38,6 +38,18 @@ it('retains original amounts while a confirmed settlement contributes zero', asy
   expect(expenseContribution({amount:'-120',treatment:'normal',representative:true})).toBe('120');
   service.undo(ref);
   expect(database.prepare('SELECT COUNT(*) AS n FROM transaction_reconciliations').get()).toEqual({n:0});
+  expect(database.prepare(`SELECT action, reference, kind, environment FROM transaction_reconciliation_events
+    WHERE reference = ? ORDER BY recorded_at, rowid`).all(ref)).toEqual([
+    { action: 'confirm', reference: ref, kind: 'settlement', environment: 'production' },
+    { action: 'undo', reference: ref, kind: 'settlement', environment: 'production' }
+  ]);
+  const undoEvent = database.prepare(`SELECT first_amount_snapshot, second_amount_snapshot, currency_snapshot,
+    confirmed_at FROM transaction_reconciliation_events WHERE reference = ? AND action = 'undo'`).get(ref) as
+    { first_amount_snapshot: string; second_amount_snapshot: string; currency_snapshot: string; confirmed_at: string };
+  expect([undoEvent.first_amount_snapshot, undoEvent.second_amount_snapshot].sort())
+    .toEqual(['-120', '120']);
+  expect(undoEvent.currency_snapshot).toBe('EUR');
+  expect(undoEvent.confirmed_at).toMatch(/^20\d{2}-/u);
 });
 it('keeps only the explicitly selected representative of a manual/browser duplicate',async()=>{
   const {service,database}=await setup(); service.confirm('purchase','manual','duplicate');

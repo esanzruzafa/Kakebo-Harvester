@@ -93,6 +93,7 @@
   "kutxabank.saveAlias": "Guardar alias",
   "kutxabank.cardEnding": "Tarjeta terminada en {last4}",
   "kutxabank.balanceReadAt": "Última lectura: {date}",
+  "kutxabank.cardExport": "Exportar",
   "kutxabank.deleteCard.label": "Eliminar tarjeta terminada en {last4}",
   "kutxabank.deleteCard.title": "¿Eliminar la tarjeta terminada en {last4}?",
   "kutxabank.deleteCard.detail": "Se quitará la tarjeta del catálogo. Los movimientos importados permanecerán guardados. Si vuelve a detectarse, se creará de nuevo.",
