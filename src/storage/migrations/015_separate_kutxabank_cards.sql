@@ -81,4 +81,6 @@ DROP TABLE kakebo_reconciliations_backup;
 CREATE INDEX transaction_reconciliations_reference_idx ON transaction_reconciliations(reference);
 
 UPDATE sync_runs SET account_id = NULL WHERE account_id IN (SELECT id FROM cards);
+DELETE FROM balances WHERE account_id IN (SELECT id FROM cards);
+DELETE FROM transactions_raw WHERE account_id IN (SELECT id FROM cards);
 DELETE FROM accounts WHERE id IN (SELECT id FROM cards);

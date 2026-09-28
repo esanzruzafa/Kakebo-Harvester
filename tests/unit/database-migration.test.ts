@@ -85,6 +85,10 @@ describe("database migrations", () => {
       VALUES ('movement', 'movement-key', 'reconciliation-key', 'kutxabank-browser',
        'sandbox', 'bank', 'card', 'unknown', '-1', 'EUR', 'expense', ?, ?, ?, 'fingerprint')`
     ).run(now, now, now);
+    legacy.prepare(`INSERT INTO balances (id, account_id, amount, currency, extracted_at)
+      VALUES ('old-balance', 'card', '10', 'EUR', ?)`).run(now);
+    legacy.prepare(`INSERT INTO transactions_raw (id, account_id, fetched_at, page_number, raw_fingerprint)
+      VALUES ('old-raw', 'card', ?, 1, 'raw-fingerprint')`).run(now);
     legacy.close();
 
     const migrated = createDatabase(config.databasePath);
@@ -93,6 +97,10 @@ describe("database migrations", () => {
     expect(migrated.prepare("SELECT id FROM accounts WHERE id = 'card'").get()).toBeUndefined();
     expect(migrated.prepare("SELECT account_id FROM transactions WHERE id = 'movement'").get())
       .toEqual({ account_id: "card" });
+    expect(migrated.prepare("SELECT COUNT(*) AS total FROM balances WHERE account_id = 'card'").get())
+      .toEqual({ total: 0 });
+    expect(migrated.prepare("SELECT COUNT(*) AS total FROM transactions_raw WHERE account_id = 'card'").get())
+      .toEqual({ total: 0 });
     expect(migrated.pragma("foreign_key_check")).toEqual([]);
     migrated.close();
   });

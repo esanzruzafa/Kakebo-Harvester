@@ -73,7 +73,8 @@ interface ValidMovement {
 
 function requiredAlias(value: string): string {
   const alias = value.trim();
-  if (!alias || alias.length > 120) throw new Error("INVALID_ALIAS");
+  if (!alias || alias.length > 120 || alias.replace(PAN, "") !== alias)
+    throw new Error("INVALID_ALIAS");
   return alias;
 }
 

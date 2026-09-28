@@ -322,6 +322,18 @@ describe("KutxabankSyncService", () => {
     expect(database.prepare("SELECT COUNT(*) total FROM accounts").get()).toEqual({ total: 0 });
   });
 
+  it("rejects full card numbers in a user-edited alias without changing the card", async () => {
+    const { service, database } = await setup();
+    const connection = service.createConnection("Ana");
+    const card = service.createCard(connection.id, "Compras", "1234");
+    expect(() => service.setCardAlias(connection.id, card.id, "Visa 4111\u00a01111\u00a01111\u00a01111"))
+      .toThrow("INVALID_ALIAS");
+    expect(() => service.createCard(connection.id, "4111 1111 1111 1111", "5678"))
+      .toThrow("INVALID_ALIAS");
+    expect(database.prepare("SELECT alias FROM cards WHERE id = ?").get(card.id))
+      .toEqual({ alias: "Compras" });
+  });
+
   it("ingests complete repeated and overlapping batches idempotently while retaining equal purchases", async () => {
     const { service, database } = await setup();
     const connection = service.createConnection("Ana");

@@ -154,6 +154,48 @@ describe("Kutxabank desktop workflow", () => {
     )).rejects.toThrow("LOCAL_STORAGE_FAILED");
   });
 
+  it("rolls back every card when a later card cannot be persisted", async () => {
+    const { deps } = setup();
+    const secondId = "00000000-0000-4000-8000-000000000003";
+    deps.listConnections.mockReturnValue([{ id: connectionId, alias: "Person A", cards: [
+      { id: accountId, alias: "First", last4: "1111", fingerprint: fingerprint1111, syncEnabled: true },
+      { id: secondId, alias: "Second", last4: "2222", fingerprint: fingerprint2222, syncEnabled: true }
+    ] }]);
+    deps.selectCard.mockImplementation((token: string) => Promise.resolve({
+      productKey: "ephemeral-bank-product", last4: token === "first" ? "1111" : "2222",
+      fingerprint: token === "first" ? fingerprint1111 : fingerprint2222
+    }));
+    const committed: string[] = [];
+    let pending: string[] = [];
+    let transactionCalls = 0;
+    const transaction = <T>(operation: () => T): T => {
+      transactionCalls += 1;
+      pending = [];
+      try {
+        const value = operation();
+        committed.push(...pending);
+        return value;
+      } finally { pending.length = 0; }
+    };
+    let writes = 0;
+    deps.ingest.mockImplementation(() => {
+      writes += 1;
+      if (writes === 2) throw new Error("INVALID_MOVEMENT");
+      pending.push(accountId);
+      return { rows: 1, inserted: 1, updated: 0, duplicates: 0, reconciled: 0 };
+    });
+
+    await expect(executeKutxabankBatchSync(
+      { dateFrom: request.dateFrom, dateTo: request.dateTo },
+      { ...deps, transaction, discoverCards: vi.fn().mockResolvedValue([
+        { selectionToken: "first", last4: "1111", fingerprint: fingerprint1111 },
+        { selectionToken: "second", last4: "2222", fingerprint: fingerprint2222 }
+      ]) }
+    )).rejects.toThrow("LOCAL_STORAGE_FAILED");
+    expect(transactionCalls).toBe(1);
+    expect(committed).toEqual([]);
+  });
+
   it("binds ephemeral browser selection to the explicitly selected local account", async () => {
     const { deps } = setup();
     expect(await executeKutxabankSync(request, deps)).toMatchObject({ inserted: 1 });

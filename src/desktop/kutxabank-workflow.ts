@@ -79,6 +79,8 @@ export async function executeKutxabankBatchSync(
   const result: KutxabankBatchResult = {
     rows: 0, inserted: 0, updated: 0, duplicates: 0, reconciled: 0, cardWarnings: []
   };
+  const batches: Array<{ connectionId: string; accountId: string; dateFrom: string;
+    dateTo: string; movements: KutxabankTableMovement[] }> = [];
   for (const card of cards) {
     if (!card.syncEnabled) continue;
     if (signal?.aborted) throw new Error("CANCELLED");
@@ -112,22 +114,24 @@ export async function executeKutxabankBatchSync(
       continue;
     }
     if (signal?.aborted) throw new Error("CANCELLED");
-    let imported: KutxabankWorkflowResult;
+    batches.push({ connectionId: card.connectionId, accountId: card.id,
+      dateFrom: request.period && request.period !== "between" && movements.length
+        ? movements.reduce((value, row) => row.date < value ? row.date : value, movements[0]?.date ?? request.dateFrom)
+        : request.dateFrom,
+      dateTo: request.period && request.period !== "between" && movements.length
+        ? movements.reduce((value, row) => row.date > value ? row.date : value, movements[0]?.date ?? request.dateTo)
+        : request.dateTo,
+      movements });
+  }
+  if (signal?.aborted) throw new Error("CANCELLED");
+  if (batches.length) {
     try {
-      imported = dependencies.transaction(() => dependencies.ingest({
-        connectionId: card.connectionId, accountId: card.id,
-        dateFrom: request.period && request.period !== "between" && movements.length
-          ? movements.reduce((value, row) => row.date < value ? row.date : value, movements[0]?.date ?? request.dateFrom)
-          : request.dateFrom,
-        dateTo: request.period && request.period !== "between" && movements.length
-          ? movements.reduce((value, row) => row.date > value ? row.date : value, movements[0]?.date ?? request.dateTo)
-          : request.dateTo,
-        movements
-      }));
+      const imported = dependencies.transaction(() => batches.map(batch => dependencies.ingest(batch)));
+      for (const cardResult of imported) {
+        for (const key of ["rows", "inserted", "updated", "duplicates", "reconciled"] as const)
+          result[key] += cardResult[key];
+      }
     } catch { throw new Error("LOCAL_STORAGE_FAILED"); }
-    for (const key of ["rows", "inserted", "updated", "duplicates", "reconciled"] as const) {
-      result[key] += imported[key];
-    }
   }
   return result;
 }
