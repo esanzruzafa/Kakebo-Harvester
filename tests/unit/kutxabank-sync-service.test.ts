@@ -330,6 +330,8 @@ describe("KutxabankSyncService", () => {
       .toThrow("INVALID_ALIAS");
     expect(() => service.createCard(connection.id, "4111 1111 1111 1111", "5678"))
       .toThrow("INVALID_ALIAS");
+    expect(() => service.setCardAlias(connection.id, card.id, "Visa 4111\u00a0\u00a01111\u202f\u202f1111--1111"))
+      .toThrow("INVALID_ALIAS");
     expect(database.prepare("SELECT alias FROM cards WHERE id = ?").get(card.id))
       .toEqual({ alias: "Compras" });
   });
@@ -447,7 +449,7 @@ describe("KutxabankSyncService", () => {
     const { service, database } = await setup();
     const connection = service.createConnection("Ana");
     const card = service.createCard(connection.id, "Compras", "1234");
-    const pan = "4111\u00a01111\u00a01111\u00a01111";
+    const pan = "4111\u00a0\u00a01111\u202f\u202f1111--1111";
 
     service.ingest({ connectionId: connection.id, accountId: card.id, dateFrom: "2026-09-01", dateTo: "2026-09-30",
       movements: [movement({ description: `RECIBO ${pan}` })] });
@@ -522,7 +524,10 @@ describe("KutxabankSyncService", () => {
     expect(service.listCards(connection.id)[0]).toMatchObject({ syncEnabled: true, exportEnabled: false });
     const excluded = await new CsvExporter(config, database).export();
     expect(await readFile(excluded.path, "utf8")).not.toContain("Viajes");
-    service.setCardExportEnabled(connection.id, card.id, true);
-    expect(service.listCards(connection.id)[0]).toMatchObject({ exportEnabled: true });
+    service.deleteCard(connection.id, card.id);
+    expect(database.prepare("SELECT card_export_enabled_snapshot FROM transactions WHERE account_id = ?")
+      .get(card.id)).toEqual({ card_export_enabled_snapshot: 0 });
+    const afterDelete = await new CsvExporter(config, database).export();
+    expect(await readFile(afterDelete.path, "utf8")).not.toContain("Viajes");
   });
 });

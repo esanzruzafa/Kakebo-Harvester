@@ -117,7 +117,7 @@ describe("KutxabankBrowserController", () => {
 
   test("replaces an alias containing a PAN separated with non-breaking spaces", async () => {
     const controller = new KutxabankBrowserController(fakeDriver([{ state: "cards", cards: [
-      { controlId: "card-one", panText: "1111 2222 3333 4444", alias: "4111\u00a01111\u00a01111\u00a01111" }
+      { controlId: "card-one", panText: "1111 2222 3333 4444", alias: "4111\u00a0\u00a01111\u202f\u202f1111--1111" }
     ] }]));
     await controller.open();
     const found = await controller.discoverCards();

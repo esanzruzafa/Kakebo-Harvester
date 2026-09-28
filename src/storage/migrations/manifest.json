@@ -52,5 +52,9 @@
   {
     "version": 18,
     "filename": "018_reconciliation_events.sql"
+  },
+  {
+    "version": 19,
+    "filename": "019_deleted_card_export_preference.sql"
   }
 ]

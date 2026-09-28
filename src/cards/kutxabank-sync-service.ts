@@ -11,7 +11,7 @@ import { normalizeText } from "../utils/text.js";
 import type { KutxabankTableMovement } from "./kutxabank-table.js";
 
 const PROVIDER = "kutxabank-browser";
-const PAN = /(?<!\d)\d(?:[\s-]?\d){12,18}(?![\s-]?\d)/gu;
+const PAN = /(?<!\d)\d(?:[\s-]*\d){12,18}(?![\s-]*\d)/gu;
 
 export interface KutxabankLocalConnection {
   id: string;
@@ -336,13 +336,15 @@ export class KutxabankSyncService {
   public deleteCard(connectionId: string, accountId: string): void {
     this.requireConnection(connectionId);
     this.database.transaction(() => {
-      const card = this.database.prepare("SELECT alias, last4, identity_fingerprint FROM cards WHERE id = ? AND bank_connection_id = ?")
-        .get(accountId, connectionId) as { alias: string; last4: string; identity_fingerprint: string | null } | undefined;
+      const card = this.database.prepare("SELECT alias, last4, export_enabled, identity_fingerprint FROM cards WHERE id = ? AND bank_connection_id = ?")
+        .get(accountId, connectionId) as { alias: string; last4: string; export_enabled: number;
+          identity_fingerprint: string | null } | undefined;
       if (!card) throw new Error("ACCOUNT_UNAVAILABLE");
       this.database.prepare(`UPDATE transactions SET card_alias_snapshot = ?, card_last4_snapshot = ?,
-        card_fingerprint_snapshot = ?
+        card_fingerprint_snapshot = ?, card_export_enabled_snapshot = ?
         WHERE account_id = ? AND bank_connection_id = ? AND provider = ? AND environment = ?`)
-        .run(card.alias, card.last4, card.identity_fingerprint, accountId, connectionId, PROVIDER, this.config.appEnv);
+        .run(card.alias, card.last4, card.identity_fingerprint, card.export_enabled,
+          accountId, connectionId, PROVIDER, this.config.appEnv);
       this.database.prepare("DELETE FROM cards WHERE id = ? AND bank_connection_id = ?")
         .run(accountId, connectionId);
     })();

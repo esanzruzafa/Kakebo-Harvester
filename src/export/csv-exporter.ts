@@ -438,6 +438,7 @@ export class CsvExporter {
              WHEN t.amount=r.amount_snapshot AND t.currency=r.currency_snapshot
                AND t.status IN ('booked','unknown')
                AND COALESCE(paired_account.export_enabled, paired_card.export_enabled,
+                 t.card_export_enabled_snapshot,
                  CASE WHEN t.provider='kutxabank-browser' AND t.card_last4_snapshot IS NOT NULL THEN 1 END)=1
                THEN 1 ELSE 0 END)=2
          ) SELECT
@@ -476,6 +477,7 @@ export class CsvExporter {
          LEFT JOIN transaction_reconciliations r ON r.movement_key=t.movement_key
          LEFT JOIN valid_reconciliations v ON v.reference=r.reference
          WHERE COALESCE(a.export_enabled, card.export_enabled,
+           t.card_export_enabled_snapshot,
            CASE WHEN t.provider='kutxabank-browser' AND t.card_last4_snapshot IS NOT NULL THEN 1 END) = 1
          ORDER BY movement_date, c.bank_name, account_name, t.movement_key`
       )
