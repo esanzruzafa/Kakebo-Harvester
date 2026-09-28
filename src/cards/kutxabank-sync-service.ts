@@ -11,7 +11,7 @@ import { normalizeText } from "../utils/text.js";
 import type { KutxabankTableMovement } from "./kutxabank-table.js";
 
 const PROVIDER = "kutxabank-browser";
-const PAN = /(?<!\d)\d(?:[ -]?\d){12,18}(?![ -]?\d)/gu;
+const PAN = /(?<!\d)\d(?:[\s-]?\d){12,18}(?![\s-]?\d)/gu;
 
 export interface KutxabankLocalConnection {
   id: string;

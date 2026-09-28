@@ -99,6 +99,7 @@ import {
 } from "./committed-operations.js";
 import { runtimeRootDirectory } from "./runtime-paths.js";
 import { KutxabankBrowserController, createElectronKutxabankBrowserDriver, kutxabankNavigationPolicy } from "./kutxabank-browser.js";
+import { createPersistentKutxabankSession } from "./kutxabank-session.js";
 import { KutxabankSyncService } from "../cards/kutxabank-sync-service.js";
 import { Categorizer } from "../transactions/categorization.js";
 import { executeKutxabankBatchSync, executeKutxabankSync, kutxabankBatchSyncRequestSchema, kutxabankSyncRequestSchema } from "./kutxabank-workflow.js";
@@ -826,7 +827,7 @@ async function bootstrap(application: KakeboApplication): Promise<DesktopBootstr
   };
 }
 
-function registerIpc(application: KakeboApplication): void {
+async function registerIpc(application: KakeboApplication): Promise<void> {
   const accountRepository = new AccountRepository(application.database);
   const accountsStore = new AccountsConfigStore(application.config.accountsConfigPath);
   const cardsStore = new CardsConfigStore(application.config.cardsConfigPath);
@@ -858,7 +859,8 @@ function registerIpc(application: KakeboApplication): void {
   let bankBusy = false;
   let autoCatalogGeneration = 0;
   const localAppData = process.env.LOCALAPPDATA ?? join(app.getPath("home"), "AppData", "Local");
-  const bankSession = session.fromPath(join(localAppData, "KakeboHarvester", "KutxabankBrowser"));
+  const bankSession = await createPersistentKutxabankSession(session,
+    join(localAppData, "KakeboHarvester", "KutxabankBrowser"));
   kutxabankBrowser = new KutxabankBrowserController(createElectronKutxabankBrowserDriver({
     BrowserWindow,
     browserSession: bankSession,
@@ -1916,7 +1918,7 @@ async function runDesktop(): Promise<void> {
   } catch (error) {
     callbackStartupError = error;
   }
-  registerIpc(domainApplication);
+  await registerIpc(domainApplication);
   await createWindow();
   if (callbackStartupError) {
     const detail = safeMessage(callbackStartupError);

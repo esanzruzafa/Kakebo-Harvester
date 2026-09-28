@@ -411,6 +411,20 @@ describe("KutxabankSyncService", () => {
     expect(JSON.stringify(stored)).not.toContain("4111");
   });
 
+  it("removes a PAN separated with non-breaking spaces before storage", async () => {
+    const { service, database } = await setup();
+    const connection = service.createConnection("Ana");
+    const card = service.createCard(connection.id, "Compras", "1234");
+    const pan = "4111\u00a01111\u00a01111\u00a01111";
+
+    service.ingest({ connectionId: connection.id, accountId: card.id, dateFrom: "2026-09-01", dateTo: "2026-09-30",
+      movements: [movement({ description: `RECIBO ${pan}` })] });
+
+    const stored = database.prepare("SELECT description_raw FROM transactions").get();
+    expect(stored).toEqual({ description_raw: "RECIBO [TARJETA OCULTA]" });
+    expect(JSON.stringify(stored)).not.toContain("4111");
+  });
+
   it("rejects inactive, disabled, wrong-source, wrong-environment and cross-connection accounts", async () => {
     const { service, database } = await setup();
     const first = service.createConnection("Ana");

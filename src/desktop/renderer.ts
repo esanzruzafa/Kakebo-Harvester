@@ -2761,12 +2761,19 @@ function setupActions(): void {
         return `${card?.alias ?? warning.accountId}: ${t(`kutxabank.cardWarning.${warning.code}`, warning.code)}`;
       }).join("; ")}`.trim();
       summary.hidden = false;
-      await refresh();
-      await reloadKutxabankCatalog();
-      showToast(warnings.length || result.warnings.length
-        ? t("kutxabank.completedWithWarnings", "Movements were imported, but follow-up tasks need attention.")
-        : t("kutxabank.completed", "Card movements were imported and exported."),
-      warnings.length || result.warnings.length ? "warning" : false);
+      const refreshFailures = await refreshKutxabankAfterCommit(() => refresh(), reloadKutxabankCatalog);
+      const followUpWarnings = [
+        ...(result.warnings.length ? [followUpWarningMessage(result.warnings)] : []),
+        ...(refreshFailures.length ? [t("kutxabank.syncRefreshFailed",
+          "Movements were saved, but the view could not be refreshed. Reopen this tab to retry.")] : [])
+      ];
+      const hasWarnings = warnings.length > 0 || followUpWarnings.length > 0;
+      showToast([
+        hasWarnings
+          ? t("kutxabank.completedWithWarnings", "Movements were imported, but follow-up tasks need attention.")
+          : t("kutxabank.completed", "Card movements were imported and exported."),
+        ...followUpWarnings
+      ].join(" "), hasWarnings ? "warning" : false);
     } catch (error) { showToast(errorMessage(error), true); }
     finally { activeOperationCount -= 1; kutxabankBusy = false; renderKutxabank(); }
   });

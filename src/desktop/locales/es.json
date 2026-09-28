@@ -344,6 +344,7 @@
   "error.kutxabank.BANK_WINDOW_OPEN": "Cierra la ventana del banco antes de olvidar este dispositivo.",
   "error.kutxabank.SELECTION_EXPIRED": "La selección de la tarjeta del banco ha caducado. Actualiza las tarjetas y vuelve a elegirla.",
   "kutxabank.catalogRefreshFailed": "Las tarjetas se guardaron, pero no se pudo actualizar la vista. Vuelve a abrir esta pestaña para reintentarlo.",
+  "kutxabank.syncRefreshFailed": "Los movimientos se guardaron, pero no se pudo actualizar la vista. Vuelve a abrir esta pestaña para reintentarlo.",
   "error.operationInProgress": "Espera a que termine la operación actual antes de iniciar otra.",
   "error.reauthorizationRequired": "Hace falta volver a autorizar la conexión bancaria.",
   "error.ruleCategory": "La regla {number} usa una categoría desconocida: \"{category}\".",

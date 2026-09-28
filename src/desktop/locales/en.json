@@ -344,6 +344,7 @@
   "error.kutxabank.BANK_WINDOW_OPEN": "Close the bank window before forgetting this device.",
   "error.kutxabank.SELECTION_EXPIRED": "The bank card selection has expired. Refresh the cards and choose it again.",
   "kutxabank.catalogRefreshFailed": "The cards were saved, but the view could not be refreshed. Reopen this tab to retry.",
+  "kutxabank.syncRefreshFailed": "Movements were saved, but the view could not be refreshed. Reopen this tab to retry.",
   "error.operationInProgress": "Wait for the current operation to finish before starting another one.",
   "error.reauthorizationRequired": "The bank connection must be authorized again.",
   "error.ruleCategory": "Rule {number} uses an unknown category: \"{category}\".",
