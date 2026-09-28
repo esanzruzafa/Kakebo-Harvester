@@ -60,12 +60,13 @@ export async function runMovementImportOperation<Result>(input: {
   ingest: () => Promise<Result> | Result;
   exportMovements: () => Promise<{ path: string }>;
   saveAccounts: () => Promise<void>;
+  configurationStep?: "accounts-config" | "cards-config";
   finishAudit?: (hasWarnings: boolean) => void | Promise<void>;
 }): Promise<Result & { exportPath: string | null; warnings: FollowUpWarning[] }> {
   const imported = await input.ingest();
   const [exported, accounts] = await Promise.all([
     followUp("export", input.exportMovements),
-    followUp("accounts-config", input.saveAccounts)
+    followUp(input.configurationStep ?? "accounts-config", input.saveAccounts)
   ]);
   const warnings = [exported.warning, accounts.warning].filter(
       (warning): warning is FollowUpWarning => warning !== null

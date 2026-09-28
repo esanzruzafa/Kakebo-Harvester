@@ -638,10 +638,10 @@ describe("KutxabankBrowserController", () => {
     }
     table.children.set(":scope > tbody > tr", [row]);
     const selected = add("formMenuOpciones:PanelSeries:0:SelectRadioMenuContratos:_0"); selected.checked = true;
-    const pan = new FakeElement(); pan.textContent = "1111 2222 3333 4444";
+    const pan = new FakeElement(); pan.textContent = "1111\u00a02222\u202f3333\u00a04444";
     const balance = new FakeElement(); balance.textContent = "999,99 €";
     selected.children.set("span, label, td, a", [pan, balance]);
-    const aliasCells = ["1111 2222 3333 4444", "", "Visa compras", "999,99 €"].map(text => {
+    const aliasCells = ["1111\u00a02222\u202f3333\u00a04444", "", "Visa compras", "999,99 €"].map(text => {
       const cell = new FakeElement(); cell.textContent = text; return cell;
     });
     selected.children.set("td", aliasCells);

@@ -76,6 +76,14 @@ it('lists movements by the effective export date when booking date is absent',as
   expect(service.list('2026-09-04','2026-09-06').map(row=>[row.movementKey,row.date]))
     .toEqual([['manual','2026-09-06'],['debit','2026-09-04']]);
 });
+it('hides unconfirmed pending movements but keeps a changed confirmed pair available for undo',async()=>{
+  const {service,insert,database}=await setup();
+  insert('pending','manual','manual-card','-120','pending');
+  expect(service.list('2026-09-01','2026-09-01').map(row=>row.movementKey)).not.toContain('pending');
+  service.confirm('purchase','manual','duplicate');
+  database.prepare("UPDATE transactions SET status='pending' WHERE movement_key='purchase'").run();
+  expect(service.list('2026-09-01','2026-09-01').map(row=>row.movementKey)).toContain('purchase');
+});
 
 it('exports confirmed economic amounts and invalidates treatment if a source amount changes',async()=>{
   const {service,database}=await setup();

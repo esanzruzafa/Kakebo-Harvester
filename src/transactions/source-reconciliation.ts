@@ -42,6 +42,7 @@ export class SourceReconciliationService {
       LEFT JOIN cards c ON c.id=t.account_id
       LEFT JOIN transaction_reconciliations r ON r.movement_key=t.movement_key
       WHERE t.environment=? AND COALESCE(t.booking_date, substr(t.transaction_datetime, 1, 10), t.value_date) BETWEEN ? AND ?
+        AND (t.status IN ('booked', 'unknown') OR r.reference IS NOT NULL)
       ORDER BY date DESC, t.movement_key LIMIT 501`).all(this.environment, dateFrom, dateTo) as ReconciliationMovement[];
   }
 

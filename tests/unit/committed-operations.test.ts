@@ -27,6 +27,15 @@ describe("committed desktop operations", () => {
     expect(result).toEqual({ inserted: 1, exportPath: "result.xlsx",
       warnings: [{ step: "audit", message: "AUDIT_FINALIZATION_FAILED" }] });
   });
+  it("identifies a failed Kutxabank card snapshot after movements commit", async () => {
+    const result = await runMovementImportOperation({
+      ingest: () => ({ inserted: 1 }),
+      exportMovements: () => Promise.resolve({ path: "result.xlsx" }),
+      saveAccounts: () => Promise.reject(new Error("Card snapshot locked")),
+      configurationStep: "cards-config"
+    });
+    expect(result.warnings).toEqual([{ step: "cards-config", message: "Card snapshot locked" }]);
+  });
   it("reports a committed card import when every follow-up succeeds", async () => {
     const result = await runCardImportOperation({
       importCards: vi.fn().mockResolvedValue(imported),

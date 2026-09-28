@@ -722,7 +722,7 @@ export function createElectronKutxabankBrowserDriver(input: {
             const scope = control.closest('tr') || control.parentElement;
             const candidates = [...(scope?.querySelectorAll('span, label, td, a') || [])];
             const matches = candidates.map(node => (node.textContent || '').trim())
-              .filter(value => /^(?:\\d[ -]?){13,19}$/.test(value));
+              .filter(value => /^(?:\\d[\\s-]?){13,19}$/.test(value));
             const unique = [...new Set(matches.map(value => value.replace(/\\D/g, '')))];
             if (unique.length !== 1) throw new Error('ambiguous-pan');
             const cells = [...(scope?.querySelectorAll('td') || [])];

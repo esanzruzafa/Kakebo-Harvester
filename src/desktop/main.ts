@@ -1054,6 +1054,7 @@ async function registerIpc(application: KakeboApplication): Promise<void> {
           exportMovements: async () => await new CsvExporter(application.config, application.database)
             .export({ highlightSource: "banking" }),
           saveAccounts: saveCards,
+          configurationStep: "cards-config",
           finishAudit: hasWarnings => audit.finish(runId,
             hasWarnings || cardWarnings > 0 ? "SUCCESS_WITH_WARNINGS" : "SUCCESS")
         });
@@ -1159,6 +1160,7 @@ async function registerIpc(application: KakeboApplication): Promise<void> {
           exportMovements: async () => await new CsvExporter(application.config, application.database)
             .export({ highlightSource: "banking" }),
           saveAccounts: saveCards,
+          configurationStep: "cards-config",
           finishAudit: hasWarnings => audit.finish(runId, hasWarnings ? "SUCCESS_WITH_WARNINGS" : "SUCCESS")
         });
         return result;
