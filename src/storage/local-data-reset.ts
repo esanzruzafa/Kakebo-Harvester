@@ -60,6 +60,7 @@ export async function resetLocalData(
 ): Promise<LocalDataResetResult> {
   const cleanupWarnings: LocalDataResetResult["cleanupWarnings"] = [];
   const result = database.transaction(() => {
+    database.prepare("DELETE FROM transaction_reconciliation_events").run();
     const transactions = database.prepare("DELETE FROM transactions").run().changes;
     database.prepare("DELETE FROM card_import_source_rows").run();
     database.prepare("DELETE FROM transactions_raw").run();

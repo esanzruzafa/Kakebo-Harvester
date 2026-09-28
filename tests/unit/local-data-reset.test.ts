@@ -71,6 +71,12 @@ describe("resetLocalData", () => {
       ) VALUES ('transaction', 'movement', 'reconciliation', 'enable-banking', 'sandbox',
         'connection', 'account', 'booked', '1.00', 'EUR', 'income', 'TEST', ?, ?, ?, 'fingerprint')`)
       .run(now, now, now);
+    database.prepare(`INSERT INTO transaction_reconciliation_events (
+      id, reference, action, kind, first_movement_key, second_movement_key,
+      first_amount_snapshot, second_amount_snapshot, currency_snapshot, confirmed_at,
+      environment, recorded_at
+    ) VALUES ('event', 'reference', 'undo', 'duplicate', 'movement', 'other',
+      '1.00', '1.00', 'EUR', ?, 'sandbox', ?)`).run(now, now);
     database
       .prepare(`INSERT INTO card_import_source_rows (
         profile_id, source_path_hash, semantic_key_hash, occurrence,
@@ -127,6 +133,7 @@ describe("resetLocalData", () => {
     });
     for (const table of [
       "transactions",
+      "transaction_reconciliation_events",
       "card_import_source_rows",
       "transactions_raw",
       "balances",
@@ -239,6 +246,12 @@ describe("resetLocalData", () => {
         id, started_at, status, date_from, date_to, steps_json
       ) VALUES ('desktop-run', ?, 'SUCCESS', '2026-01-01', '2026-01-01', '[]')`)
       .run(now);
+    database.prepare(`INSERT INTO transaction_reconciliation_events (
+      id, reference, action, kind, first_movement_key, second_movement_key,
+      first_amount_snapshot, second_amount_snapshot, currency_snapshot, confirmed_at,
+      environment, recorded_at
+    ) VALUES ('event', 'reference', 'undo', 'duplicate', 'movement', 'other',
+      '1', '1', 'EUR', ?, 'sandbox', ?)`).run(now, now);
     database
       .prepare(`INSERT INTO card_import_source_rows (
         profile_id, source_path_hash, semantic_key_hash, occurrence,
@@ -265,6 +278,8 @@ describe("resetLocalData", () => {
     expect(database.prepare("SELECT COUNT(*) AS total FROM desktop_runs").get()).toEqual({
       total: 1
     });
+    expect(database.prepare("SELECT COUNT(*) AS total FROM transaction_reconciliation_events").get())
+      .toEqual({ total: 1 });
     expect(
       database.prepare("SELECT COUNT(*) AS total FROM card_import_source_rows").get()
     ).toEqual({ total: 1 });
