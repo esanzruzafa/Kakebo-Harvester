@@ -44,6 +44,18 @@ describe("resetLocalData", () => {
       ) VALUES ('account', 'connection', 'provider', 'Account', 1, ?, ?)`)
       .run(now, now);
     database
+      .prepare(`INSERT INTO bank_connections (
+        id, provider, environment, bank_name, bank_country, psu_type, alias, status, created_at
+      ) VALUES ('card-connection', 'kutxabank-browser', 'sandbox', 'Kutxabank', 'ES',
+        'personal', 'Kutxabank', 'LOCAL', ?)`)
+      .run(now);
+    database
+      .prepare(`INSERT INTO cards (
+        id, bank_connection_id, alias, last4, active, first_seen_at, last_seen_at,
+        balance_text, balance_is_red, balance_read_at
+      ) VALUES ('card', 'card-connection', 'Visa', '1234', 1, ?, ?, '194,55 €', 1, ?)`)
+      .run(now, now, now);
+    database
       .prepare(
         `UPDATE accounts SET
            last_error_at = ?, last_error_code = 'RESOURCE_EXPIRED',
@@ -95,10 +107,12 @@ describe("resetLocalData", () => {
       desktopRuns: 1,
       cleanupWarnings: []
     });
-    for (const table of ["bank_connections", "provider_sessions", "accounts"]) {
+    for (const table of ["provider_sessions", "accounts"]) {
       expect(database.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get()).toEqual({ total: 1 });
     }
+    expect(database.prepare("SELECT COUNT(*) AS total FROM bank_connections").get()).toEqual({ total: 2 });
     expect(database.prepare("SELECT last_sync_at FROM bank_connections").get()).toEqual({ last_sync_at: null });
+    const cardBalance = database.prepare(`SELECT balance_text, balance_is_red, balance_read_at FROM cards WHERE id = 'card'`).get();
     expect(
       database
         .prepare(
@@ -126,6 +140,7 @@ describe("resetLocalData", () => {
       access(join(config.rawDataDirectory, "transactions"))
     ).rejects.toMatchObject({ code: "ENOENT" });
     database.close();
+    expect(cardBalance).toEqual({ balance_text: null, balance_is_red: null, balance_read_at: null });
   });
 
   it("reports locked cleanup files without hiding the committed database reset", async () => {

@@ -506,7 +506,7 @@ export class AccountRepository {
            c.provider
          FROM accounts a
          JOIN bank_connections c ON c.id = a.bank_connection_id
-         WHERE c.provider = 'enable-banking'
+         WHERE c.provider IN ('enable-banking', 'manual-card')
          ORDER BY c.bank_name, account_name`
       )
       .all() as Array<{

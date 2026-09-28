@@ -64,6 +64,8 @@ export async function resetLocalData(
     database.prepare("DELETE FROM card_import_source_rows").run();
     database.prepare("DELETE FROM transactions_raw").run();
     const balances = database.prepare("DELETE FROM balances").run().changes;
+    database.prepare(`UPDATE cards SET
+      balance_text = NULL, balance_is_red = NULL, balance_read_at = NULL`).run();
     const synchronizationRuns = database.prepare("DELETE FROM sync_runs").run().changes;
     const desktopRuns = database.prepare("DELETE FROM desktop_runs").run().changes;
     database

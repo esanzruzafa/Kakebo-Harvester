@@ -98,6 +98,26 @@ describe("KutxabankSyncService", () => {
     expect(service.listConnections()[0]?.cards[0]?.id).toBe(card.id);
   });
 
+  it("reactivates sibling cards when history restores a deleted card into an inactive connection", async () => {
+    const { service } = await setup();
+    const original = service.createConnection("Original");
+    const restored = service.createCard(original.id, "Restored", "1234", undefined, undefined, fingerprint1234);
+    const sibling = service.createCard(original.id, "Sibling", "5678", undefined, undefined, fingerprint5678);
+    service.ingest({ connectionId: original.id, accountId: restored.id,
+      dateFrom: "2026-09-01", dateTo: "2026-09-30", movements: [movement()] });
+    service.deleteCard(original.id, restored.id);
+    service.disconnect(original.id);
+    const later = service.createConnection("Later");
+
+    service.reconcileDiscoveredCards(later.id, [
+      { last4: "1234", alias: "Restored", fingerprint: fingerprint1234 }
+    ]);
+
+    expect(service.listCards(original.id).map(card => card.id)).toEqual(
+      expect.arrayContaining([restored.id, sibling.id])
+    );
+  });
+
   it("restores a deleted card's original identity despite another card sharing its final digits", async () => {
     const { service } = await setup();
     const connection = service.createConnection("Kutxabank");

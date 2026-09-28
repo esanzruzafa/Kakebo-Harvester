@@ -115,6 +115,16 @@ describe("KutxabankBrowserController", () => {
     expect((await controller.discoverCards())[0]?.alias).toBe("Tarjeta");
   });
 
+  test("replaces an alias containing a PAN separated with non-breaking spaces", async () => {
+    const controller = new KutxabankBrowserController(fakeDriver([{ state: "cards", cards: [
+      { controlId: "card-one", panText: "1111 2222 3333 4444", alias: "4111\u00a01111\u00a01111\u00a01111" }
+    ] }]));
+    await controller.open();
+    const found = await controller.discoverCards();
+    expect(found[0]?.alias).toBe("Tarjeta");
+    expect(JSON.stringify(found)).not.toContain("4111");
+  });
+
   test("expires discovery tokens when the window closes", async () => {
     const controller = new KutxabankBrowserController(fakeDriver([cards]), { token: () => "token-a" });
     await controller.open();

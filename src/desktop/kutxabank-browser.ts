@@ -169,7 +169,7 @@ export class KutxabankBrowserController {
       const balance = balanceText && /^-?(?:(?:\d{1,3}(?:\.\d{3})+)|\d+),\d{2} €$/u.test(balanceText)
         ? { text: balanceText, isRed: card.balance?.isRed === true } : undefined;
       const selected = { selectionToken, last4, fingerprint,
-        alias: alias && alias.length <= 120 && !/(?<!\d)\d(?:[ -]?\d){12,18}(?![ -]?\d)/u.test(alias)
+        alias: alias && alias.length <= 120 && !/(?<!\d)\d(?:[\s-]?\d){12,18}(?![\s-]?\d)/u.test(alias)
           ? alias : "Tarjeta",
         ...(balance ? { balance } : {}) };
       next.set(selectionToken, { controlId: card.controlId, last4, alias: selected.alias, fingerprint });

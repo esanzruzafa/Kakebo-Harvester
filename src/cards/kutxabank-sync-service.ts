@@ -294,6 +294,8 @@ export class KutxabankSyncService {
         const targetConnectionId = restored?.connectionId ?? connectionId;
         this.database.prepare("UPDATE bank_connections SET status = 'LOCAL' WHERE id = ?")
           .run(targetConnectionId);
+        this.database.prepare("UPDATE cards SET active = 1 WHERE bank_connection_id = ?")
+          .run(targetConnectionId);
         const created = this.createCard(targetConnectionId, requiredAlias(alias), last4, observedBalance,
           restored?.id, fingerprint);
         existing.push({ id: created.id, connectionId: created.connectionId, last4, fingerprint });
