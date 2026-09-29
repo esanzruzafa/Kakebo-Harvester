@@ -159,7 +159,8 @@ export class KutxabankSyncService {
   }
 
   public createCard(connectionId: string, aliasValue: string, last4Value: string,
-    observedBalance?: ObservedBalance, restoredId?: string, fingerprint?: string): KutxabankLocalCard {
+    observedBalance?: ObservedBalance, restoredId?: string, fingerprint?: string,
+    exportEnabled = true): KutxabankLocalCard {
     const alias = requiredAlias(aliasValue);
     const last4 = last4Value.trim();
     if (!/^\d{4}$/u.test(last4)) throw new Error("INVALID_LAST4");
@@ -172,11 +173,11 @@ export class KutxabankSyncService {
       `INSERT INTO cards
        (id, bank_connection_id, alias, last4, active, first_seen_at, last_seen_at,
         sync_enabled, export_enabled, balance_text, balance_is_red, balance_read_at, identity_fingerprint)
-       VALUES (?, ?, ?, ?, 1, ?, ?, 1, 1, ?, ?, ?, ?)`
-    ).run(id, connectionId, alias, last4, now, now,
+       VALUES (?, ?, ?, ?, 1, ?, ?, 1, ?, ?, ?, ?, ?)`
+    ).run(id, connectionId, alias, last4, now, now, Number(exportEnabled),
       balance?.text ?? null, balance ? Number(balance.isRed) : null, balance ? now : null,
       fingerprint ?? null);
-    return { id, connectionId, alias, last4, active: true, syncEnabled: true, exportEnabled: true,
+    return { id, connectionId, alias, last4, active: true, syncEnabled: true, exportEnabled,
       balance: balance ? { ...balance, readAt: now } : null };
   }
 
@@ -282,17 +283,22 @@ export class KutxabankSyncService {
         // Pre-fingerprint test catalogs cannot establish identity from four digits.
         if (existing.some(item => item.last4 === last4 && !item.fingerprint))
           throw new Error("CARD_ASSOCIATION_CHANGED");
-        const historical = this.database.prepare(`SELECT DISTINCT t.account_id AS id,
-            t.bank_connection_id AS connectionId
+        const historical = this.database.prepare(`SELECT t.account_id AS id,
+            t.bank_connection_id AS connectionId,
+            MIN(t.card_export_enabled_snapshot) AS exportEnabled,
+            MAX(t.card_export_enabled_snapshot) AS maxExportEnabled
           FROM transactions t
           JOIN bank_connections bc ON bc.id = t.bank_connection_id
           LEFT JOIN cards c ON c.id = t.account_id
           WHERE t.provider = ? AND t.environment = ? AND t.card_fingerprint_snapshot = ?
             AND bc.provider = ? AND bc.environment = ? AND bc.status IN ('LOCAL', 'INACTIVE')
-            AND c.id IS NULL`).all(
+            AND c.id IS NULL
+          GROUP BY t.account_id, t.bank_connection_id`).all(
           PROVIDER, this.config.appEnv, fingerprint, PROVIDER, this.config.appEnv
-        ) as Array<{ id: string; connectionId: string }>;
-        if (historical.length > 1) throw new Error("CARD_ASSOCIATION_CHANGED");
+        ) as Array<{ id: string; connectionId: string; exportEnabled: number | null;
+          maxExportEnabled: number | null }>;
+        if (historical.length > 1 || historical.some(row => row.exportEnabled !== row.maxExportEnabled))
+          throw new Error("CARD_ASSOCIATION_CHANGED");
         const restored = historical[0];
         const targetConnectionId = restored?.connectionId ?? connectionId;
         this.database.prepare("UPDATE bank_connections SET status = 'LOCAL' WHERE id = ?")
@@ -300,7 +306,7 @@ export class KutxabankSyncService {
         this.database.prepare("UPDATE cards SET active = 1 WHERE bank_connection_id = ?")
           .run(targetConnectionId);
         const created = this.createCard(targetConnectionId, requiredAlias(alias), last4, observedBalance,
-          restored?.id, fingerprint);
+          restored?.id, fingerprint, restored?.exportEnabled !== 0);
         existing.push({ id: created.id, connectionId: created.connectionId, last4, fingerprint });
         byFingerprint.set(fingerprint, { id: created.id, connectionId: created.connectionId, last4, fingerprint });
         return created;

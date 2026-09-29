@@ -511,7 +511,7 @@ describe("KutxabankSyncService", () => {
   it("exports a card movement using its card alias after the catalogue is separated", async () => {
     const { service, database } = await setup();
     const connection = service.createConnection("Personal");
-    const card = service.createCard(connection.id, "Viajes", "5678");
+    const card = service.createCard(connection.id, "Viajes", "5678", undefined, undefined, fingerprint5678);
     service.ingest({ connectionId: connection.id, accountId: card.id,
       dateFrom: "2026-09-01", dateTo: "2026-09-30", movements: [movement()] });
     const config = testConfig(root ?? "");
@@ -529,5 +529,10 @@ describe("KutxabankSyncService", () => {
       .get(card.id)).toEqual({ card_export_enabled_snapshot: 0 });
     const afterDelete = await new CsvExporter(config, database).export();
     expect(await readFile(afterDelete.path, "utf8")).not.toContain("Viajes");
+    const restored = service.reconcileDiscoveredCards(connection.id,
+      [{ last4: "5678", alias: "Viajes", fingerprint: fingerprint5678 }])[0];
+    expect(restored).toMatchObject({ id: card.id, exportEnabled: false });
+    const afterRestore = await new CsvExporter(config, database).export();
+    expect(await readFile(afterRestore.path, "utf8")).not.toContain("Viajes");
   });
 });
