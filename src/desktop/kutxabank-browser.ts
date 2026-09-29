@@ -5,6 +5,7 @@ import type {
   KutxabankHistoryQuery,
   KutxabankHistoryReader
 } from "../cards/kutxabank-history.js";
+import { containsCardPan } from "../cards/card-pan.js";
 import type { KutxabankTableSnapshot } from "../cards/kutxabank-table.js";
 import type { KutxabankPeriod } from "./kutxabank-period.js";
 
@@ -169,7 +170,7 @@ export class KutxabankBrowserController {
       const balance = balanceText && /^-?(?:(?:\d{1,3}(?:\.\d{3})+)|\d+),\d{2} €$/u.test(balanceText)
         ? { text: balanceText, isRed: card.balance?.isRed === true } : undefined;
       const selected = { selectionToken, last4, fingerprint,
-        alias: alias && alias.length <= 120 && !/(?<!\d)\d(?:[\s-]*\d){12,18}(?![\s-]*\d)/u.test(alias)
+        alias: alias && alias.length <= 120 && !containsCardPan(alias)
           ? alias : "Tarjeta",
         ...(balance ? { balance } : {}) };
       next.set(selectionToken, { controlId: card.controlId, last4, alias: selected.alias, fingerprint });
@@ -722,7 +723,7 @@ export function createElectronKutxabankBrowserDriver(input: {
             const scope = control.closest('tr') || control.parentElement;
             const candidates = [...(scope?.querySelectorAll('span, label, td, a') || [])];
             const matches = candidates.map(node => (node.textContent || '').trim())
-              .filter(value => /^(?:\\d[\\s-]*){13,19}$/.test(value));
+              .filter(value => /^\\d(?:[\\s\\p{P}]*\\d){12,18}$/u.test(value));
             const unique = [...new Set(matches.map(value => value.replace(/\\D/g, '')))];
             if (unique.length !== 1) throw new Error('ambiguous-pan');
             const cells = [...(scope?.querySelectorAll('td') || [])];

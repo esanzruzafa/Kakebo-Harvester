@@ -125,6 +125,14 @@ describe("KutxabankBrowserController", () => {
     expect(JSON.stringify(found)).not.toContain("4111");
   });
 
+  test("replaces a bank alias containing a punctuation-separated PAN", async () => {
+    const controller = new KutxabankBrowserController(fakeDriver([{ state: "cards", cards: [
+      { controlId: "card-one", panText: "1111.2222.3333.4444", alias: "Visa 4111.1111.1111.1111" }
+    ] }]));
+    await controller.open();
+    expect((await controller.discoverCards())[0]?.alias).toBe("Tarjeta");
+  });
+
   test("expires discovery tokens when the window closes", async () => {
     const controller = new KutxabankBrowserController(fakeDriver([cards]), { token: () => "token-a" });
     await controller.open();
@@ -638,10 +646,10 @@ describe("KutxabankBrowserController", () => {
     }
     table.children.set(":scope > tbody > tr", [row]);
     const selected = add("formMenuOpciones:PanelSeries:0:SelectRadioMenuContratos:_0"); selected.checked = true;
-    const pan = new FakeElement(); pan.textContent = "1111\u00a0\u00a02222\u202f\u202f3333--4444";
+    const pan = new FakeElement(); pan.textContent = "1111.2222\u202f\u202f3333--4444";
     const balance = new FakeElement(); balance.textContent = "999,99 €";
     selected.children.set("span, label, td, a", [pan, balance]);
-    const aliasCells = ["1111\u00a0\u00a02222\u202f\u202f3333--4444", "", "Visa compras", "999,99 €"].map(text => {
+    const aliasCells = ["1111.2222\u202f\u202f3333--4444", "", "Visa compras", "999,99 €"].map(text => {
       const cell = new FakeElement(); cell.textContent = text; return cell;
     });
     selected.children.set("td", aliasCells);
