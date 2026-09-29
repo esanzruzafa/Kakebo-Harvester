@@ -2,6 +2,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } f
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
+import { containsCardPan } from "../cards/card-pan.js";
 import { DatabaseError } from "../errors.js";
 import { latestDatabaseVersion, migrations } from "./migration-manifest.js";
 import { normalizeText } from "../utils/text.js";
@@ -61,6 +62,8 @@ export function createDatabase(databasePath: string): SqliteDatabase {
       (value: string | null): string | null =>
         value === null ? null : normalizeText(value)
     );
+    database.function("kakebo_has_card_pan", { deterministic: true },
+      (value: string): number => Number(containsCardPan(value)));
     database.pragma("busy_timeout = 30000");
     database.pragma("journal_mode = WAL");
     database.pragma("foreign_keys = ON");

@@ -8,10 +8,10 @@ import { normalizeDecimal, type NormalizedTransaction } from "../transactions/tr
 import { sha256, stableJson } from "../utils/crypto.js";
 import { assertIsoDate } from "../utils/dates.js";
 import { normalizeText } from "../utils/text.js";
+import { CARD_PAN, containsCardPan } from "./card-pan.js";
 import type { KutxabankTableMovement } from "./kutxabank-table.js";
 
 const PROVIDER = "kutxabank-browser";
-const PAN = /(?<!\d)\d(?:[\s-]*\d){12,18}(?![\s-]*\d)/gu;
 
 export interface KutxabankLocalConnection {
   id: string;
@@ -74,13 +74,13 @@ interface ValidMovement {
 
 function requiredAlias(value: string): string {
   const alias = value.trim();
-  if (!alias || alias.length > 120 || alias.replace(PAN, "") !== alias)
+  if (!alias || alias.length > 120 || containsCardPan(alias))
     throw new Error("INVALID_ALIAS");
   return alias;
 }
 
 function sanitizeDescription(value: unknown): string {
-  return typeof value === "string" ? value.replace(PAN, "[TARJETA OCULTA]").trim() : "";
+  return typeof value === "string" ? value.replace(CARD_PAN, "[TARJETA OCULTA]").trim() : "";
 }
 
 function nullableDate(value: unknown): string | null {

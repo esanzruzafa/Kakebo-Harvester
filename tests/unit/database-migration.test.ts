@@ -7,6 +7,7 @@ import { Worker } from "node:worker_threads";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDatabase } from "../../src/storage/database.js";
+import { containsCardPan } from "../../src/cards/card-pan.js";
 import { latestDatabaseVersion } from "../../src/storage/migration-manifest.js";
 import { testConfig } from "../helpers.js";
 
@@ -22,6 +23,8 @@ describe("database migrations", () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-card-fingerprint-migration-"));
     const config = testConfig(root);
     const legacy = new Database(config.databasePath);
+    legacy.function("kakebo_has_card_pan", { deterministic: true },
+      (value: string): number => Number(containsCardPan(value)));
     const manifest = JSON.parse(readFileSync(resolve("src", "storage", "migrations", "manifest.json"), "utf8")) as
       Array<{ version: number; filename: string }>;
     for (const entry of manifest.filter(item => item.version <= 16))
@@ -88,6 +91,11 @@ describe("database migrations", () => {
        product_type, first_seen_at, last_seen_at)
       VALUES ('unsafe-card', 'bank', 'unsafe-card', 'Visa', ?, 'CARD', '•••• 5678', ?, ?)`)
       .run("Visa 4111\u00a0\u00a01111\u202f1111--1111", now, now);
+    legacy.prepare(`INSERT INTO accounts
+      (id, bank_connection_id, provider_account_id, name, account_alias, account_type,
+       product_type, first_seen_at, last_seen_at)
+      VALUES ('digit-card', 'bank', 'digit-card', 'Visa', 'Visa 2', 'CARD', '•••• 4321', ?, ?)`)
+      .run(now, now);
     legacy.prepare(`INSERT INTO transactions
       (id, movement_key, reconciliation_key, provider, environment, bank_connection_id,
        account_id, status, amount, currency, direction, first_seen_at, last_seen_at,
@@ -105,6 +113,7 @@ describe("database migrations", () => {
     expect(migrated.prepare("SELECT id, alias, last4, sync_enabled FROM cards ORDER BY id").all())
       .toEqual([
         { id: "card", alias: "Mi tarjeta", last4: "1234", sync_enabled: 0 },
+        { id: "digit-card", alias: "Visa 2", last4: "4321", sync_enabled: 1 },
         { id: "other-card", alias: "Otra tarjeta", last4: "1234", sync_enabled: 1 },
         { id: "unsafe-card", alias: "Tarjeta", last4: "5678", sync_enabled: 1 }
       ]);

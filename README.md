@@ -295,7 +295,7 @@ snapshot.
 
 Before upgrading an existing installation to 2.0.0, close Kakebo Harvester and
 make a private copy of its `data/` and `config/` directories. Version 2.0.0
-upgrades the SQLite schema from 13 to 17. Version 1.0.2 cannot open a database
+upgrades the SQLite schema from 13 to 19. Version 1.0.2 cannot open a database
 after that upgrade; returning to 1.0.2 requires restoring the pre-upgrade copy.
 See the [2.0.0 upgrade notes](docs/releases/2.0.0.md) for the changes and
 rollback procedure.

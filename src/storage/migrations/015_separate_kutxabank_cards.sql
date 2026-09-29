@@ -13,7 +13,7 @@ CREATE TABLE cards (
 INSERT INTO cards (id, bank_connection_id, alias, last4, active, sync_enabled,
   export_enabled, first_seen_at, last_seen_at)
 SELECT a.id, a.bank_connection_id,
-  CASE WHEN COALESCE(NULLIF(a.account_alias, ''), a.name, 'Tarjeta') GLOB '*[0-9]*'
+  CASE WHEN kakebo_has_card_pan(COALESCE(NULLIF(a.account_alias, ''), a.name, 'Tarjeta')) = 1
     THEN 'Tarjeta'
     ELSE COALESCE(NULLIF(a.account_alias, ''), a.name, 'Tarjeta') END,
   substr(a.product_type, -4), a.active, a.sync_enabled, a.export_enabled,
