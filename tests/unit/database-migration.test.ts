@@ -7,7 +7,7 @@ import { Worker } from "node:worker_threads";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDatabase } from "../../src/storage/database.js";
-import { containsCardPan } from "../../src/cards/card-pan.js";
+import { containsCardPan, redactCardPan } from "../../src/cards/card-pan.js";
 import { latestDatabaseVersion } from "../../src/storage/migration-manifest.js";
 import { testConfig } from "../helpers.js";
 
@@ -25,6 +25,8 @@ describe("database migrations", () => {
     const legacy = new Database(config.databasePath);
     legacy.function("kakebo_has_card_pan", { deterministic: true },
       (value: string): number => Number(containsCardPan(value)));
+    legacy.function("kakebo_redact_card_pan", { deterministic: true },
+      (value: string | null): string | null => redactCardPan(value));
     const manifest = JSON.parse(readFileSync(resolve("src", "storage", "migrations", "manifest.json"), "utf8")) as
       Array<{ version: number; filename: string }>;
     for (const entry of manifest.filter(item => item.version <= 16))
@@ -98,11 +100,15 @@ describe("database migrations", () => {
       .run(now, now);
     legacy.prepare(`INSERT INTO transactions
       (id, movement_key, reconciliation_key, provider, environment, bank_connection_id,
-       account_id, status, amount, currency, direction, first_seen_at, last_seen_at,
+       account_id, status, amount, currency, direction, description_raw, description_normalized,
+       merchant_name, creditor_name, debtor_name, first_seen_at, last_seen_at,
        imported_at, raw_fingerprint)
       VALUES ('movement', 'movement-key', 'reconciliation-key', 'kutxabank-browser',
-       'sandbox', 'bank', 'card', 'unknown', '-1', 'EUR', 'expense', ?, ?, ?, 'fingerprint')`
-    ).run(now, now, now);
+       'sandbox', 'bank', 'card', 'unknown', '-1', 'EUR', 'expense', ?, ?, ?, ?, ?,
+       ?, ?, ?, 'fingerprint')`
+    ).run("COMPRA 4111.1111.1111.1111", "COMPRA 4111.1111.1111.1111",
+      "Comercio 4111\u00a01111\u00a01111\u00a01111", "4111-1111-1111-1111", "4111.1111.1111.1111",
+      now, now, now);
     legacy.prepare(`INSERT INTO balances (id, account_id, amount, currency, extracted_at)
       VALUES ('old-balance', 'card', '10', 'EUR', ?)`).run(now);
     legacy.prepare(`INSERT INTO transactions_raw (id, account_id, fetched_at, page_number, raw_fingerprint)
@@ -120,6 +126,11 @@ describe("database migrations", () => {
     expect(migrated.prepare("SELECT id FROM accounts WHERE id = 'card'").get()).toBeUndefined();
     expect(migrated.prepare("SELECT account_id FROM transactions WHERE id = 'movement'").get())
       .toEqual({ account_id: "card" });
+    expect(migrated.prepare(`SELECT description_raw, description_normalized,
+      merchant_name, creditor_name, debtor_name FROM transactions WHERE id = 'movement'`).get())
+      .toEqual({ description_raw: "COMPRA [TARJETA OCULTA]", description_normalized: "COMPRA [TARJETA OCULTA]",
+        merchant_name: "Comercio [TARJETA OCULTA]", creditor_name: "[TARJETA OCULTA]",
+        debtor_name: "[TARJETA OCULTA]" });
     expect(migrated.prepare("SELECT COUNT(*) AS total FROM balances WHERE account_id = 'card'").get())
       .toEqual({ total: 0 });
     expect(migrated.prepare("SELECT COUNT(*) AS total FROM transactions_raw WHERE account_id = 'card'").get())

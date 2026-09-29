@@ -8,7 +8,7 @@ import { normalizeDecimal, type NormalizedTransaction } from "../transactions/tr
 import { sha256, stableJson } from "../utils/crypto.js";
 import { assertIsoDate } from "../utils/dates.js";
 import { normalizeText } from "../utils/text.js";
-import { CARD_PAN, containsCardPan } from "./card-pan.js";
+import { containsCardPan, redactCardPan } from "./card-pan.js";
 import type { KutxabankTableMovement } from "./kutxabank-table.js";
 
 const PROVIDER = "kutxabank-browser";
@@ -80,7 +80,7 @@ function requiredAlias(value: string): string {
 }
 
 function sanitizeDescription(value: unknown): string {
-  return typeof value === "string" ? value.replace(CARD_PAN, "[TARJETA OCULTA]").trim() : "";
+  return typeof value === "string" ? redactCardPan(value)?.trim() ?? "" : "";
 }
 
 function nullableDate(value: unknown): string | null {

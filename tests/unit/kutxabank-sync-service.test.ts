@@ -459,6 +459,19 @@ describe("KutxabankSyncService", () => {
     expect(JSON.stringify(stored)).not.toContain("4111");
   });
 
+  it("rejects PAN aliases and redacts descriptions with punctuation separators", async () => {
+    const { service, database } = await setup();
+    const connection = service.createConnection("Ana");
+    expect(() => service.createCard(connection.id, "Visa 4111.1111.1111.1111", "1234"))
+      .toThrow("INVALID_ALIAS");
+    const card = service.createCard(connection.id, "Compras", "1234");
+    service.ingest({ connectionId: connection.id, accountId: card.id,
+      dateFrom: "2026-09-01", dateTo: "2026-09-30",
+      movements: [movement({ description: "RECIBO 4111.1111.1111.1111" })] });
+    expect(database.prepare("SELECT description_raw FROM transactions").get())
+      .toEqual({ description_raw: "RECIBO [TARJETA OCULTA]" });
+  });
+
   it("rejects inactive, disabled, wrong-source, wrong-environment and cross-connection accounts", async () => {
     const { service, database } = await setup();
     const first = service.createConnection("Ana");

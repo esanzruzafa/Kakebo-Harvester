@@ -65,6 +65,13 @@ CREATE TABLE transactions (
   counterparty_identification_hash TEXT
 );
 INSERT INTO transactions SELECT * FROM transactions_before_cards;
+UPDATE transactions SET
+  description_raw = kakebo_redact_card_pan(description_raw),
+  description_normalized = kakebo_redact_card_pan(description_normalized),
+  merchant_name = kakebo_redact_card_pan(merchant_name),
+  creditor_name = kakebo_redact_card_pan(creditor_name),
+  debtor_name = kakebo_redact_card_pan(debtor_name)
+WHERE provider = 'kutxabank-browser';
 DROP TABLE transactions_before_cards;
 CREATE INDEX transactions_reconciliation_idx
   ON transactions(account_id, reconciliation_key, status);
