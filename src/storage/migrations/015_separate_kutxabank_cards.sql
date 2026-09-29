@@ -12,7 +12,10 @@ CREATE TABLE cards (
 
 INSERT INTO cards (id, bank_connection_id, alias, last4, active, sync_enabled,
   export_enabled, first_seen_at, last_seen_at)
-SELECT a.id, a.bank_connection_id, COALESCE(NULLIF(a.account_alias, ''), a.name, 'Tarjeta'),
+SELECT a.id, a.bank_connection_id,
+  CASE WHEN COALESCE(NULLIF(a.account_alias, ''), a.name, 'Tarjeta') GLOB '*[0-9]*'
+    THEN 'Tarjeta'
+    ELSE COALESCE(NULLIF(a.account_alias, ''), a.name, 'Tarjeta') END,
   substr(a.product_type, -4), a.active, a.sync_enabled, a.export_enabled,
   a.first_seen_at, a.last_seen_at
 FROM accounts a JOIN bank_connections c ON c.id = a.bank_connection_id

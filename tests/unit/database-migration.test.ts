@@ -83,6 +83,11 @@ describe("database migrations", () => {
        product_type, first_seen_at, last_seen_at)
       VALUES ('other-card', 'bank', 'other-card', 'Viajes', 'Otra tarjeta', 'CARD', '•••• 1234', ?, ?)`)
       .run(now, now);
+    legacy.prepare(`INSERT INTO accounts
+      (id, bank_connection_id, provider_account_id, name, account_alias, account_type,
+       product_type, first_seen_at, last_seen_at)
+      VALUES ('unsafe-card', 'bank', 'unsafe-card', 'Visa', ?, 'CARD', '•••• 5678', ?, ?)`)
+      .run("Visa 4111\u00a0\u00a01111\u202f1111--1111", now, now);
     legacy.prepare(`INSERT INTO transactions
       (id, movement_key, reconciliation_key, provider, environment, bank_connection_id,
        account_id, status, amount, currency, direction, first_seen_at, last_seen_at,
@@ -100,7 +105,8 @@ describe("database migrations", () => {
     expect(migrated.prepare("SELECT id, alias, last4, sync_enabled FROM cards ORDER BY id").all())
       .toEqual([
         { id: "card", alias: "Mi tarjeta", last4: "1234", sync_enabled: 0 },
-        { id: "other-card", alias: "Otra tarjeta", last4: "1234", sync_enabled: 1 }
+        { id: "other-card", alias: "Otra tarjeta", last4: "1234", sync_enabled: 1 },
+        { id: "unsafe-card", alias: "Tarjeta", last4: "5678", sync_enabled: 1 }
       ]);
     expect(migrated.prepare("SELECT id FROM accounts WHERE id = 'card'").get()).toBeUndefined();
     expect(migrated.prepare("SELECT account_id FROM transactions WHERE id = 'movement'").get())
