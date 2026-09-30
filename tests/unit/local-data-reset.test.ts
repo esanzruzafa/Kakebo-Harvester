@@ -2,6 +2,7 @@ import {
   access,
   mkdir,
   mkdtemp,
+  readFile,
   rm,
   symlink,
   writeFile
@@ -44,6 +45,24 @@ describe("resetLocalData", () => {
       ) VALUES ('account', 'connection', 'provider', 'Account', 1, ?, ?)`)
       .run(now, now);
     database
+      .prepare(`INSERT INTO bank_connections (
+        id, provider, environment, bank_name, bank_country, psu_type, alias, status, created_at
+      ) VALUES ('card-connection', 'kutxabank-browser', 'sandbox', 'Kutxabank', 'ES',
+        'personal', 'Kutxabank', 'LOCAL', ?)`)
+      .run(now);
+    database
+      .prepare(`INSERT INTO cards (
+        id, bank_connection_id, alias, last4, active, first_seen_at, last_seen_at,
+        balance_text, balance_is_red, balance_read_at
+      ) VALUES ('card', 'card-connection', 'Visa', '1234', 1, ?, ?, '194,55 €', 1, ?)`)
+      .run(now, now, now);
+    await writeFile(config.cardsConfigPath, JSON.stringify({
+      version: 1,
+      cards: [{ id: "card", alias: "Visa", last4: "1234",
+        syncEnabled: true, exportEnabled: true,
+        balance: { text: "194,55 €", isRed: true, readAt: now } }]
+    }));
+    database
       .prepare(
         `UPDATE accounts SET
            last_error_at = ?, last_error_code = 'RESOURCE_EXPIRED',
@@ -59,6 +78,12 @@ describe("resetLocalData", () => {
       ) VALUES ('transaction', 'movement', 'reconciliation', 'enable-banking', 'sandbox',
         'connection', 'account', 'booked', '1.00', 'EUR', 'income', 'TEST', ?, ?, ?, 'fingerprint')`)
       .run(now, now, now);
+    database.prepare(`INSERT INTO transaction_reconciliation_events (
+      id, reference, action, kind, first_movement_key, second_movement_key,
+      first_amount_snapshot, second_amount_snapshot, currency_snapshot, confirmed_at,
+      environment, recorded_at
+    ) VALUES ('event', 'reference', 'undo', 'duplicate', 'movement', 'other',
+      '1.00', '1.00', 'EUR', ?, 'sandbox', ?)`).run(now, now);
     database
       .prepare(`INSERT INTO card_import_source_rows (
         profile_id, source_path_hash, semantic_key_hash, occurrence,
@@ -95,10 +120,17 @@ describe("resetLocalData", () => {
       desktopRuns: 1,
       cleanupWarnings: []
     });
-    for (const table of ["bank_connections", "provider_sessions", "accounts"]) {
+    for (const table of ["provider_sessions", "accounts"]) {
       expect(database.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get()).toEqual({ total: 1 });
     }
+    expect(database.prepare("SELECT COUNT(*) AS total FROM bank_connections").get()).toEqual({ total: 2 });
     expect(database.prepare("SELECT last_sync_at FROM bank_connections").get()).toEqual({ last_sync_at: null });
+    const cardBalance = database.prepare(`SELECT balance_text, balance_is_red, balance_read_at FROM cards WHERE id = 'card'`).get();
+    expect(JSON.parse(await readFile(config.cardsConfigPath, "utf8"))).toEqual({
+      version: 1,
+      cards: [{ id: "card", alias: "Visa", last4: "1234",
+        syncEnabled: true, exportEnabled: true, balance: null }]
+    });
     expect(
       database
         .prepare(
@@ -113,6 +145,7 @@ describe("resetLocalData", () => {
     });
     for (const table of [
       "transactions",
+      "transaction_reconciliation_events",
       "card_import_source_rows",
       "transactions_raw",
       "balances",
@@ -126,6 +159,35 @@ describe("resetLocalData", () => {
       access(join(config.rawDataDirectory, "transactions"))
     ).rejects.toMatchObject({ code: "ENOENT" });
     database.close();
+    expect(cardBalance).toEqual({ balance_text: null, balance_is_red: null, balance_read_at: null });
+  });
+
+  it("does not commit a reset when the card snapshot cannot be sanitized", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-reset-locked-cards-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database.prepare(`INSERT INTO bank_connections
+      (id, provider, environment, bank_name, bank_country, psu_type, alias, status, created_at)
+      VALUES ('connection', 'enable-banking', 'sandbox', 'Demo Bank', 'ES', 'personal',
+        'Demo', 'AUTHORIZED', ?)`).run(now);
+    database.prepare(`INSERT INTO accounts
+      (id, bank_connection_id, provider_account_id, first_seen_at, last_seen_at)
+      VALUES ('account', 'connection', 'account', ?, ?)`).run(now, now);
+    database.prepare(`INSERT INTO transactions
+      (id, movement_key, reconciliation_key, provider, environment, bank_connection_id,
+       account_id, status, amount, currency, direction, first_seen_at, last_seen_at,
+       imported_at, raw_fingerprint)
+      VALUES ('movement', 'movement', 'reconciliation', 'enable-banking', 'sandbox',
+        'connection', 'account', 'booked', '1', 'EUR', 'income', ?, ?, ?, 'fingerprint')`)
+      .run(now, now, now);
+    await mkdir(config.cardsConfigPath);
+    try {
+      await expect(resetLocalData(config, database)).rejects.toThrow();
+      expect(database.prepare("SELECT COUNT(*) AS total FROM transactions").get()).toEqual({ total: 1 });
+    } finally {
+      database.close();
+    }
   });
 
   it("reports locked cleanup files without hiding the committed database reset", async () => {
@@ -224,6 +286,12 @@ describe("resetLocalData", () => {
         id, started_at, status, date_from, date_to, steps_json
       ) VALUES ('desktop-run', ?, 'SUCCESS', '2026-01-01', '2026-01-01', '[]')`)
       .run(now);
+    database.prepare(`INSERT INTO transaction_reconciliation_events (
+      id, reference, action, kind, first_movement_key, second_movement_key,
+      first_amount_snapshot, second_amount_snapshot, currency_snapshot, confirmed_at,
+      environment, recorded_at
+    ) VALUES ('event', 'reference', 'undo', 'duplicate', 'movement', 'other',
+      '1', '1', 'EUR', ?, 'sandbox', ?)`).run(now, now);
     database
       .prepare(`INSERT INTO card_import_source_rows (
         profile_id, source_path_hash, semantic_key_hash, occurrence,
@@ -250,6 +318,8 @@ describe("resetLocalData", () => {
     expect(database.prepare("SELECT COUNT(*) AS total FROM desktop_runs").get()).toEqual({
       total: 1
     });
+    expect(database.prepare("SELECT COUNT(*) AS total FROM transaction_reconciliation_events").get())
+      .toEqual({ total: 1 });
     expect(
       database.prepare("SELECT COUNT(*) AS total FROM card_import_source_rows").get()
     ).toEqual({ total: 1 });

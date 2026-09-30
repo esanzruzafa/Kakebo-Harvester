@@ -2,7 +2,15 @@
 
 This document describes the technical boundaries, persistence model, synchronization lifecycle, export behavior, localization, packaging, and portability of the Kakebo Harvester desktop application.
 
-## Process boundary
+## Tarjetas Kutxabank (en validación)
+
+El proceso principal incorpora una fuente local independiente `kutxabank-browser` y una ventana bancaria sin preload, con aislamiento, sandbox, permisos denegados y navegación limitada al origen/rutas observadas. La ventana y sus popups comparten un perfil persistente exclusivo de Kutxabank en `%LOCALAPPDATA%\KakeboHarvester\KutxabankBrowser`. La interfaz recibe identificadores locales y selecciones aleatorias de sesión, nunca cookies ni credenciales. La lectura paginada completa precede a la transacción que crea productos e importa filas. Cerrar la ventana cancela la lectura y conserva el perfil; **Olvidar este dispositivo** borra los datos del navegador bancario cuando las ventanas están cerradas, sin borrar tarjetas ni movimientos.
+
+La migración 014 conserva relaciones de conciliación entre filas sin cambiar sus importes. La migración 015 separa el catálogo Kutxabank de `accounts` y mantiene sus movimientos históricos; la 017 añade la huella HMAC de identidad de tarjeta, la 018 conserva un registro de confirmaciones y reversiones y la 019 guarda la preferencia de exportación de los movimientos cuando se elimina una tarjeta del catálogo. `cards.json` refleja alias y casillas de sincronización y exportación, sin guardar esa huella; `accounts.json` contiene solo cuentas AIS. La exportación comprueba que las dos filas mantienen importe, divisa, estado admisible y participación en la exportación antes de aplicar exclusiones. Véanse la [guía en castellano](banking/kutxabank-card-sync.md) y la [evidencia con sus límites](banking/kutxabank-connector-evidence.md).
+
+El titular confirmó una sincronización completa de tarjetas en Electron durante el desarrollo. Esa observación no valida automáticamente los cambios posteriores de saldo persistente y eliminación del catálogo, que necesitan una nueva comprobación con una sesión bancaria real antes de publicar la release.
+
+## Process boundary (AIS and application)
 
 Electron runs two trust levels:
 
@@ -66,6 +74,7 @@ Runtime configuration is divided by responsibility:
 | --- | --- |
 | `private/.env.production` | Environment, API identity, secret paths, database paths, retention, and operational limits |
 | `config/accounts.json` | Human-readable account-settings snapshot |
+| `config/cards.json` | Catálogo local de tarjetas Kutxabank, alias y selección de sincronización y exportación (`CARDS_CONFIG_PATH` en el archivo de entorno privado) |
 | `config/categorization-rules.json` | Ordered categorization exclusions and automatic categorization rules |
 | `config/categories.json` | Allowed category and dependent subcategory values |
 | `config/card-import-profiles.json` | Stable physical-card identities and reusable XLSX mappings |
@@ -220,7 +229,7 @@ Application initialization recovers orphaned `RUNNING` rows as failed with the
 cross-process lease suppresses recovery, preventing a concurrently running
 scheduled task from being mislabeled by desktop startup.
 
-The broader **Reset local data** operation commits the SQLite deletion first, clears stale account-level synchronization errors, and treats export/raw-file removal as separate cleanup. Export cleanup includes active and archived results, the profile state, and interrupted `.tmp` or `.rollback` artifacts. The cleanup refuses to traverse a symbolic link or Windows directory junction used as the configured `raw` or `exports` root. Its result distinguishes deleted database rows from `exports` or `raw-data` cleanup warnings. This guarantees that a locked or unsafe Windows path cannot turn a completed database reset into an apparent total failure; the renderer refreshes immediately and explains which filesystem cleanup must be retried.
+The broader **Reset local data** operation first rewrites an existing `cards.json` with null balances. A failed card-snapshot write stops the reset before SQLite history is deleted. It then commits the SQLite deletion, clears stale account-level synchronization errors, and treats export/raw-file removal as separate cleanup. Export cleanup includes active and archived results, the profile state, and interrupted `.tmp` or `.rollback` artifacts. The cleanup refuses to traverse a symbolic link or Windows directory junction used as the configured `raw` or `exports` root. Its result distinguishes deleted database rows from `exports` or `raw-data` cleanup warnings. This guarantees that a locked or unsafe Windows export/raw path cannot turn a completed database reset into an apparent total failure; the renderer refreshes immediately and explains which filesystem cleanup must be retried.
 
 ## Account settings
 
