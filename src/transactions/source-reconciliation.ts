@@ -62,7 +62,9 @@ export class SourceReconciliationService {
         if (firstAmount !== secondAmount || !providers.has("manual-card") || !providers.has("kutxabank-browser")) throw new Error("INVALID_RECONCILIATION");
       } else {
         const opposite=firstAmount.startsWith("-") ? firstAmount.slice(1) : `-${firstAmount}`;
+        const aisAmount=first.provider === "enable-banking" ? firstAmount : secondAmount;
         if (firstAmount === "0" || opposite !== secondAmount || !providers.has("enable-banking") ||
+          !aisAmount.startsWith("-") ||
           !(providers.has("kutxabank-browser") || providers.has("manual-card"))) throw new Error("INVALID_RECONCILIATION");
       }
       if (this.database.prepare(`SELECT 1 FROM transaction_reconciliations WHERE movement_key IN (?,?)`).get(firstKey,secondKey))

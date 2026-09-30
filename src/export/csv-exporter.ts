@@ -437,7 +437,7 @@ export class CsvExporter {
            GROUP BY r.reference HAVING COUNT(*)=2 AND SUM(CASE
              WHEN t.amount=r.amount_snapshot AND t.currency=r.currency_snapshot
                AND t.status IN ('booked','unknown')
-               AND (r.kind='settlement' OR COALESCE(paired_account.export_enabled, paired_card.export_enabled,
+               AND ((r.kind='settlement' AND t.provider='enable-banking') OR COALESCE(paired_account.export_enabled, paired_card.export_enabled,
                  t.card_export_enabled_snapshot,
                  CASE WHEN t.provider='kutxabank-browser' AND t.card_last4_snapshot IS NOT NULL THEN 1 END)=1)
                THEN 1 ELSE 0 END)=2

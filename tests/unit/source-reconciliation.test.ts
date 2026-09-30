@@ -94,6 +94,20 @@ it('refuses to overwrite a confirmed relationship',async()=>{
   const {service}=await setup(); service.confirm('purchase','manual','duplicate');
   expect(()=>service.confirm('purchase','manual','duplicate')).toThrow('ALREADY_RECONCILED');
 });
+it.each(['kutxabank-browser','manual-card'])('rejects an inverted settlement for %s regardless of selection order',async(provider)=>{
+  const {service,database,insert}=await setup();
+  insert('credit','ais','enable-banking','120','booked');
+  const cardKey=provider==='manual-card'?'manual':'purchase';
+  for(const [firstKey,secondKey] of [[cardKey,'credit'],['credit',cardKey]] as const)
+    expect(()=>service.confirm(firstKey,secondKey,'settlement')).toThrow('INVALID_RECONCILIATION');
+  expect(database.prepare('SELECT COUNT(*) AS n FROM transaction_reconciliations').get()).toEqual({n:0});
+  expect(database.prepare('SELECT COUNT(*) AS n FROM transaction_reconciliation_events').get()).toEqual({n:0});
+});
+it.each(['kutxabank-browser','manual-card'])('accepts a bank debit selected before the %s credit',async(provider)=>{
+  const {service,insert}=await setup();
+  insert('card-credit',provider==='manual-card'?'manual':'card',provider,'120','booked');
+  expect(service.confirm('debit','card-credit','settlement')).toBeTruthy();
+});
 
 it('lists movements by the effective export date when booking date is absent',async()=>{
   const {service,database}=await setup();
@@ -161,4 +175,21 @@ it('keeps the card settlement contribution zero when the AIS account is excluded
   expect(rows).toContain('settlement;€0 EUR;internal-transfer');
   expect(rows).toContain('purchase;€120 EUR;review-required');
   expect(rows.some(row=>row.startsWith('debit;'))).toBe(false);
+});
+it.each(['kutxabank-browser','manual-card'])('counts the AIS debit when the %s card is excluded from export',async(provider)=>{
+  const {service,database,insert}=await setup();
+  if (!root) throw new Error('Test fixture missing');
+  const cardId=provider==='manual-card'?'manual':'card';
+  insert('card-credit',cardId,provider,'120','booked');
+  service.confirm('card-credit','debit','settlement');
+  database.prepare('UPDATE accounts SET export_enabled=0 WHERE id=?').run(cardId);
+  const config=testConfig(root);
+  const settings=createDefaultExportSettings('.',';');
+  settings.format='csv'; settings.csv.includeBom=false;
+  for(const column of settings.columns) column.enabled=['movementKey','expenseAmount','economicTreatment'].includes(column.field);
+  await new ExportSettingsStore(config.exportSettingsPath,settings).save(settings);
+  const output=await new CsvExporter(config,database).export();
+  const rows=(await readFile(output.path,'utf8')).split(/\r?\n/);
+  expect(rows).toContain('debit;€120 EUR;review-required');
+  expect(rows.some(row=>row.startsWith('card-credit;'))).toBe(false);
 });
