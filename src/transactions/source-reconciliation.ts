@@ -97,10 +97,9 @@ export class SourceReconciliationService {
         FROM transaction_reconciliation_events WHERE reference = ? AND action = 'confirm' AND environment = ?`)
         .get(reference, this.environment) as { first_movement_key: string; second_movement_key: string;
           confirmed_at: string } | undefined;
-      if (confirmation) {
-        if (!rows.some(row => row.movement_key === confirmation.first_movement_key) ||
-            !rows.some(row => row.movement_key === confirmation.second_movement_key))
-          throw new Error("INVALID_RECONCILIATION");
+      // Audit keys are immutable; active keys can change through ON UPDATE CASCADE.
+      if (confirmation && rows.some(row => row.movement_key === confirmation.first_movement_key) &&
+          rows.some(row => row.movement_key === confirmation.second_movement_key)) {
         rows.sort((a, b) => Number(b.movement_key === confirmation.first_movement_key) -
           Number(a.movement_key === confirmation.first_movement_key));
       }

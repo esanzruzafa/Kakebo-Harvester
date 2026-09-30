@@ -76,6 +76,20 @@ it('rejects incorrect amounts, same-account pairs, pending rows and another envi
     expect(()=>service.confirm(first,second,'duplicate')).toThrow();
   expect(database.prepare('SELECT COUNT(*) AS n FROM transaction_reconciliations').get()).toEqual({n:0});
 });
+it.each(['duplicate','settlement'] as const)('allows undo of a %s after both movement keys change',async(kind)=>{
+  const {service,database}=await setup();
+  const firstKey=kind==='duplicate'?'purchase':'settlement';
+  const secondKey=kind==='duplicate'?'manual':'debit';
+  const reference=service.confirm(firstKey,secondKey,kind);
+  const confirmation=database.prepare("SELECT confirmed_at FROM transaction_reconciliation_events WHERE reference=? AND action='confirm'").get(reference) as {confirmed_at:string};
+  for(const key of [firstKey,secondKey]) database.prepare('UPDATE transactions SET movement_key=? WHERE movement_key=?').run(`updated-${key}`,key);
+  service.undo(reference);
+  expect(database.prepare('SELECT COUNT(*) AS n FROM transaction_reconciliations WHERE reference=?').get(reference)).toEqual({n:0});
+  const undo=database.prepare("SELECT first_movement_key,second_movement_key,confirmed_at FROM transaction_reconciliation_events WHERE reference=? AND action='undo'").get(reference) as {first_movement_key:string;second_movement_key:string;confirmed_at:string};
+  expect([undo.first_movement_key,undo.second_movement_key].sort()).toEqual([`updated-${firstKey}`,`updated-${secondKey}`].sort());
+  expect(undo.confirmed_at).toBe(confirmation.confirmed_at);
+  expect(database.prepare("SELECT first_movement_key,second_movement_key FROM transaction_reconciliation_events WHERE reference=? AND action='confirm'").get(reference)).toEqual({first_movement_key:firstKey,second_movement_key:secondKey});
+});
 it('refuses to overwrite a confirmed relationship',async()=>{
   const {service}=await setup(); service.confirm('purchase','manual','duplicate');
   expect(()=>service.confirm('purchase','manual','duplicate')).toThrow('ALREADY_RECONCILED');
