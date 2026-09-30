@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createDatabase, type SqliteDatabase } from "../../src/storage/database.js";
 import { SourceReconciliationService } from "../../src/transactions/source-reconciliation.js";
 import { expenseContribution } from "../../src/transactions/economic-treatment.js";
@@ -11,7 +11,7 @@ import { createDefaultExportSettings, ExportSettingsStore } from "../../src/sett
 
 let root: string | undefined;
 let db: SqliteDatabase | undefined;
-afterEach(async () => { db?.close(); db=undefined; if(root) await rm(root,{recursive:true,force:true}); root=undefined; });
+afterEach(async () => { vi.restoreAllMocks(); db?.close(); db=undefined; if(root) await rm(root,{recursive:true,force:true}); root=undefined; });
 async function setup() {
   root=await mkdtemp(join(tmpdir(),"kakebo-reconciliation-"));
   const database=createDatabase(testConfig(root).databasePath); db=database;
@@ -55,6 +55,18 @@ it('keeps only the explicitly selected representative of a manual/browser duplic
   const {service,database}=await setup(); service.confirm('purchase','manual','duplicate');
   expect(database.prepare('SELECT movement_key,representative FROM transaction_reconciliations ORDER BY movement_key').all())
     .toEqual([{movement_key:'manual',representative:0},{movement_key:'purchase',representative:1}]);
+});
+it('uses one confirmation time and preserves the selected order in the undo event', async()=>{
+  const {service,database}=await setup();
+  let tick=0;
+  vi.spyOn(Date.prototype,'toISOString').mockImplementation(()=>`2026-09-30T10:00:00.${String(tick++).padStart(3,'0')}Z`);
+  const reference=service.confirm('purchase','manual','duplicate');
+  const confirmation=database.prepare("SELECT confirmed_at FROM transaction_reconciliation_events WHERE reference=? AND action='confirm'").get(reference) as {confirmed_at:string};
+  expect(database.prepare('SELECT DISTINCT confirmed_at FROM transaction_reconciliations WHERE reference=?').all(reference))
+    .toEqual([{confirmed_at:confirmation.confirmed_at}]);
+  service.undo(reference);
+  expect(database.prepare("SELECT first_movement_key,second_movement_key,confirmed_at FROM transaction_reconciliation_events WHERE reference=? AND action='undo'").get(reference))
+    .toEqual({first_movement_key:'purchase',second_movement_key:'manual',confirmed_at:confirmation.confirmed_at});
 });
 it('rejects incorrect amounts, same-account pairs, pending rows and another environment atomically',async()=>{
   const {service,insert,database}=await setup();
@@ -119,4 +131,20 @@ it('does not suppress the remaining copy when its representative is excluded fro
   const output=await new CsvExporter(config,database).export();
   const rows=(await readFile(output.path,'utf8')).split(/\r?\n/);
   expect(rows).toContain('manual;€120 EUR;review-required');
+});
+it('keeps the card settlement contribution zero when the AIS account is excluded',async()=>{
+  const {service,database}=await setup();
+  if (!root) throw new Error('Test fixture missing');
+  const config=testConfig(root);
+  const settings=createDefaultExportSettings('.',';');
+  settings.format='csv'; settings.csv.includeBom=false;
+  for(const column of settings.columns) column.enabled=['movementKey','expenseAmount','economicTreatment'].includes(column.field);
+  await new ExportSettingsStore(config.exportSettingsPath,settings).save(settings);
+  service.confirm('settlement','debit','settlement');
+  database.prepare("UPDATE accounts SET export_enabled=0 WHERE id='ais'").run();
+  const output=await new CsvExporter(config,database).export();
+  const rows=(await readFile(output.path,'utf8')).split(/\r?\n/);
+  expect(rows).toContain('settlement;€0 EUR;internal-transfer');
+  expect(rows).toContain('purchase;€120 EUR;review-required');
+  expect(rows.some(row=>row.startsWith('debit;'))).toBe(false);
 });

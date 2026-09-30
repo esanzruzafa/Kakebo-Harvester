@@ -68,17 +68,18 @@ export class SourceReconciliationService {
       if (this.database.prepare(`SELECT 1 FROM transaction_reconciliations WHERE movement_key IN (?,?)`).get(firstKey,secondKey))
         throw new Error("ALREADY_RECONCILED");
       const reference=randomUUID();
+      const confirmedAt=new Date().toISOString();
       const insert=this.database.prepare(`INSERT INTO transaction_reconciliations
         (movement_key,reference,kind,representative,amount_snapshot,currency_snapshot,confirmed_at) VALUES(?,?,?,?,?,?,?)`);
       for (const [index,row] of [first,second].entries()) insert.run(row.movement_key,reference,kind,
-        kind === "duplicate" && index === 1 ? 0 : 1,row.amount,row.currency,new Date().toISOString());
+        kind === "duplicate" && index === 1 ? 0 : 1,row.amount,row.currency,confirmedAt);
       this.database.prepare(`INSERT INTO transaction_reconciliation_events
         (id, reference, action, kind, first_movement_key, second_movement_key,
          first_amount_snapshot, second_amount_snapshot, currency_snapshot, confirmed_at,
          environment, recorded_at)
         VALUES (?, ?, 'confirm', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(randomUUID(), reference, kind, firstKey, secondKey, first.amount, second.amount,
-          first.currency, new Date().toISOString(), this.environment, new Date().toISOString());
+          first.currency, confirmedAt, this.environment, confirmedAt);
       return reference;
     })();
   }
@@ -92,6 +93,17 @@ export class SourceReconciliationService {
         .all(reference, this.environment) as Array<{ movement_key: string; kind: "settlement" | "duplicate";
           amount_snapshot: string; currency_snapshot: string; confirmed_at: string }>;
       if (rows.length !== 2 || rows[0]?.kind !== rows[1]?.kind) throw new Error("INVALID_RECONCILIATION");
+      const confirmation = this.database.prepare(`SELECT first_movement_key, second_movement_key, confirmed_at
+        FROM transaction_reconciliation_events WHERE reference = ? AND action = 'confirm' AND environment = ?`)
+        .get(reference, this.environment) as { first_movement_key: string; second_movement_key: string;
+          confirmed_at: string } | undefined;
+      if (confirmation) {
+        if (!rows.some(row => row.movement_key === confirmation.first_movement_key) ||
+            !rows.some(row => row.movement_key === confirmation.second_movement_key))
+          throw new Error("INVALID_RECONCILIATION");
+        rows.sort((a, b) => Number(b.movement_key === confirmation.first_movement_key) -
+          Number(a.movement_key === confirmation.first_movement_key));
+      }
       const [first, second] = rows as [typeof rows[number], typeof rows[number]];
       const deleted = this.database.prepare(`DELETE FROM transaction_reconciliations WHERE reference=?
         AND movement_key IN (SELECT movement_key FROM transactions WHERE environment=?)`).run(reference, this.environment);
@@ -102,7 +114,8 @@ export class SourceReconciliationService {
          environment, recorded_at)
         VALUES (?, ?, 'undo', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(randomUUID(), reference, first.kind, first.movement_key, second.movement_key,
-          first.amount_snapshot, second.amount_snapshot, first.currency_snapshot, first.confirmed_at,
+          first.amount_snapshot, second.amount_snapshot, first.currency_snapshot,
+          confirmation?.confirmed_at ?? first.confirmed_at,
           this.environment, new Date().toISOString());
     })();
   }
