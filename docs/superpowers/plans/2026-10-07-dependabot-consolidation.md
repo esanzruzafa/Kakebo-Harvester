@@ -12,7 +12,7 @@
 
 ## Global constraints
 
-- Preserve read-only local banking behavior and existing application version; no release tag required for dependency integration.
+- Preserve read-only local banking behavior. User authorized preparing version 2.0.1 and release notes; no release tag is created by this PR.
 - Preserve strict lint and TypeScript checks; no forced peer dependency installation.
 - Work only on Dependabot changes; leave PRs 29 and 30 alone.
 - Publish and close PRs only after validation; verify CI against the final head.
@@ -48,6 +48,8 @@ Local validation: npm run check passed (63 files, 434 passed, 2 skipped); legal 
 Independent review: no critical or important findings. Minor deferred: SQLite 13 has no install script, so its existing allowScripts approval is redundant but harmless.
 
 Portable validation: desktop:dist passed, generating EXE and complete ZIP. Packaged SQLite ABI and all migrations passed (v19). Packaging tests passed (3 ZIP tests plus 4 workflow/assets tests); one earlier ZIP test hit its 15s timeout during simultaneous heavy builds, then passed unchanged in an isolated run. Official setup-node v7.0.0 tag resolves to the pinned 820762786026740c76f36085b0efc47a31fe5020 commit.
+
+User steering: v2.0.0 is already published. Prepare a single maintenance patch, 2.0.1, including matching root manifest/lock versions and docs/releases/2.0.1.md. Existing local portable verification was for the same code/dependencies at 2.0.0; final-head CI must build and verify 2.0.1 before integration.
 
 ### Task 3: Integrate and resolve PR backlog
 
