@@ -1649,9 +1649,9 @@ async function registerIpc(application: KakeboApplication): Promise<void> {
     const error = await shell.openPath(paths[target]);
     if (error) throw new Error(error);
   });
-  ipcMain.handle("clipboard:write", (event, input: unknown) => {
+  ipcMain.handle("clipboard:write", async (event, input: unknown) => {
     assertTrustedSender(event);
-    clipboard.writeText(z.string().max(8_000).parse(input));
+    await clipboard.writeText(z.string().max(8_000).parse(input));
   });
   ipcMain.handle("https:setup", async (event) => {
     assertTrustedSender(event);
