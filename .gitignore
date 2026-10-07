@@ -26,6 +26,7 @@ npm-debug.log*
 .DS_Store
 config/categorization-rules.json
 config/accounts.json
+config/cards.json
 config/categories.json
 config/export-settings.json
 config/export-settings.json.state.json

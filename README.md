@@ -178,7 +178,7 @@ data/production/exports/kakebo_movements.xlsx
 data/production/exports/kakebo_movements.csv
 ```
 
-The **Reset local data** action permanently removes Kakebo Harvester's current and archived XLSX/CSV results, interrupted-export temporary and rollback files, imported bank and card movements, balances, raw provider responses, execution history, and stale per-account synchronization errors after an in-app confirmation. It preserves bank connections and sessions, account preferences, and every configuration file. The database reset is atomic; result and raw-file cleanup is reported separately so a Windows file lock cannot hide that the financial history was already cleared. If a locked file remains, the application refreshes its empty history, shows a warning, and lets you retry after closing the program that holds the file. The next synchronization therefore starts with empty local financial history without requiring bank reconnection.
+The **Reset local data** action permanently removes Kakebo Harvester's current and archived XLSX/CSV results, interrupted-export temporary and rollback files, imported bank and card movements, balances, raw provider responses, execution history, and stale per-account synchronization errors after an in-app confirmation. It preserves bank connections and sessions and account preferences. Before deleting SQLite history, it rewrites an existing `cards.json` without balance values; if that write fails, the reset stops before deleting the database history. The database reset is atomic; result and raw-file cleanup is reported separately so a Windows file lock cannot hide that the financial history was already cleared. If a locked export or raw file remains, the application refreshes its empty history, shows a warning, and lets you retry after closing the program that holds the file. The next synchronization therefore starts with empty local financial history without requiring bank reconnection.
 
 For deletion safety, `DATABASE_PATH`, `RAW_DATA_DIRECTORY`, and `EXPORT_DIRECTORY` must use one environment folder: the SQLite file and the distinct `raw` and `exports` directories are siblings. Startup rejects broader or nested layouts before any cleanup can run, and reset refuses to delete through symbolic links or Windows directory junctions used as the configured `raw` or `exports` root.
 
@@ -272,6 +272,7 @@ Kakebo-Harvester/
 │   └── local-https-production-ca.thumbprint
 ├── config/
 │   ├── accounts.json
+│   ├── cards.json
 │   ├── categorization-rules.json
 │   ├── categories.json
 │   ├── card-import-profiles.json
@@ -285,10 +286,19 @@ Kakebo-Harvester/
             └── archive/
 ```
 
-`accounts.json`, `categories.json`, `card-import-profiles.json`,
+`accounts.json`, `cards.json`, `categories.json`, `card-import-profiles.json`,
 `export-settings.json`, and `ui-settings.json` are created when needed. SQLite is
 authoritative for account aliases and switches; `accounts.json` is a readable
 snapshot.
+`cards.json` is the readable snapshot of Kutxabank card aliases and sync choices;
+`card-import-profiles.json` keeps the separate manual XLSX import mappings.
+
+Before upgrading an existing installation to 2.0.0, close Kakebo Harvester and
+make a private copy of its `data/` and `config/` directories. Version 2.0.0
+upgrades the SQLite schema from 13 to 19. Version 1.0.2 cannot open a database
+after that upgrade; returning to 1.0.2 requires restoring the pre-upgrade copy.
+See the [2.0.0 upgrade notes](docs/releases/2.0.0.md) for the changes and
+rollback procedure.
 
 The executable searches for `private/.env.production` in this order:
 
@@ -468,11 +478,12 @@ This repository includes:
 - `.github/workflows/release.yml`: builds the Windows portable executable for tags matching `v*` only when the ref is an existing tag, its version matches `package.json`, it points to the checked-out commit, and that commit belongs to `main`; it then creates the public `complete-package` starter ZIP, generates SHA-256 files for both downloads, and uploads all four files to GitHub Releases;
 - `.github/workflows/pages.yml`: deploys only when files under `legal/` or the Pages workflow change.
 
-Create a release after updating `package.json`:
+Create a release only after merging and validating the versioned change on
+`main`. For version 2.0.0:
 
 ```powershell
-git tag v1.0.0
-git push origin v1.0.0
+git tag v2.0.0
+git push origin v2.0.0
 ```
 
 GitHub Releases is the recommended home for each portable version. The Pages website links to `/releases/latest`, so it always points to the most recent published version without storing binaries in the Git repository.
@@ -523,6 +534,8 @@ npm run build
 Tests use temporary SQLite databases, fictional fixtures, and mocked HTTP calls. They never call production.
 
 Technical implementation details are documented in [`docs/DESKTOP_APP.md`](docs/DESKTOP_APP.md).
+
+The Kutxabank card integration has a [Spanish usage guide and current limits](docs/banking/kutxabank-card-sync.md). Its interactive card synchronization was confirmed by the account holder in Electron; the latest catalog, balance, and deletion changes still need a fresh bank-session check. Account synchronization continues through Enable Banking.
 
 ## License
 
