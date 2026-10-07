@@ -100,7 +100,11 @@ jobs:
           $baseName = "Kakebo-Harvester-$version-x64"
           $executable = "release/portable/$baseName.exe"
           $completePackage = "release/portable/$baseName-complete-package.zip"
+          $notesPath = "docs/releases/$version.md"
+          if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) {
+            throw "Release notes are missing: $notesPath"
+          }
           gh release create $env:RELEASE_TAG `
             $executable "$executable.sha256" `
             $completePackage "$completePackage.sha256" `
-            --verify-tag --generate-notes --title "Kakebo Harvester $env:RELEASE_TAG"
+            --verify-tag --notes-file $notesPath --title "Kakebo Harvester $env:RELEASE_TAG"
