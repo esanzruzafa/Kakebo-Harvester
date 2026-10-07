@@ -131,7 +131,7 @@ it('exports confirmed economic amounts and invalidates treatment if a source amo
   const config=testConfig(root);
   const settings=createDefaultExportSettings('.',';');
   settings.format='csv'; settings.csv.includeBom=false;
-  for(const column of settings.columns) column.enabled=['movementKey','amount','expenseAmount','economicTreatment'].includes(column.field);
+  for(const column of settings.columns) column.enabled='field' in column && ['movementKey','amount','expenseAmount','economicTreatment'].includes(column.field);
   await new ExportSettingsStore(config.exportSettingsPath,settings).save(settings);
   service.confirm('settlement','debit','settlement');
   const exporter=new CsvExporter(config,database);
@@ -152,7 +152,7 @@ it('does not suppress the remaining copy when its representative is excluded fro
   const config=testConfig(root);
   const settings=createDefaultExportSettings('.',';');
   settings.format='csv'; settings.csv.includeBom=false;
-  for(const column of settings.columns) column.enabled=['movementKey','expenseAmount','economicTreatment'].includes(column.field);
+  for(const column of settings.columns) column.enabled='field' in column && ['movementKey','expenseAmount','economicTreatment'].includes(column.field);
   await new ExportSettingsStore(config.exportSettingsPath,settings).save(settings);
   service.confirm('purchase','manual','duplicate');
   database.prepare("UPDATE accounts SET export_enabled=0 WHERE id='card'").run();
@@ -166,7 +166,7 @@ it('keeps the card settlement contribution zero when the AIS account is excluded
   const config=testConfig(root);
   const settings=createDefaultExportSettings('.',';');
   settings.format='csv'; settings.csv.includeBom=false;
-  for(const column of settings.columns) column.enabled=['movementKey','expenseAmount','economicTreatment'].includes(column.field);
+  for(const column of settings.columns) column.enabled='field' in column && ['movementKey','expenseAmount','economicTreatment'].includes(column.field);
   await new ExportSettingsStore(config.exportSettingsPath,settings).save(settings);
   service.confirm('settlement','debit','settlement');
   database.prepare("UPDATE accounts SET export_enabled=0 WHERE id='ais'").run();
@@ -186,7 +186,7 @@ it.each(['kutxabank-browser','manual-card'])('counts the AIS debit when the %s c
   const config=testConfig(root);
   const settings=createDefaultExportSettings('.',';');
   settings.format='csv'; settings.csv.includeBom=false;
-  for(const column of settings.columns) column.enabled=['movementKey','expenseAmount','economicTreatment'].includes(column.field);
+  for(const column of settings.columns) column.enabled='field' in column && ['movementKey','expenseAmount','economicTreatment'].includes(column.field);
   await new ExportSettingsStore(config.exportSettingsPath,settings).save(settings);
   const output=await new CsvExporter(config,database).export();
   const rows=(await readFile(output.path,'utf8')).split(/\r?\n/);
