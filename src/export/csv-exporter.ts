@@ -456,7 +456,8 @@ function parseCsv(content: string, separator: string): string[][] {
 
 async function previousCustomValues(
   path: string,
-  settings: ExportSettings
+  settings: ExportSettings,
+  allowedMovementKeys: ReadonlySet<string>
 ): Promise<Map<string, Map<string, CustomExportValue>>> {
   const columns = settings.columns.filter((column) => column.enabled);
   const movementKeyIndex = columns.findIndex(
@@ -501,6 +502,9 @@ async function previousCustomValues(
         throw new Error("The existing export contains a populated row without a valid movement key.");
       }
       continue;
+    }
+    if (!allowedMovementKeys.has(movementKey)) {
+      throw new Error("The existing export contains an unknown movement key.");
     }
     if (values.has(movementKey)) {
       throw new Error("The existing export contains a duplicate movement key.");
@@ -916,7 +920,12 @@ export class CsvExporter {
       }
       const customValues = compatible ? customValuesFromState(previous) : new Map<string, Map<string, CustomExportValue>>();
       if (compatible && (await pathExists(destination))) {
-        for (const [key, values] of await previousCustomValues(destination, settings)) customValues.set(key, values);
+        const allowedMovementKeys = new Set(previous.movementKeys ?? [
+          ...(previous.sourceMovementKeys?.banking ?? []),
+          ...(previous.sourceMovementKeys?.cards ?? []),
+          ...Object.keys(previous.customValues ?? {})
+        ]);
+        for (const [key, values] of await previousCustomValues(destination, settings, allowedMovementKeys)) customValues.set(key, values);
       }
       const customColumns = settings.columns.filter((column): column is CustomExportColumn => !('field' in column) && column.enabled);
       for (const row of rows) {

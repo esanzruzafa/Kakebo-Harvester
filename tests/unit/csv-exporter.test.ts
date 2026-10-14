@@ -192,6 +192,14 @@ describe("CSV export", () => {
             lines[0] = (lines[0] ?? "").replace("MovementKey", "Edited movement key");
             return `${lines.join("\r\n")}\r\n`;
           })(),
+          (() => {
+            const lines = validCsv.trimEnd().split(/\r?\n/u);
+            const row = (lines[1] ?? "").split(";");
+            row[movementIndex] = "unknown-movement-key";
+            row[manualIndex] = "Latest manual edit";
+            lines[1] = row.join(";");
+            return `${lines.join("\r\n")}\r\n`;
+          })(),
           '"unterminated'
         ];
         for (const invalidCsv of invalidCsvFiles) {
@@ -252,6 +260,13 @@ describe("CSV export", () => {
         const nonStringMovementRow = nonStringMovementKey[1];
         if (nonStringMovementRow) nonStringMovementRow[movementIndex] = { value: 42, type: Number };
         await verifyRejectedXlsx(nonStringMovementKey);
+        const unknownMovementKey = toSheetData();
+        const unknownMovementRow = unknownMovementKey[1];
+        if (unknownMovementRow) {
+          unknownMovementRow[movementIndex] = { value: "unknown-movement-key", type: String };
+          unknownMovementRow[manualIndex] = { value: "Latest manual edit", type: String };
+        }
+        await verifyRejectedXlsx(unknownMovementKey);
 
         const columnLetters = (index: number): string => {
           let value = index + 1;
@@ -286,8 +301,8 @@ describe("CSV export", () => {
         expect(styles).not.toContain("#,##0.###############");
       }
       database.close();
-      if (format === "csv") expect(rejectedCustomEdits).toEqual([true, true, true, true, true]);
-      else expect(rejectedCustomEdits).toEqual([true, true, true, true, true, true]);
+      if (format === "csv") expect(rejectedCustomEdits).toEqual([true, true, true, true, true, true]);
+      else expect(rejectedCustomEdits).toEqual([true, true, true, true, true, true, true]);
     }
   );
 
