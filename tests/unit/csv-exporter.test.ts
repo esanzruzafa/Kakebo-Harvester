@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   symlink,
   writeFile
@@ -166,8 +167,44 @@ describe("CSV export", () => {
         });
       }
 
+      const recoveryStatePath = `${config.exportSettingsPath}.state.json`;
+      const priorState = await readFile(recoveryStatePath);
       addMovement("two", "Tea");
       const second = await exporter.export();
+      const installedOutput = await readFile(second.path);
+      const installedState = JSON.parse(await readFile(recoveryStatePath, "utf8")) as Record<string, unknown>;
+      const recoveryTemporaryName = ".kakebo_movements.999.111.tmp";
+      const pendingState = {
+        state: installedState,
+        outputHash: createHash("sha256").update(installedOutput).digest("hex"),
+        temporaryOutput: recoveryTemporaryName
+      };
+      await writeFile(`${recoveryStatePath}.pending`, JSON.stringify(pendingState));
+      await writeFile(recoveryStatePath, priorState);
+      const recovered = await exporter.export().then(() => true, () => false);
+      if (!recovered) database.close();
+      expect(recovered).toBe(true);
+      await expect(access(`${recoveryStatePath}.pending`)).rejects.toMatchObject({ code: "ENOENT" });
+
+      const temporaryRecoveryOutput = await readFile(second.path);
+      await rename(second.path, join(config.exportDirectory, recoveryTemporaryName));
+      await writeFile(`${recoveryStatePath}.pending`, JSON.stringify({
+        ...pendingState,
+        outputHash: createHash("sha256").update(temporaryRecoveryOutput).digest("hex")
+      }));
+      await writeFile(recoveryStatePath, priorState);
+      await exporter.export();
+      await expect(access(join(config.exportDirectory, recoveryTemporaryName))).rejects.toMatchObject({ code: "ENOENT" });
+
+      const recoveredOutput = await readFile(second.path);
+      const recoveredState = await readFile(recoveryStatePath);
+      await writeFile(`${recoveryStatePath}.pending`, JSON.stringify({ ...pendingState, outputHash: "0".repeat(64) }));
+      await writeFile(recoveryStatePath, priorState);
+      const rejectsUnverifiedRecovery = await exporter.export().then(() => false, () => true);
+      expect(rejectsUnverifiedRecovery).toBe(true);
+      expect(await readFile(second.path)).toEqual(recoveredOutput);
+      expect(await readFile(recoveryStatePath)).toEqual(priorState);
+      await writeFile(recoveryStatePath, recoveredState);
       const rejectedCustomEdits: boolean[] = [];
       if (format === "csv") {
         const rows = (await readFile(second.path, "utf8"))
@@ -466,7 +503,8 @@ describe("CSV export", () => {
         ),
         "rollback"
       ),
-      writeFile(`${config.exportSettingsPath}.state.json`, "{}")
+      writeFile(`${config.exportSettingsPath}.state.json`, "{}"),
+      writeFile(`${config.exportSettingsPath}.state.json.pending`, "{}")
     ]);
 
     await expect(countGeneratedExportFiles(config)).resolves.toBe(1);
@@ -475,6 +513,7 @@ describe("CSV export", () => {
     await expect(readFile(`${config.exportSettingsPath}.state.json`)).rejects.toMatchObject({
       code: "ENOENT"
     });
+    await expect(access(`${config.exportSettingsPath}.state.json.pending`)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("refuses to delete generated files through a directory link", async () => {
@@ -695,6 +734,7 @@ describe("CSV export", () => {
       "Kakebo Harvester could not generate the export file."
     );
     expect(await readFile(first.path, "utf8")).toBe(original);
+    await expect(access(`${config.exportSettingsPath}.state.json.pending`)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(join(config.exportDirectory, "archive"), "utf8")).toBe(
       "blocked"
     );

@@ -3,6 +3,7 @@ import {
   chmod,
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   rename,
@@ -11,6 +12,7 @@ import {
   writeFile
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { basename, dirname, extname, join } from "node:path";
 import writeXlsxFile, {
   type Cell,
@@ -92,6 +94,13 @@ const exportStateSchema = z.object({
     .optional(),
   customValues: z.record(z.string(), z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null(), z.object({ date: z.iso.datetime() })]))).optional()
 });
+
+const pendingExportStateSchema = z.object({
+  state: exportStateSchema,
+  outputHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  temporaryOutput: z.string().regex(/^\.kakebo_movements\.\d+\.\d+\.tmp$/u)
+});
+type PendingExportState = z.infer<typeof pendingExportStateSchema>;
 
 const HIGHLIGHT_COLORS: Record<HighlightSource, string> = {
   banking: "#e6efe9",
@@ -556,18 +565,49 @@ async function readExportState(path: string): Promise<ExportState | undefined> {
   }
 }
 
-async function writeExportState(path: string, state: ExportState): Promise<void> {
+async function writeExportState(path: string, state: ExportState | PendingExportState): Promise<void> {
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   await mkdir(dirname(path), { recursive: true });
   try {
     await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, {
       encoding: "utf8",
-      mode: 0o600
+      mode: 0o600,
+      flush: true
     });
     await rename(temporary, path);
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);
   }
+}
+
+async function outputHash(path: string): Promise<string> {
+  return createHash("sha256").update(await readFile(path)).digest("hex");
+}
+
+async function recoverPendingExportState(config: AppConfig, statePath: string): Promise<void> {
+  const pendingPath = `${statePath}.pending`;
+  let pending: PendingExportState;
+  try {
+    pending = pendingExportStateSchema.parse(JSON.parse(await readFile(pendingPath, "utf8")) as unknown);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  const destination = join(config.exportDirectory, `kakebo_movements.${pending.state.format}`);
+  if (await pathExists(destination)) {
+    if (await outputHash(destination) !== pending.outputHash) {
+      await rm(pendingPath);
+      return;
+    }
+  } else {
+    const temporary = join(config.exportDirectory, pending.temporaryOutput);
+    if (!(await pathExists(temporary)) || await outputHash(temporary) !== pending.outputHash) {
+      throw new Error("The interrupted export cannot be recovered from its generated file.");
+    }
+    await rename(temporary, destination);
+  }
+  await writeExportState(statePath, pending.state);
+  await rm(pendingPath);
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -892,9 +932,11 @@ export class CsvExporter {
     let backupPath: string | undefined;
     let destinationStaged = false;
     let destinationInstalled = false;
+    let pendingWritten = false;
     let committed = false;
     try {
       await mkdir(this.config.exportDirectory, { recursive: true });
+      await recoverPendingExportState(this.config, statePath);
       const previous = await readExportState(statePath);
       const compatible = previous !== undefined &&
         compatibleFingerprints.includes(previous.fingerprint) &&
@@ -940,6 +982,29 @@ export class CsvExporter {
         await this.writeXlsx(temporary, rows, settings, highlighted, customValues);
         if (process.platform !== "win32") await chmod(temporary, 0o600);
       }
+      const nextState: ExportState = {
+        fingerprint,
+        format: settings.format,
+        movementKeys: rows.map((row) => row.movement_key),
+        sourceMovementKeys: knownKeys,
+        highlightedMovementKeys: {
+          banking: [...highlighted.banking],
+          cards: [...highlighted.cards]
+        },
+        customValues: stateCustomValues(customValues)
+      };
+      const generatedFile = await open(temporary, "r+");
+      try {
+        await generatedFile.sync();
+      } finally {
+        await generatedFile.close();
+      }
+      await writeExportState(`${statePath}.pending`, {
+        state: nextState,
+        outputHash: await outputHash(temporary),
+        temporaryOutput: basename(temporary)
+      });
+      pendingWritten = true;
       if (compatible) {
         backupPath = await backupCurrentOutput(
           this.config,
@@ -958,18 +1023,9 @@ export class CsvExporter {
       }
       await rename(temporary, destination);
       destinationInstalled = true;
-      await writeExportState(statePath, {
-        fingerprint,
-        format: settings.format,
-        movementKeys: rows.map((row) => row.movement_key),
-        sourceMovementKeys: knownKeys,
-        highlightedMovementKeys: {
-          banking: [...highlighted.banking],
-          cards: [...highlighted.cards]
-        },
-        customValues: stateCustomValues(customValues)
-      });
+      await writeExportState(statePath, nextState);
       committed = true;
+      await rm(`${statePath}.pending`, { force: true }).catch(() => undefined);
       if (destinationStaged) {
         await rm(rollback, { force: true }).catch(() => undefined);
       }
@@ -997,6 +1053,11 @@ export class CsvExporter {
         }
         if (backupPath) {
           await rm(backupPath, { force: true }).catch((cleanupError: unknown) =>
+            rollbackFailures.push(cleanupError)
+          );
+        }
+        if (pendingWritten && rollbackFailures.length === 0) {
+          await rm(`${statePath}.pending`, { force: true }).catch((cleanupError: unknown) =>
             rollbackFailures.push(cleanupError)
           );
         }
@@ -1084,6 +1145,9 @@ export async function clearGeneratedExportFiles(
     force: true
   }).catch((error: unknown) => failures.push(error));
   await rm(`${config.exportSettingsPath}.state.json`, { force: true }).catch(
+    (error: unknown) => failures.push(error)
+  );
+  await rm(`${config.exportSettingsPath}.state.json.pending`, { force: true }).catch(
     (error: unknown) => failures.push(error)
   );
   if (failures.length > 0) {
