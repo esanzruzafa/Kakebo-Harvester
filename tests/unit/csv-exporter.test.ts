@@ -176,6 +176,7 @@ describe("CSV export", () => {
       const recoveryTemporaryName = ".kakebo_movements.999.111.tmp";
       const pendingState = {
         state: installedState,
+        settings,
         outputHash: createHash("sha256").update(installedOutput).digest("hex"),
         temporaryOutput: recoveryTemporaryName
       };
@@ -198,12 +199,42 @@ describe("CSV export", () => {
 
       const recoveredOutput = await readFile(second.path);
       const recoveredState = await readFile(recoveryStatePath);
-      await writeFile(`${recoveryStatePath}.pending`, JSON.stringify({ ...pendingState, outputHash: "0".repeat(64) }));
+      let editedOutput: Uint8Array;
+      if (format === "csv") {
+        editedOutput = Buffer.from(recoveredOutput.toString("utf8").replace("Edited manual", "Recovered edit"));
+      } else {
+        const workbook = unzipSync(recoveredOutput);
+        workbook["xl/sharedStrings.xml"] = Buffer.from(
+          Buffer.from(workbook["xl/sharedStrings.xml"] ?? []).toString("utf8").replace("  Edited manual  ", "Recovered edit")
+        );
+        editedOutput = zipSync(workbook);
+      }
+      await writeFile(second.path, editedOutput);
+      await writeFile(`${recoveryStatePath}.pending`, JSON.stringify({
+        ...pendingState,
+        outputHash: createHash("sha256").update(recoveredOutput).digest("hex")
+      }));
+      await writeFile(recoveryStatePath, priorState);
+      const recoversEditedOutput = await exporter.export().then(() => true, () => false);
+      if (!recoversEditedOutput) database.close();
+      expect(recoversEditedOutput).toBe(true);
+      if (format === "csv") expect(await readFile(second.path, "utf8")).toContain("Recovered edit");
+      else expect((await readSheet(second.path)).flat()).toContain("Recovered edit");
+      await writeFile(second.path, recoveredOutput);
+      await writeFile(recoveryStatePath, recoveredState);
+
+      await writeFile(`${recoveryStatePath}.pending`, JSON.stringify({
+        ...pendingState,
+        state: { ...installedState, movementKeys: ["movement-one"] },
+        outputHash: "0".repeat(64)
+      }));
       await writeFile(recoveryStatePath, priorState);
       const rejectsUnverifiedRecovery = await exporter.export().then(() => false, () => true);
       expect(rejectsUnverifiedRecovery).toBe(true);
       expect(await readFile(second.path)).toEqual(recoveredOutput);
       expect(await readFile(recoveryStatePath)).toEqual(priorState);
+      await expect(access(`${recoveryStatePath}.pending`)).resolves.toBeUndefined();
+      await rm(`${recoveryStatePath}.pending`);
       await writeFile(recoveryStatePath, recoveredState);
       const rejectedCustomEdits: boolean[] = [];
       if (format === "csv") {

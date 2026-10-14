@@ -31,6 +31,7 @@ import {
   createDefaultExportSettings,
   exportSettingsFingerprint,
   exportSettingsFingerprintCandidates,
+  exportSettingsSchema,
   type CustomExportColumn,
   type ExportField,
   type ExportSettings
@@ -97,9 +98,11 @@ const exportStateSchema = z.object({
 
 const pendingExportStateSchema = z.object({
   state: exportStateSchema,
+  settings: exportSettingsSchema,
   outputHash: z.string().regex(/^[a-f0-9]{64}$/u),
   temporaryOutput: z.string().regex(/^\.kakebo_movements\.\d+\.\d+\.tmp$/u)
-});
+}).refine((pending) => pending.state.format === pending.settings.format &&
+  pending.state.fingerprint === exportSettingsFingerprint(pending.settings));
 type PendingExportState = z.infer<typeof pendingExportStateSchema>;
 
 const HIGHLIGHT_COLORS: Record<HighlightSource, string> = {
@@ -466,7 +469,8 @@ function parseCsv(content: string, separator: string): string[][] {
 async function previousCustomValues(
   path: string,
   settings: ExportSettings,
-  allowedMovementKeys: ReadonlySet<string>
+  allowedMovementKeys: ReadonlySet<string>,
+  validateRows = false
 ): Promise<Map<string, Map<string, CustomExportValue>>> {
   const columns = settings.columns.filter((column) => column.enabled);
   const movementKeyIndex = columns.findIndex(
@@ -478,7 +482,11 @@ async function previousCustomValues(
       (entry): entry is { column: CustomExportColumn; index: number } =>
         !("field" in entry.column)
     );
-  if (movementKeyIndex < 0 || customColumns.length === 0) return new Map();
+  if (movementKeyIndex < 0) {
+    if (validateRows) throw new Error("The interrupted export cannot be verified without movement keys.");
+    return new Map();
+  }
+  if (customColumns.length === 0 && !validateRows) return new Map();
 
   let rows: readonly (readonly unknown[])[];
   if (settings.format === "csv") {
@@ -596,8 +604,13 @@ async function recoverPendingExportState(config: AppConfig, statePath: string): 
   const destination = join(config.exportDirectory, `kakebo_movements.${pending.state.format}`);
   if (await pathExists(destination)) {
     if (await outputHash(destination) !== pending.outputHash) {
-      await rm(pendingPath);
-      return;
+      const editedValues = await previousCustomValues(
+        destination, pending.settings, new Set(pending.state.movementKeys ?? []), true
+      );
+      pending.state.customValues = {
+        ...pending.state.customValues,
+        ...stateCustomValues(editedValues)
+      };
     }
   } else {
     const temporary = join(config.exportDirectory, pending.temporaryOutput);
@@ -1001,6 +1014,7 @@ export class CsvExporter {
       }
       await writeExportState(`${statePath}.pending`, {
         state: nextState,
+        settings: exportSettingsSchema.parse(settings),
         outputHash: await outputHash(temporary),
         temporaryOutput: basename(temporary)
       });
