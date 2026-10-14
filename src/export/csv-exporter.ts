@@ -238,6 +238,17 @@ function normalizedDecimal(value: string): { coefficient: bigint; scale: number 
   return { coefficient, scale };
 }
 
+function parseExactSpreadsheetNumber(value: string): number {
+  const number = Number(value);
+  const source = normalizedDecimal(value);
+  const converted = normalizedDecimal(number.toString());
+  if (!Number.isFinite(number) || !source || !converted ||
+      source.coefficient !== converted.coefficient || source.scale !== converted.scale) {
+    throw new Error("The existing XLSX export contains a number that cannot be represented without losing precision.");
+  }
+  return number;
+}
+
 function formatMoney(
   value: string,
   currency: string,
@@ -463,12 +474,10 @@ async function previousCustomValues(
   if (settings.format === "csv") {
     rows = parseCsv((await readFile(path, "utf8")).replace(/^\uFEFF/u, ""), settings.csv.fieldSeparator);
   } else {
-    try {
-      rows = await readSheet(path, "Movements", { trim: false });
-    } catch (error) {
-      if (error instanceof Error && error.name === "SheetNotFoundError") return new Map();
-      throw error;
-    }
+    rows = await readSheet(path, "Movements", {
+      trim: false,
+      parseNumber: parseExactSpreadsheetNumber
+    });
   }
   const expectedHeaders = columns.map((column) =>
     settings.format === "csv" ? safeSpreadsheetText(column.header) : column.header
@@ -484,7 +493,15 @@ async function previousCustomValues(
       throw new Error("The existing export contains a row with an invalid number of fields.");
     }
     const movementKey = row[movementKeyIndex];
-    if (typeof movementKey !== "string" || movementKey.length === 0) continue;
+    if (typeof movementKey !== "string" || movementKey.trim().length === 0) {
+      const hasOtherData = row.some((value, index) =>
+        index !== movementKeyIndex && value !== null && value !== undefined && value !== ""
+      );
+      if (hasOtherData) {
+        throw new Error("The existing export contains a populated row without a valid movement key.");
+      }
+      continue;
+    }
     if (values.has(movementKey)) {
       throw new Error("The existing export contains a duplicate movement key.");
     }

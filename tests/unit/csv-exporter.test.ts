@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { unzipSync } from "fflate";
+import { unzipSync, zipSync } from "fflate";
 import { readSheet } from "read-excel-file/node";
 import writeXlsxFile, { type SheetData } from "write-excel-file/node";
 import {
@@ -216,14 +216,20 @@ describe("CSV export", () => {
         const statePath = `${config.exportSettingsPath}.state.json`;
         const validOutput = await readFile(second.path);
         const validState = await readFile(statePath);
-        const verifyRejectedXlsx = async (data: SheetData): Promise<void> => {
-          await writeXlsxFile(data, { sheet: "Movements" }).toFile(second.path);
+        const verifyRejectedXlsxFile = async (): Promise<void> => {
           const malformedOutput = await readFile(second.path);
           const rejected = await exporter.export().then(() => false, () => true);
           const unchanged = Buffer.compare(await readFile(second.path), malformedOutput) === 0;
           rejectedCustomEdits.push(rejected && unchanged);
           await writeFile(second.path, validOutput);
           await writeFile(statePath, validState);
+        };
+        const verifyRejectedXlsx = async (
+          data: SheetData,
+          sheet = "Movements"
+        ): Promise<void> => {
+          await writeXlsxFile(data, { sheet }).toFile(second.path);
+          await verifyRejectedXlsxFile();
         };
         const rowsForEditing = await readSheet(second.path, "Movements", { trim: false });
         const toSheetData = (): SheetData => rowsForEditing.map((row) => row.map((value) => ({
@@ -234,16 +240,54 @@ describe("CSV export", () => {
         const headerRow = changedHeader[0];
         if (headerRow) headerRow[0] = { value: "Modified movement key", type: String };
         await verifyRejectedXlsx(changedHeader);
+        await verifyRejectedXlsx(toSheetData(), "Renamed movements");
         const duplicateKey = toSheetData();
         duplicateKey.splice(2, 0, duplicateKey[1] ?? []);
         await verifyRejectedXlsx(duplicateKey);
+        const blankMovementKey = toSheetData();
+        const blankMovementRow = blankMovementKey[1];
+        if (blankMovementRow) blankMovementRow[movementIndex] = { value: "", type: String };
+        await verifyRejectedXlsx(blankMovementKey);
+        const nonStringMovementKey = toSheetData();
+        const nonStringMovementRow = nonStringMovementKey[1];
+        if (nonStringMovementRow) nonStringMovementRow[movementIndex] = { value: 42, type: Number };
+        await verifyRejectedXlsx(nonStringMovementKey);
+
+        const columnLetters = (index: number): string => {
+          let value = index + 1;
+          let letters = "";
+          while (value > 0) {
+            value -= 1;
+            letters = String.fromCharCode(65 + (value % 26)) + letters;
+            value = Math.floor(value / 26);
+          }
+          return letters;
+        };
+        const manualCell = `${columnLetters(manualIndex)}2`;
+        const impreciseWorkbook = unzipSync(validOutput);
+        const worksheet = Buffer.from(impreciseWorkbook["xl/worksheets/sheet1.xml"] ?? []).toString("utf8");
+        const cellPattern = new RegExp(`<c\\b[^>]*\\br="${manualCell}"[^>]*>[\\s\\S]*?<\\/c>`, "u");
+        const stringCell = worksheet.match(cellPattern)?.[0];
+        expect(stringCell).toBeDefined();
+        const numericCell = stringCell
+          ?.replace(/\s+t="s"/u, "")
+          .replace(/<v>[^<]*<\/v>/u, "<v>72561318574551.59</v>");
+        expect(numericCell).not.toBe(stringCell);
+        const impreciseWorksheet = worksheet.replace(cellPattern, numericCell ?? "");
+        expect(impreciseWorksheet).not.toBe(worksheet);
+        impreciseWorkbook["xl/worksheets/sheet1.xml"] = Buffer.from(impreciseWorksheet);
+        await writeFile(second.path, zipSync(impreciseWorkbook));
+        const lossyNumericRows = await readSheet(second.path, "Movements", { trim: false });
+        expect(lossyNumericRows[1]?.[manualIndex]).toBe(72561318574551.6);
+        await verifyRejectedXlsxFile();
+
         const workbook = unzipSync(await readFile(second.path));
         const styles = Buffer.from(workbook["xl/styles.xml"] ?? []).toString("utf8");
         expect(styles).not.toContain("#,##0.###############");
       }
       database.close();
       if (format === "csv") expect(rejectedCustomEdits).toEqual([true, true, true, true, true]);
-      else expect(rejectedCustomEdits).toEqual([true, true]);
+      else expect(rejectedCustomEdits).toEqual([true, true, true, true, true, true]);
     }
   );
 
