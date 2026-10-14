@@ -236,6 +236,37 @@ describe("CSV export", () => {
       await expect(access(`${recoveryStatePath}.pending`)).resolves.toBeUndefined();
       await rm(`${recoveryStatePath}.pending`);
       await writeFile(recoveryStatePath, recoveredState);
+      const baselineSettings = await settingsStore.load();
+      for (const changedHeader of [false, true]) {
+        const changedSettings = {
+          ...baselineSettings,
+          columns: baselineSettings.columns.map((column) =>
+            !("field" in column) && column.kind === "formula" && column.header === "Formula label"
+              ? { ...column, formula: '"Updated formula"', header: changedHeader ? "Changed formula header" : column.header }
+              : column
+          )
+        };
+        await settingsStore.save(changedSettings);
+        await exporter.export();
+        const changedOutput = await readFile(second.path);
+        const changedState = JSON.parse(await readFile(recoveryStatePath, "utf8")) as Record<string, unknown>;
+        await writeFile(second.path, recoveredOutput);
+        await writeFile(recoveryStatePath, recoveredState);
+        await writeFile(join(config.exportDirectory, recoveryTemporaryName), changedOutput);
+        await writeFile(`${recoveryStatePath}.pending`, JSON.stringify({
+          ...pendingState,
+          settings: changedSettings,
+          state: changedState,
+          outputHash: createHash("sha256").update(changedOutput).digest("hex")
+        }));
+        await exporter.export();
+        if (format === "csv") expect(await readFile(second.path, "utf8")).toContain("Updated formula");
+        else expect((await readSheet(second.path)).flat()).toContain("Updated formula");
+        await expect(access(join(config.exportDirectory, recoveryTemporaryName))).rejects.toMatchObject({ code: "ENOENT" });
+        await settingsStore.save(baselineSettings);
+        await writeFile(second.path, recoveredOutput);
+        await writeFile(recoveryStatePath, recoveredState);
+      }
       const rejectedCustomEdits: boolean[] = [];
       if (format === "csv") {
         const rows = (await readFile(second.path, "utf8"))

@@ -602,7 +602,19 @@ async function recoverPendingExportState(config: AppConfig, statePath: string): 
     throw error;
   }
   const destination = join(config.exportDirectory, `kakebo_movements.${pending.state.format}`);
-  if (await pathExists(destination)) {
+  const temporary = join(config.exportDirectory, pending.temporaryOutput);
+  if (await pathExists(temporary)) {
+    if (await outputHash(temporary) !== pending.outputHash) {
+      throw new Error("The interrupted export temporary file does not match its pending state.");
+    }
+    if (await pathExists(destination)) {
+      // Installation has not happened: retry the regular profile/archive pipeline.
+      await rm(pendingPath);
+      await rm(temporary);
+      return;
+    }
+    await rename(temporary, destination);
+  } else if (await pathExists(destination)) {
     if (await outputHash(destination) !== pending.outputHash) {
       const editedValues = await previousCustomValues(
         destination, pending.settings, new Set(pending.state.movementKeys ?? []), true
@@ -613,11 +625,7 @@ async function recoverPendingExportState(config: AppConfig, statePath: string): 
       };
     }
   } else {
-    const temporary = join(config.exportDirectory, pending.temporaryOutput);
-    if (!(await pathExists(temporary)) || await outputHash(temporary) !== pending.outputHash) {
-      throw new Error("The interrupted export cannot be recovered from its generated file.");
-    }
-    await rename(temporary, destination);
+    throw new Error("The interrupted export cannot be recovered from its generated file.");
   }
   await writeExportState(statePath, pending.state);
   await rm(pendingPath);
