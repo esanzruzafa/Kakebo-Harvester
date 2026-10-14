@@ -100,9 +100,11 @@ const pendingExportStateSchema = z.object({
   state: exportStateSchema,
   settings: exportSettingsSchema,
   outputHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  rollbackOutput: z.string().regex(/^kakebo_movements\.(?:csv|xlsx)\.\d+\.\d+\.rollback$/u).optional(),
   temporaryOutput: z.string().regex(/^\.kakebo_movements\.\d+\.\d+\.tmp$/u)
 }).refine((pending) => pending.state.format === pending.settings.format &&
-  pending.state.fingerprint === exportSettingsFingerprint(pending.settings));
+  pending.state.fingerprint === exportSettingsFingerprint(pending.settings) &&
+  (pending.rollbackOutput === undefined || pending.rollbackOutput.startsWith(`kakebo_movements.${pending.state.format}.`)));
 type PendingExportState = z.infer<typeof pendingExportStateSchema>;
 
 const HIGHLIGHT_COLORS: Record<HighlightSource, string> = {
@@ -159,7 +161,7 @@ function safeSpreadsheetText(value: string): string {
   const formulaLike =
     /^[=+@]/u.test(trimmedStart) ||
     (/^-/u.test(trimmedStart) &&
-      !/^-\d+(?:[.,]\d+)?$/u.test(trimmedStart));
+      !/^-\d+(?:[.,]\d+)?(?:e[+-]?\d+)?$/iu.test(trimmedStart));
   return formulaLike ? `'${value}` : value;
 }
 
@@ -482,7 +484,7 @@ async function previousCustomValues(
       (entry): entry is { column: CustomExportColumn; index: number } =>
         !("field" in entry.column)
     );
-  if (movementKeyIndex < 0) {
+  if (movementKeyIndex < 0 && (!validateRows || customColumns.length > 0)) {
     if (validateRows) throw new Error("The interrupted export cannot be verified without movement keys.");
     return new Map();
   }
@@ -508,9 +510,11 @@ async function previousCustomValues(
   }
   const values = new Map<string, Map<string, CustomExportValue>>();
   for (const row of rows.slice(1)) {
+    if (row.every((value) => value === null || value === undefined || value === "")) continue;
     if (row.length !== expectedHeaders.length) {
       throw new Error("The existing export contains a row with an invalid number of fields.");
     }
+    if (movementKeyIndex < 0) continue;
     const movementKey = row[movementKeyIndex];
     if (typeof movementKey !== "string" || movementKey.trim().length === 0) {
       const hasOtherData = row.some((value, index) =>
@@ -628,6 +632,7 @@ async function recoverPendingExportState(config: AppConfig, statePath: string): 
     throw new Error("The interrupted export cannot be recovered from its generated file.");
   }
   await writeExportState(statePath, pending.state);
+  if (pending.rollbackOutput) await rm(join(config.exportDirectory, pending.rollbackOutput), { force: true });
   await rm(pendingPath);
 }
 
@@ -1024,7 +1029,8 @@ export class CsvExporter {
         state: nextState,
         settings: exportSettingsSchema.parse(settings),
         outputHash: await outputHash(temporary),
-        temporaryOutput: basename(temporary)
+        temporaryOutput: basename(temporary),
+        rollbackOutput: basename(rollback)
       });
       pendingWritten = true;
       if (compatible) {

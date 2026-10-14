@@ -110,7 +110,7 @@ describe("CSV export", () => {
           kind: "formula",
           header: "Tiny number",
           enabled: true,
-          formula: "1 / 9007199254740991"
+          formula: "amount / 1000000000"
         }
       );
       const settingsStore = new ExportSettingsStore(config.exportSettingsPath, settings);
@@ -178,7 +178,8 @@ describe("CSV export", () => {
         state: installedState,
         settings,
         outputHash: createHash("sha256").update(installedOutput).digest("hex"),
-        temporaryOutput: recoveryTemporaryName
+        temporaryOutput: recoveryTemporaryName,
+        rollbackOutput: `kakebo_movements.${format}.999.111.rollback`
       };
       await writeFile(`${recoveryStatePath}.pending`, JSON.stringify(pendingState));
       await writeFile(recoveryStatePath, priorState);
@@ -188,6 +189,7 @@ describe("CSV export", () => {
       await expect(access(`${recoveryStatePath}.pending`)).rejects.toMatchObject({ code: "ENOENT" });
 
       const temporaryRecoveryOutput = await readFile(second.path);
+      await writeFile(join(config.exportDirectory, pendingState.rollbackOutput), installedOutput);
       await rename(second.path, join(config.exportDirectory, recoveryTemporaryName));
       await writeFile(`${recoveryStatePath}.pending`, JSON.stringify({
         ...pendingState,
@@ -196,6 +198,9 @@ describe("CSV export", () => {
       await writeFile(recoveryStatePath, priorState);
       await exporter.export();
       await expect(access(join(config.exportDirectory, recoveryTemporaryName))).rejects.toMatchObject({ code: "ENOENT" });
+      const clearedRollback = await access(join(config.exportDirectory, pendingState.rollbackOutput)).then(() => false, () => true);
+      if (!clearedRollback) database.close();
+      expect(clearedRollback).toBe(true);
 
       const recoveredOutput = await readFile(second.path);
       const recoveredState = await readFile(recoveryStatePath);
@@ -278,12 +283,20 @@ describe("CSV export", () => {
         const formulaIndex = header.indexOf("Formula label");
         const manualIndex = header.indexOf("Manual note");
         const movementIndex = header.indexOf("MovementKey");
+        const tinyNumberIndex = header.indexOf("Tiny number");
         const values = new Map(rows.slice(1).map((row) => [row[movementIndex], row]));
         expect(values.get("movement-one")?.[formulaIndex]).toBe("Edited formula");
         expect(values.get("movement-one")?.[manualIndex]).toBe("Edited manual");
         expect(values.get("movement-two")?.[formulaIndex]).toBe("'=TEA");
         expect(values.get("movement-two")?.[manualIndex]).toBe("");
+        expect(values.get("movement-two")?.[tinyNumberIndex]).toMatch(/^-\d+(?:,\d+)?e-\d+$/u);
         const validCsv = await readFile(second.path, "utf8");
+        const withBlankRows = validCsv.replace(/\r\n/u, "\r\n\r\n") + "\r\n";
+        await writeFile(second.path, withBlankRows);
+        const acceptsBlankRows = await exporter.export().then(() => true, () => false);
+        if (!acceptsBlankRows) database.close();
+        expect(acceptsBlankRows).toBe(true);
+        expect(await readFile(second.path, "utf8")).toContain("Edited manual");
         const statePath = `${config.exportSettingsPath}.state.json`;
         const validState = await readFile(statePath);
         const invalidCsvFiles = [
@@ -430,6 +443,36 @@ describe("CSV export", () => {
       else expect(rejectedCustomEdits).toEqual([true, true, true, true, true, true, true]);
     }
   );
+
+  it.each(["csv", "xlsx"] as const)("recovers resaved noncustom %s exports without movement keys", async (format) => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-keyless-recovery-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = format;
+    settings.columns = settings.columns.map((column) =>
+      "field" in column && column.field === "movementKey" ? { ...column, enabled: false } : column
+    );
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+    const exporter = new CsvExporter(config, database);
+    const output = await exporter.export();
+    const statePath = `${config.exportSettingsPath}.state.json`;
+    const original = await readFile(output.path);
+    const state = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    await writeFile(`${statePath}.pending`, JSON.stringify({
+      state, settings,
+      outputHash: createHash("sha256").update(original).digest("hex"),
+      temporaryOutput: ".kakebo_movements.999.111.tmp"
+    }));
+    if (format === "csv") await writeFile(output.path, Buffer.concat([original, Buffer.from("\r\n")]));
+    else await writeXlsxFile([
+      settings.columns.filter((column) => column.enabled).map((column) => ({ value: column.header, type: String }))
+    ], { sheet: "Movements" }).toFile(output.path);
+    const recovered = await exporter.export().then(() => true, () => false);
+    database.close();
+    expect(recovered).toBe(true);
+    await expect(access(`${statePath}.pending`)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 
   it("allows an unsafe amount when a formula only mentions it in a string literal", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-export-formula-literal-"));
