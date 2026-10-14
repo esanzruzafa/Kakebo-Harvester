@@ -112,7 +112,14 @@ describe("CSV export", () => {
           formula: "1 / 9007199254740991"
         }
       );
-      await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+      const settingsStore = new ExportSettingsStore(config.exportSettingsPath, settings);
+      if (format === "xlsx") {
+        await settingsStore.save({
+          ...settings,
+          csv: { ...settings.csv, fieldSeparator: "|" }
+        });
+      }
+      await settingsStore.save(settings);
       const exporter = new CsvExporter(config, database);
       const first = await exporter.export();
 
@@ -148,9 +155,14 @@ describe("CSV export", () => {
           .digest("hex")
           .slice(0, 12);
         await writeFile(statePath, JSON.stringify(state));
-        await new ExportSettingsStore(config.exportSettingsPath, settings).save({
+        const firstInactiveChange = {
           ...settings,
           csv: { ...settings.csv, fieldSeparator: "|" }
+        };
+        await settingsStore.save(firstInactiveChange);
+        await settingsStore.save({
+          ...firstInactiveChange,
+          csv: { ...firstInactiveChange.csv, dateFormat: "dd/mm/yyyy" }
         });
       }
 
@@ -210,6 +222,20 @@ describe("CSV export", () => {
           await writeFile(second.path, validCsv);
           await writeFile(statePath, validState);
         }
+        const latestCsv = Buffer.from(validCsv.replace("Edited manual", "Latest manual edit"), "utf8");
+        const latestManualIndex = latestCsv.indexOf(Buffer.from("Latest manual edit", "utf8"));
+        expect(latestManualIndex).toBeGreaterThanOrEqual(0);
+        const invalidUtf8Csv = Buffer.concat([
+          latestCsv.subarray(0, latestManualIndex),
+          Buffer.from([0xff]),
+          latestCsv.subarray(latestManualIndex + 1)
+        ]);
+        await writeFile(second.path, invalidUtf8Csv);
+        const rejectedInvalidUtf8 = await exporter.export().then(() => false, () => true);
+        const unchangedInvalidUtf8 = Buffer.compare(await readFile(second.path), invalidUtf8Csv) === 0;
+        rejectedCustomEdits.push(rejectedInvalidUtf8 && unchangedInvalidUtf8);
+        await writeFile(second.path, validCsv);
+        await writeFile(statePath, validState);
       } else {
         const rows = await readSheet(second.path, { trim: false });
         const header = rows[0]?.map(String) ?? [];
@@ -301,7 +327,7 @@ describe("CSV export", () => {
         expect(styles).not.toContain("#,##0.###############");
       }
       database.close();
-      if (format === "csv") expect(rejectedCustomEdits).toEqual([true, true, true, true, true, true]);
+      if (format === "csv") expect(rejectedCustomEdits).toEqual([true, true, true, true, true, true, true]);
       else expect(rejectedCustomEdits).toEqual([true, true, true, true, true, true, true]);
     }
   );

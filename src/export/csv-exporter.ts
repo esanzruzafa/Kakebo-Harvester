@@ -473,7 +473,8 @@ async function previousCustomValues(
 
   let rows: readonly (readonly unknown[])[];
   if (settings.format === "csv") {
-    rows = parseCsv((await readFile(path, "utf8")).replace(/^\uFEFF/u, ""), settings.csv.fieldSeparator);
+    const csvContent = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(path));
+    rows = parseCsv(csvContent.replace(/^\uFEFF/u, ""), settings.csv.fieldSeparator);
   } else {
     rows = await readSheet(path, "Movements", {
       trim: false,

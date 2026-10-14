@@ -287,6 +287,17 @@ export class ExportSettingsStore {
     }
   }
 
+  private async loadExportStateFingerprint(): Promise<string | undefined> {
+    try {
+      const state = JSON.parse(
+        await readFile(`${this.path}.state.json`, "utf8")
+      ) as { fingerprint?: unknown };
+      return typeof state.fingerprint === "string" ? state.fingerprint : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async loadExisting(): Promise<ExportSettings> {
     return parseSettings(
       migrateSettings(JSON.parse(await readFile(this.path, "utf8")) as unknown)
@@ -302,7 +313,14 @@ export class ExportSettingsStore {
         cause: error
       });
     }
-    await writeJsonAtomically(this.path, settings, { backup: true });
+    const [backup, stateFingerprint] = await Promise.all([
+      this.loadBackup(),
+      this.loadExportStateFingerprint()
+    ]);
+    const preservesLegacyFingerprint = backup !== undefined &&
+      stateFingerprint === legacyExportSettingsFingerprint(backup) &&
+      exportSettingsFingerprint(backup) === exportSettingsFingerprint(settings);
+    await writeJsonAtomically(this.path, settings, { backup: !preservesLegacyFingerprint });
     return settings;
   }
 }
