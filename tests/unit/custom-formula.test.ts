@@ -24,6 +24,11 @@ describe("custom export formulas", () => {
     expect(
       evaluateCustomFormula("upper(description)", { description: "coffee" })
     ).toBe("COFFEE");
+    expect(evaluateCustomFormula("expenseAmount * 2", { expenseAmount: 4.5 })).toBe(9);
+    expect(evaluateCustomFormula("concat(economicTreatment, reconciliationReference)", {
+      economicTreatment: "shared",
+      reconciliationReference: "manual"
+    })).toBe("sharedmanual");
     expect(
       evaluateCustomFormula('concat(lower(description), "-", round(amount / 3, 2))', {
         description: "COFFEE",
@@ -54,6 +59,8 @@ describe("custom export formulas", () => {
     expect(() => customFormulaSchema.parse("9007199254740991 * 2")).toThrow(/invalid/i);
     expect(() => customFormulaSchema.parse('concat(description, 9007199254740991 * 2)')).toThrow(/invalid/i);
     expect(() => customFormulaSchema.parse('coalesce("kept", 1 / 0)')).not.toThrow();
+    expect(() => customFormulaSchema.parse("coalesce(description, 9007199254740991 * 2)"))
+      .toThrow(/invalid/i);
   });
 
   it("rounds decimal boundaries and short-circuits coalesce", () => {

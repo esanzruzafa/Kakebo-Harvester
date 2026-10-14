@@ -42,8 +42,9 @@ function normalizeDecimalLiteral(input: string): string {
 const validFunctions = new Set(["upper", "lower", "coalesce", "concat", "round"]);
 const validIdentifiers = new Set([
   "movementKey", "date", "valueDate", "bank", "account", "accountAlias", "productType",
-  "description", "merchant", "counterparty", "amount", "direction", "status", "categoryAuto",
-  "subcategoryAuto", "reviewed", "source", "importedAt"
+  "description", "merchant", "counterparty", "amount", "expenseAmount", "economicTreatment",
+  "reconciliationReference", "direction", "status", "categoryAuto", "subcategoryAuto",
+  "reviewed", "source", "importedAt"
 ]);
 
 class FormulaParser {
@@ -235,7 +236,7 @@ function validateStaticTypes(node: FormulaNode): StaticFormulaType {
     return "boolean";
   }
   if (node.type === "identifier") {
-    if (node.name === "amount") return "number";
+    if (node.name === "amount" || node.name === "expenseAmount") return "number";
     if (node.name === "reviewed") return "boolean";
     return "string";
   }
@@ -524,6 +525,7 @@ function evaluateConstant(node: FormulaNode): ConstantEvaluation {
         continue;
       }
       if (result.value !== null) {
+        externalValue(result.value);
         return allPreviousValuesWereConstant
           ? { constant: true, value: result.value }
           : { constant: false };

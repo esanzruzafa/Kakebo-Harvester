@@ -156,6 +156,7 @@ describe("CSV export", () => {
 
       addMovement("two", "Tea");
       const second = await exporter.export();
+      const rejectedCustomEdits: boolean[] = [];
       if (format === "csv") {
         const rows = (await readFile(second.path, "utf8"))
           .replace(/^\uFEFF/u, "")
@@ -171,11 +172,36 @@ describe("CSV export", () => {
         expect(values.get("movement-one")?.[manualIndex]).toBe("Edited manual");
         expect(values.get("movement-two")?.[formulaIndex]).toBe("'=TEA");
         expect(values.get("movement-two")?.[manualIndex]).toBe("");
-        await writeFile(second.path, '"unterminated');
-        await expect(exporter.export()).rejects.toThrow(
-          "Kakebo Harvester could not generate the export file."
-        );
-        expect(await readFile(second.path, "utf8")).toBe('"unterminated');
+        const validCsv = await readFile(second.path, "utf8");
+        const statePath = `${config.exportSettingsPath}.state.json`;
+        const validState = await readFile(statePath);
+        const invalidCsvFiles = [
+          validCsv.replace("Edited manual", '5" screen"'),
+          (() => {
+            const lines = validCsv.trimEnd().split(/\r?\n/u);
+            lines.splice(2, 0, lines[1] ?? "");
+            return `${lines.join("\r\n")}\r\n`;
+          })(),
+          (() => {
+            const lines = validCsv.trimEnd().split(/\r?\n/u);
+            lines[1] = (lines[1] ?? "").split(";").slice(0, -1).join(";");
+            return `${lines.join("\r\n")}\r\n`;
+          })(),
+          (() => {
+            const lines = validCsv.trimEnd().split(/\r?\n/u);
+            lines[0] = (lines[0] ?? "").replace("MovementKey", "Edited movement key");
+            return `${lines.join("\r\n")}\r\n`;
+          })(),
+          '"unterminated'
+        ];
+        for (const invalidCsv of invalidCsvFiles) {
+          await writeFile(second.path, invalidCsv);
+          const rejected = await exporter.export().then(() => false, () => true);
+          const unchanged = await readFile(second.path, "utf8").then((content) => content === invalidCsv);
+          rejectedCustomEdits.push(rejected && unchanged);
+          await writeFile(second.path, validCsv);
+          await writeFile(statePath, validState);
+        }
       } else {
         const rows = await readSheet(second.path, { trim: false });
         const header = rows[0]?.map(String) ?? [];
@@ -187,11 +213,37 @@ describe("CSV export", () => {
         expect(values.get("movement-one")?.[manualIndex]).toBe("  Edited manual  ");
         expect(values.get("movement-two")?.[formulaIndex]).toBe("=TEA");
         expect(values.get("movement-two")?.[manualIndex]).toBeNull();
+        const statePath = `${config.exportSettingsPath}.state.json`;
+        const validOutput = await readFile(second.path);
+        const validState = await readFile(statePath);
+        const verifyRejectedXlsx = async (data: SheetData): Promise<void> => {
+          await writeXlsxFile(data, { sheet: "Movements" }).toFile(second.path);
+          const malformedOutput = await readFile(second.path);
+          const rejected = await exporter.export().then(() => false, () => true);
+          const unchanged = Buffer.compare(await readFile(second.path), malformedOutput) === 0;
+          rejectedCustomEdits.push(rejected && unchanged);
+          await writeFile(second.path, validOutput);
+          await writeFile(statePath, validState);
+        };
+        const rowsForEditing = await readSheet(second.path, "Movements", { trim: false });
+        const toSheetData = (): SheetData => rowsForEditing.map((row) => row.map((value) => ({
+          value: String(value ?? ""),
+          type: String
+        })));
+        const changedHeader = toSheetData();
+        const headerRow = changedHeader[0];
+        if (headerRow) headerRow[0] = { value: "Modified movement key", type: String };
+        await verifyRejectedXlsx(changedHeader);
+        const duplicateKey = toSheetData();
+        duplicateKey.splice(2, 0, duplicateKey[1] ?? []);
+        await verifyRejectedXlsx(duplicateKey);
         const workbook = unzipSync(await readFile(second.path));
         const styles = Buffer.from(workbook["xl/styles.xml"] ?? []).toString("utf8");
         expect(styles).not.toContain("#,##0.###############");
       }
       database.close();
+      if (format === "csv") expect(rejectedCustomEdits).toEqual([true, true, true, true, true]);
+      else expect(rejectedCustomEdits).toEqual([true, true]);
     }
   );
 
@@ -226,7 +278,7 @@ describe("CSV export", () => {
            first_seen_at, last_seen_at, imported_at, raw_fingerprint
          ) VALUES (
            'transaction', 'movement', 'reconcile', 'enable-banking', 'sandbox',
-           'connection', 'account', 'booked', '2026-09-01', '9007199254740993.00',
+           'connection', 'account', 'booked', '2026-09-01', '72561318574551.59',
            'EUR', 'income', 'Coffee', 'COFFEE', 0, ?, ?, ?, 'raw'
          )`
       )
@@ -252,6 +304,17 @@ describe("CSV export", () => {
 
     await expect(readFile(result.path, "utf8")).resolves.toContain("amount: Coffee");
     await expect(readFile(result.path, "utf8")).resolves.toContain("Coffee");
+    settings.columns.push({
+      id: "33333333-3333-4333-8333-333333333333",
+      kind: "formula",
+      header: "Amount copy",
+      enabled: true,
+      formula: "amount * 1"
+    });
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+    await expect(new CsvExporter(config, database).export()).rejects.toThrow(
+      "Kakebo Harvester could not generate the export file."
+    );
     database.close();
   });
 
@@ -285,6 +348,8 @@ describe("CSV export", () => {
 
   it("does not coerce unsafe decimal amounts into spreadsheet numbers", () => {
     expect(exactSpreadsheetNumber("1234.56")).toBe(1234.56);
+    expect(exactSpreadsheetNumber("72561318574551.59")).toBeNull();
+    expect(exactSpreadsheetNumber("72561318574551.60")).toBeNull();
     expect(exactSpreadsheetNumber("9007199254740993.00")).toBeNull();
   });
 

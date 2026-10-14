@@ -211,9 +211,31 @@ export function exactSpreadsheetNumber(value: string): number | null {
   }
   const number = Number(scaled) / 10 ** fraction.length;
   const roundTrip = Math.round(number * 10 ** fraction.length);
-  return Number.isSafeInteger(roundTrip) && BigInt(roundTrip) === scaled
-    ? number
-    : null;
+  if (!Number.isSafeInteger(roundTrip) || BigInt(roundTrip) !== scaled) return null;
+  const source = normalizedDecimal(value.trim());
+  const converted = normalizedDecimal(number.toString());
+  return source && converted && source.coefficient === converted.coefficient &&
+    source.scale === converted.scale ? number : null;
+}
+
+function normalizedDecimal(value: string): { coefficient: bigint; scale: number } | null {
+  const match = /^([+-]?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/iu.exec(value);
+  if (!match) return null;
+  const sign = match[1] === "-" ? -1n : 1n;
+  const fraction = match[3] ?? "";
+  const exponent = Number(match[4] ?? "0");
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1000) return null;
+  let coefficient = sign * BigInt(`${match[2]}${fraction}`);
+  let scale = fraction.length - exponent;
+  if (scale < 0) {
+    coefficient *= 10n ** BigInt(-scale);
+    scale = 0;
+  }
+  while (scale > 0 && coefficient % 10n === 0n) {
+    coefficient /= 10n;
+    scale -= 1;
+  }
+  return { coefficient, scale };
 }
 
 function formatMoney(
@@ -330,6 +352,13 @@ function customValue(
     if (identifier === "amount" && exactSpreadsheetNumber(row.amount) === null) {
       throw new Error("Custom formulas cannot use an amount that is not exactly representable.");
     }
+    if (identifier === "expenseAmount" && exactSpreadsheetNumber(expenseContribution({
+      amount: row.amount,
+      treatment: row.economic_treatment,
+      representative: row.representative === 1
+    })) === null) {
+      throw new Error("Custom formulas cannot use an amount that is not exactly representable.");
+    }
   });
 }
 
@@ -356,6 +385,7 @@ function parseCsv(content: string, separator: string): string[][] {
   let row: string[] = [];
   let value = "";
   let quoted = false;
+  let afterQuote = false;
   for (let index = 0; index < content.length; index += 1) {
     const character = content[index] ?? "";
     if (quoted) {
@@ -364,12 +394,33 @@ function parseCsv(content: string, separator: string): string[][] {
         index += 1;
       } else if (character === '"') {
         quoted = false;
+        afterQuote = true;
       } else {
         value += character;
       }
       continue;
     }
+    if (afterQuote) {
+      if (character === separator) {
+        row.push(value);
+        value = "";
+        afterQuote = false;
+      } else if (character === "\n" || character === "\r") {
+        if (character === "\r" && content[index + 1] === "\n") index += 1;
+        row.push(value);
+        rows.push(row);
+        row = [];
+        value = "";
+        afterQuote = false;
+      } else {
+        throw new Error("The CSV export contains invalid characters after a quoted field.");
+      }
+      continue;
+    }
     if (character === '"') {
+      if (value.length > 0) {
+        throw new Error("The CSV export contains a quote inside an unquoted field.");
+      }
       quoted = true;
     } else if (character === separator) {
       row.push(value);
@@ -385,7 +436,7 @@ function parseCsv(content: string, separator: string): string[][] {
     }
   }
   if (quoted) throw new Error("The CSV export contains an unterminated quoted field.");
-  if (value.length > 0 || row.length > 0) {
+  if (value.length > 0 || row.length > 0 || afterQuote) {
     row.push(value);
     rows.push(row);
   }
@@ -424,11 +475,19 @@ async function previousCustomValues(
   );
   const header = rows[0] ?? [];
   if (header.length !== expectedHeaders.length ||
-      header.some((value, index) => value !== expectedHeaders[index])) return new Map();
+      header.some((value, index) => value !== expectedHeaders[index])) {
+    throw new Error("The existing export header does not match the configured columns.");
+  }
   const values = new Map<string, Map<string, CustomExportValue>>();
   for (const row of rows.slice(1)) {
+    if (row.length !== expectedHeaders.length) {
+      throw new Error("The existing export contains a row with an invalid number of fields.");
+    }
     const movementKey = row[movementKeyIndex];
     if (typeof movementKey !== "string" || movementKey.length === 0) continue;
+    if (values.has(movementKey)) {
+      throw new Error("The existing export contains a duplicate movement key.");
+    }
     values.set(
       movementKey,
       new Map(
