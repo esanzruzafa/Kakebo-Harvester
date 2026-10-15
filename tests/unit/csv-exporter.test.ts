@@ -11,9 +11,11 @@ import {
   writeFile
 } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { unzipSync, zipSync } from "fflate";
 import { readSheet } from "read-excel-file/node";
 import writeXlsxFile, { type SheetData } from "write-excel-file/node";
@@ -35,11 +37,112 @@ import { testConfig } from "../helpers.js";
 let root: string | undefined;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  syncBuiltinESMExports();
   if (root) await rm(root, { recursive: true, force: true });
   root = undefined;
 });
 
 describe("CSV export", () => {
+  it.each(["csv", "xlsx"] as const)("archives the opposite format when retrying a pre-install %s transaction", async (format) => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-format-recovery-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    try {
+      const settings = createDefaultExportSettings(",", ";");
+      const store = new ExportSettingsStore(config.exportSettingsPath, settings);
+      settings.format = format === "csv" ? "xlsx" : "csv";
+      await store.save(settings);
+      const exporter = new CsvExporter(config, database);
+      const oldOutput = await exporter.export();
+      const oldBytes = await readFile(oldOutput.path);
+      const statePath = `${config.exportSettingsPath}.state.json`;
+      const oldState = await readFile(statePath);
+      settings.format = format;
+      await store.save(settings);
+      const output = await exporter.export();
+      const generated = await readFile(output.path);
+      const state = JSON.parse(await readFile(statePath, "utf8")) as unknown;
+      await rm(join(config.exportDirectory, "archive"), { recursive: true });
+      await rm(output.path);
+      await writeFile(oldOutput.path, oldBytes);
+      await writeFile(statePath, oldState);
+      const temporaryOutput = ".kakebo_movements.999.111.tmp";
+      await writeFile(join(config.exportDirectory, temporaryOutput), generated);
+      await writeFile(`${statePath}.pending`, JSON.stringify({
+        state, settings, temporaryOutput,
+        outputHash: createHash("sha256").update(generated).digest("hex")
+      }));
+      await exporter.export();
+      await expect(access(oldOutput.path)).rejects.toMatchObject({ code: "ENOENT" });
+      const archives = await readdir(join(config.exportDirectory, "archive"));
+      expect(archives).toHaveLength(1);
+      expect(await readFile(join(config.exportDirectory, "archive", archives[0] ?? "missing-archive"))).toEqual(oldBytes);
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each(["csv", "xlsx"] as const)("restores a stranded %s rollback when generated files are missing", async (format) => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-rollback-recovery-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    try {
+      const settings = createDefaultExportSettings(",", ";");
+      settings.format = format;
+      await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+      const exporter = new CsvExporter(config, database);
+      const output = await exporter.export();
+      const original = await readFile(output.path);
+      const statePath = `${config.exportSettingsPath}.state.json`;
+      const state = JSON.parse(await readFile(statePath, "utf8")) as unknown;
+      const rollbackOutput = `kakebo_movements.${format}.999.111.rollback`;
+      await rename(output.path, join(config.exportDirectory, rollbackOutput));
+      await writeFile(`${statePath}.pending`, JSON.stringify({
+        state, settings, rollbackOutput,
+        temporaryOutput: ".kakebo_movements.999.111.tmp",
+        outputHash: "0".repeat(64)
+      }));
+      await exporter.export();
+      if (format === "csv") expect(await readFile(output.path)).toEqual(original);
+      else expect(await readSheet(output.path)).toEqual(await readSheet(original));
+      await expect(access(`${statePath}.pending`)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(config.exportDirectory, rollbackOutput))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each(["csv", "xlsx"] as const)("keeps the %s journal if normal rollback cleanup fails", async (format) => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-cleanup-recovery-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    try {
+      const settings = createDefaultExportSettings(",", ";");
+      settings.format = format;
+      await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+      const exporter = new CsvExporter(config, database);
+      const output = await exporter.export();
+      const realRm = fsPromises.rm;
+      const removal = vi.spyOn(fsPromises, "rm").mockImplementation(async (path, options) => {
+        if (String(path).endsWith(".rollback")) throw new Error("Simulated rollback cleanup failure");
+        return realRm(path, options);
+      });
+      syncBuiltinESMExports();
+      await expect(exporter.export()).rejects.toThrow();
+      const pendingPath = `${config.exportSettingsPath}.state.json.pending`;
+      await expect(access(pendingPath)).resolves.toBeUndefined();
+      await expect(access(output.path)).resolves.toBeUndefined();
+      removal.mockRestore();
+      syncBuiltinESMExports();
+      await exporter.export();
+      await expect(access(pendingPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await readdir(config.exportDirectory)).filter((name) => name.endsWith(".rollback"))).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
   it.each(["csv", "xlsx"] as const)(
     "preserves custom values by movement key in %s exports and initializes only new rows",
     async (format) => {

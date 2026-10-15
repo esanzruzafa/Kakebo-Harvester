@@ -611,7 +611,9 @@ async function recoverPendingExportState(config: AppConfig, statePath: string): 
     if (await outputHash(temporary) !== pending.outputHash) {
       throw new Error("The interrupted export temporary file does not match its pending state.");
     }
-    if (await pathExists(destination)) {
+    if (await pathExists(destination) || await pathExists(join(
+      config.exportDirectory, `kakebo_movements.${pending.state.format === "csv" ? "xlsx" : "csv"}`
+    ))) {
       // Installation has not happened: retry the regular profile/archive pipeline.
       await rm(pendingPath);
       await rm(temporary);
@@ -629,6 +631,12 @@ async function recoverPendingExportState(config: AppConfig, statePath: string): 
       };
     }
   } else {
+    if (pending.rollbackOutput && await pathExists(join(config.exportDirectory, pending.rollbackOutput))) {
+      // The failed transaction removed its generated file but could not restore the prior output.
+      await rename(join(config.exportDirectory, pending.rollbackOutput), destination);
+      await rm(pendingPath);
+      return;
+    }
     throw new Error("The interrupted export cannot be recovered from its generated file.");
   }
   await writeExportState(statePath, pending.state);
@@ -1053,10 +1061,10 @@ export class CsvExporter {
       destinationInstalled = true;
       await writeExportState(statePath, nextState);
       committed = true;
-      await rm(`${statePath}.pending`, { force: true }).catch(() => undefined);
       if (destinationStaged) {
-        await rm(rollback, { force: true }).catch(() => undefined);
+        await rm(rollback, { force: true });
       }
+      await rm(`${statePath}.pending`, { force: true });
       return { path: destination, rows: rows.length };
     } catch (error) {
       const rollbackFailures: unknown[] = [];
