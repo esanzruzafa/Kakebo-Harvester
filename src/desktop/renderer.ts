@@ -3,6 +3,7 @@ import type {
   AuthorizationUiResult,
   BankOption,
   DesktopBootstrap,
+  ReconciliationMovement,
   SelectedCardFile
 } from "./contracts.js";
 import {
@@ -31,6 +32,7 @@ import type {
   CategorizationRule
 } from "../settings/categorization-rules-store.js";
 import type {
+  CustomExportColumn,
   ExportField,
   ExportSettings
 } from "../settings/export-settings-store.js";
@@ -41,6 +43,13 @@ import type {
   SyncStep
 } from "../sync/sync-runner.js";
 import type { FollowUpWarning } from "./committed-operations.js";
+import type { KutxabankCatalogConnection } from "./contracts.js";
+import { kutxabankPeriodDates, type KutxabankPeriod } from "./kutxabank-period.js";
+import {
+  buildReconciliationConfirmation,
+  buildReconciliationUndo,
+  refreshKutxabankAfterCommit,
+} from "./kutxabank-ui-state.js";
 import {
   hasSurvivingAccountDraft,
   mergeEditableDrafts,
@@ -68,6 +77,11 @@ let selectedConnectionBank: BankOption | undefined;
 let connectionWizardBusy = false;
 let bankLoadRequest = 0;
 let connectionWizardPreviousFocus: HTMLElement | undefined;
+let kutxabankCatalog: KutxabankCatalogConnection[] = [];
+let kutxabankEditingCardId = "";
+let kutxabankBusy = false;
+let reconciliationMovements: ReconciliationMovement[] = [];
+let reconciliationBusy = false;
 
 const connectionCountryCodes = [
   "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE",
@@ -121,7 +135,11 @@ function followUpWarningMessage(warnings: FollowUpWarning[]): string {
                   : warning.message
               }
             )
-          : tf(
+        : warning.step === "audit"
+          ? t("warning.audit", "Movements were saved, but the audit record could not be finalized.")
+        : warning.step === "cards-config"
+          ? tf("warning.cardsConfig", "Card configuration: {message}", { message: warning.message })
+        : tf(
             "warning.accountsConfig",
             "Account configuration: {message}",
             { message: warning.message }
@@ -159,6 +177,12 @@ function applyTranslations(): void {
     const key = item.dataset["i18nAriaLabel"];
     if (key) item.setAttribute("aria-label", t(key, key));
   }
+  for (const item of document.querySelectorAll<HTMLInputElement>(
+    "[data-i18n-placeholder]"
+  )) {
+    const key = item.dataset["i18nPlaceholder"];
+    if (key) item.placeholder = t(key, item.placeholder || key);
+  }
   element<HTMLSelectElement>("language-selector").value = state.language;
 }
 
@@ -168,6 +192,43 @@ function errorMessage(error: unknown): string {
     /^Error invoking remote method '[^']+':\s*(?:(?:[A-Za-z]+Error):\s*)*/u,
     ""
   );
+  const kutxabankCode = [
+    "AUTHENTICATION_REQUIRED",
+    "AUTHORIZATION_REQUIRED",
+    "REAUTHENTICATION_REQUIRED",
+    "SOURCE_NOT_READY",
+    "SOURCE_UNAVAILABLE",
+    "SOURCE_BUSY",
+    "CANCELLED",
+    "INCOMPLETE_PAGE",
+    "QUERY_CHANGED",
+    "INVALID_QUERY",
+    "INVALID_CONNECTION",
+    "INVALID_ACCOUNT",
+    "FORMAT_CHANGED",
+    "WINDOW_CLOSED",
+    "INVALID_RECONCILIATION",
+    "ALREADY_RECONCILED",
+    "INVALID_ALIAS",
+    "INVALID_LAST4",
+    "INVALID_MOVEMENT",
+    "CARD_ASSOCIATION_CHANGED",
+    "LOCAL_STORAGE_FAILED",
+    "CONNECTION_UNAVAILABLE",
+    "ACCOUNT_UNAVAILABLE",
+    "BROWSER_CLOSED",
+    "BANK_WINDOW_OPEN",
+    "NAVIGATION_BLOCKED",
+    "BANK_LOAD_FAILED",
+    "BANK_PROCESS_GONE",
+    "SELECTION_EXPIRED"
+  ].find((code) => message.includes(code));
+  if (kutxabankCode) {
+    return t(
+      `error.kutxabank.${kutxabankCode}`,
+      "Return to the bank window, complete the requested access, then refresh the cards and try again."
+    );
+  }
   const retryAtMatch =
     /Próximo intento permitido: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)/u.exec(
       message
@@ -1529,6 +1590,228 @@ function dragHandle(
   return handle;
 }
 
+function kutxabankDateRange(): { dateFrom: string; dateTo: string } {
+  const chosen = document.querySelector<HTMLInputElement>('input[name="kutxabank-period"]:checked');
+  const period = (chosen?.value ?? "month") as KutxabankPeriod;
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return kutxabankPeriodDates(period, today, {
+    dateFrom: element<HTMLInputElement>("kutxabank-catalog-from").value,
+    dateTo: element<HTMLInputElement>("kutxabank-catalog-to").value
+  });
+}
+
+function kutxabankPeriod(): KutxabankPeriod {
+  return (document.querySelector<HTMLInputElement>('input[name="kutxabank-period"]:checked')?.value ?? "month") as KutxabankPeriod;
+}
+
+function renderKutxabankCatalog(): void {
+  const cards = kutxabankCatalog.flatMap(connection => connection.cards);
+  const list = element<HTMLElement>("kutxabank-catalog-cards");
+  list.replaceChildren();
+  if (cards.length === 0) list.textContent = t("kutxabank.catalogEmpty", "No saved cards yet.");
+  for (const card of cards) {
+    const row = document.createElement("div");
+    row.className = "kutxabank-card-row";
+    const label = document.createElement("label");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = card.syncEnabled;
+    checkbox.disabled = kutxabankBusy;
+    checkbox.addEventListener("change", () => { void (async () => {
+      kutxabankBusy = true;
+      renderKutxabank();
+      try {
+        const result = await window.kakebo.setKutxabankCardSyncEnabled({
+          connectionId: card.connectionId, accountId: card.id, enabled: checkbox.checked
+        });
+        kutxabankCatalog = result.connections;
+        if (result.warnings.length) showToast(followUpWarningMessage(result.warnings), "warning");
+      } catch (error) { showToast(errorMessage(error), true); }
+      finally { kutxabankBusy = false; renderKutxabank(); }
+    })(); });
+    const name = document.createElement("span");
+    name.textContent = `${card.alias} (**** ${card.last4})`;
+    label.append(checkbox, name);
+    const balance = card.balance;
+    if (balance) {
+      const amount = document.createElement("span");
+      amount.className = `kutxabank-card-balance${balance.isRed ? " is-red" : ""}`;
+      amount.textContent = balance.text;
+      label.append(amount);
+      const readAt = document.createElement("small");
+      readAt.className = "kutxabank-balance-time";
+      readAt.textContent = tf("kutxabank.balanceReadAt", "Last read: {date}", {
+        date: new Intl.DateTimeFormat(state.language, { dateStyle: "short", timeStyle: "short" })
+          .format(new Date(balance.readAt))
+      });
+      label.append(readAt);
+    }
+    row.append(label);
+    const exportLabel = document.createElement("label");
+    exportLabel.className = "kutxabank-card-export";
+    const exportCheckbox = document.createElement("input");
+    exportCheckbox.type = "checkbox";
+    exportCheckbox.checked = card.exportEnabled;
+    exportCheckbox.disabled = kutxabankBusy;
+    exportCheckbox.addEventListener("change", () => { void (async () => {
+      kutxabankBusy = true;
+      renderKutxabank();
+      try {
+        const result = await window.kakebo.setKutxabankCardExportEnabled({
+          connectionId: card.connectionId, accountId: card.id, enabled: exportCheckbox.checked
+        });
+        kutxabankCatalog = result.connections;
+        if (result.warnings.length) showToast(followUpWarningMessage(result.warnings), "warning");
+      } catch (error) { showToast(errorMessage(error), true); }
+      finally { kutxabankBusy = false; renderKutxabank(); }
+    })(); });
+    exportLabel.append(exportCheckbox, document.createTextNode(t("kutxabank.cardExport", "Export")));
+    row.append(exportLabel);
+    if (kutxabankEditingCardId === card.id) {
+      const input = document.createElement("input");
+      input.className = "input";
+      input.maxLength = 120;
+      input.value = card.alias;
+      input.setAttribute("aria-label", t("kutxabank.cardAlias", "Card alias"));
+      const save = document.createElement("button");
+      save.type = "button";
+      save.className = "button secondary";
+      save.textContent = t("kutxabank.saveAlias", "Save alias");
+      save.disabled = kutxabankBusy;
+      save.addEventListener("click", () => { void (async () => {
+        kutxabankBusy = true;
+        renderKutxabank();
+        try {
+          const result = await window.kakebo.setKutxabankCardAlias({
+            connectionId: card.connectionId, accountId: card.id, alias: input.value.trim()
+          });
+          kutxabankCatalog = result.connections;
+          kutxabankEditingCardId = "";
+          if (result.warnings.length) showToast(followUpWarningMessage(result.warnings), "warning");
+        } catch (error) { showToast(errorMessage(error), true); }
+        finally { kutxabankBusy = false; renderKutxabank(); }
+      })(); });
+      input.addEventListener("keydown", event => { if (event.key === "Enter") save.click(); });
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "button secondary";
+      cancel.textContent = t("dialog.cancel", "Cancel");
+      cancel.addEventListener("click", () => { kutxabankEditingCardId = ""; renderKutxabank(); });
+      row.append(input, save, cancel);
+    } else {
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "kutxabank-edit-alias";
+      edit.textContent = "✎";
+      edit.disabled = kutxabankBusy;
+      edit.setAttribute("aria-label", tf("kutxabank.editAlias", "Edit alias for card ending in {last4}", { last4: card.last4 }));
+      edit.addEventListener("click", () => { kutxabankEditingCardId = card.id; renderKutxabank(); });
+      row.append(edit);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "kutxabank-delete-card";
+      remove.disabled = kutxabankBusy;
+      remove.setAttribute("aria-label", tf("kutxabank.deleteCard.label", "Delete card ending in {last4}", { last4: card.last4 }));
+      const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      icon.setAttribute("viewBox", "0 0 24 24");
+      icon.setAttribute("aria-hidden", "true");
+      icon.setAttribute("fill", "none");
+      icon.setAttribute("stroke", "currentColor");
+      icon.setAttribute("stroke-width", "2");
+      icon.setAttribute("stroke-linecap", "round");
+      icon.setAttribute("stroke-linejoin", "round");
+      for (const shape of ["M3 6h18", "M8 6V4h8v2", "M6 6l1 14h10l1-14", "M10 10v7", "M14 10v7"]) {
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", shape);
+        icon.append(path);
+      }
+      remove.append(icon);
+      remove.addEventListener("click", () => { void (async () => {
+        if (!(await confirmInApp(
+          tf("kutxabank.deleteCard.title", "Delete card ending in {last4}?", { last4: card.last4 }),
+          t("kutxabank.deleteCard.detail", "The card is removed from the catalog. Previously imported movements stay saved. If found again, the card will be recreated."),
+          t("kutxabank.deleteCard.confirm", "Delete card")
+        ))) return;
+        kutxabankBusy = true;
+        renderKutxabank();
+        try {
+          const result = await window.kakebo.deleteKutxabankCard({
+            connectionId: card.connectionId, accountId: card.id
+          });
+          kutxabankCatalog = result.connections;
+          showToast(result.warnings.length
+            ? followUpWarningMessage(result.warnings)
+            : t("kutxabank.deleteCard.done", "Card removed from the catalog."),
+          result.warnings.length ? "warning" : false);
+        } catch (error) { showToast(errorMessage(error), true); }
+        finally { kutxabankBusy = false; renderKutxabank(); }
+      })(); });
+      row.append(remove);
+    }
+    list.append(row);
+  }
+  const range = kutxabankDateRange();
+  element<HTMLButtonElement>("kutxabank-catalog-sync").disabled = kutxabankBusy ||
+    !cards.some(card => card.syncEnabled) ||
+    !range.dateFrom || !range.dateTo || range.dateFrom > range.dateTo;
+  const custom = document.querySelector<HTMLInputElement>('input[name="kutxabank-period"]:checked')?.value === "between";
+  element<HTMLElement>("kutxabank-filter-dates").hidden = !custom;
+}
+
+function renderKutxabank(): void {
+  renderKutxabankCatalog();
+  const open = element<HTMLButtonElement>("kutxabank-open");
+  const refreshButton = element<HTMLButtonElement>("kutxabank-refresh");
+  const forgetButton = element<HTMLButtonElement>("kutxabank-forget-device");
+  open.disabled = kutxabankBusy;
+  refreshButton.disabled = kutxabankBusy;
+  forgetButton.disabled = kutxabankBusy;
+  open.textContent = kutxabankBusy
+    ? t("kutxabank.working", "Working…")
+    : t("kutxabank.open", "Open bank window");
+  refreshButton.textContent = t("kutxabank.refresh", "Refresh available cards");
+}
+
+
+function reconciliationMovementLabel(movement: ReconciliationMovement): string {
+  const date = movement.date ?? t("reconciliation.unknownDate", "Unknown date");
+  return `${date} · ${movement.account} · ${movement.source} · ${movement.description} · ${movement.amount} ${movement.currency}`;
+}
+
+function selectedReconciliationMovement(id: "reconciliation-first" | "reconciliation-second"): ReconciliationMovement | undefined {
+  const key = element<HTMLSelectElement>(id).value;
+  return reconciliationMovements.find((movement) => movement.movementKey === key);
+}
+
+function renderReconciliation(): void {
+  const first = element<HTMLSelectElement>("reconciliation-first");
+  const second = element<HTMLSelectElement>("reconciliation-second");
+  const selectedFirst = first.value;
+  const selectedSecond = second.value;
+  for (const [select, selected] of [[first, selectedFirst], [second, selectedSecond]] as const) {
+    select.replaceChildren();
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = t("reconciliation.choose", "Choose a movement");
+    select.append(placeholder);
+    for (const movement of reconciliationMovements) {
+      const option = document.createElement("option");
+      option.value = movement.movementKey;
+      option.textContent = reconciliationMovementLabel(movement);
+      select.append(option);
+    }
+    select.value = selected;
+    select.disabled = reconciliationBusy;
+  }
+  const firstMovement = selectedReconciliationMovement("reconciliation-first");
+  const secondMovement = selectedReconciliationMovement("reconciliation-second");
+  element<HTMLButtonElement>("reconciliation-load").disabled = reconciliationBusy;
+  element<HTMLButtonElement>("reconciliation-confirm").disabled = reconciliationBusy ||
+    !firstMovement || !secondMovement || firstMovement.movementKey === secondMovement.movementKey;
+  element<HTMLButtonElement>("reconciliation-undo").disabled = reconciliationBusy || !firstMovement?.reference;
+}
+
 function enableRowDrop(
   row: HTMLTableRowElement,
   index: number,
@@ -1860,6 +2143,10 @@ function exportFieldLabel(field: ExportField): string {
   return t(`export.field.${field}`, field);
 }
 
+function exportColumnTypeLabel(kind: CustomExportColumn["kind"]): string {
+  return t(`export.kind.${kind}`, kind);
+}
+
 function moveExportColumn(from: number, to: number): void {
   const settings = exportValues();
   if (
@@ -1893,6 +2180,7 @@ function renderExportSettings(): void {
   settings.columns.forEach((column, index) => {
     const row = body.insertRow();
     row.dataset["exportColumnIndex"] = String(index);
+    if (!("field" in column)) row.dataset["customExportColumnId"] = column.id;
     const handleCell = row.insertCell();
     const columnNumber = settings.columns
       .slice(0, index + 1)
@@ -1923,9 +2211,13 @@ function renderExportSettings(): void {
     const enabledCell = row.insertCell();
     const enabled = checkbox(
       column.enabled,
-      tf("export.includeAria", "Include {field}", {
-        field: exportFieldLabel(column.field)
-      })
+      "field" in column
+        ? tf("export.includeAria", "Include {field}", {
+            field: exportFieldLabel(column.field)
+          })
+        : tf("export.includeCustomAria", "Include {header}", {
+            header: column.header
+          })
     );
     enabled.dataset["field"] = "enabled";
     enabled.addEventListener("change", () => {
@@ -1934,14 +2226,70 @@ function renderExportSettings(): void {
     });
     enabledCell.append(enabled);
     const fieldCell = row.insertCell();
-    fieldCell.textContent = exportFieldLabel(column.field);
-    fieldCell.dataset["exportField"] = column.field;
+    if ("field" in column) {
+      fieldCell.textContent = exportFieldLabel(column.field);
+      fieldCell.dataset["exportField"] = column.field;
+    } else {
+      const kind = document.createElement("select");
+      kind.className = "select";
+      kind.dataset["field"] = "kind";
+      for (const value of ["formula", "manual"] as const) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = exportColumnTypeLabel(value);
+        option.selected = value === column.kind;
+        kind.append(option);
+      }
+      kind.addEventListener("change", () => {
+        const columns = exportValues().columns;
+        const current = columns[index];
+        if (!current || "field" in current) return;
+        current.kind = kind.value as CustomExportColumn["kind"];
+        if (current.kind === "manual") delete current.formula;
+        else current.formula = "";
+        state.exportSettings = { ...exportValues(), columns };
+        renderExportSettings();
+      });
+      fieldCell.append(kind);
+    }
+    const formulaCell = row.insertCell();
+    if (!("field" in column) && column.kind === "formula") {
+      const formula = textInput(column.formula ?? "");
+      formula.dataset["field"] = "formula";
+      formula.required = true;
+      formula.maxLength = 500;
+      formula.placeholder = t("export.formulaPlaceholder", "amount * 2");
+      formula.setAttribute(
+        "aria-label",
+        tf("export.formulaAria", "Formula for {header}", {
+          header: column.header
+        })
+      );
+      formulaCell.append(formula);
+    }
     const headerCell = row.insertCell();
     const header = textInput(column.header);
     header.dataset["field"] = "header";
     header.required = true;
     header.maxLength = 120;
     headerCell.append(header);
+    const deleteCell = row.insertCell();
+    if (!("field" in column)) {
+      const remove = button("×", "icon-button");
+      remove.setAttribute(
+        "aria-label",
+        tf("export.deleteAria", "Delete custom export column {number}", {
+          number: index + 1
+        })
+      );
+      remove.addEventListener("click", () => {
+        const columns = exportValues().columns;
+        columns.splice(index, 1);
+        state.exportSettings = { ...exportValues(), columns };
+        renderExportSettings();
+      });
+      deleteCell.append(remove);
+    }
   });
 }
 
@@ -1969,6 +2317,8 @@ function renderAll(): void {
   renderConnections();
   renderRecentRuns();
   renderAccounts();
+  renderKutxabank();
+  renderReconciliation();
   renderCardFiles();
   renderCardProfiles();
   renderRules();
@@ -2377,12 +2727,23 @@ function exportValues(normalizeOrder = false): ExportSettings {
     const field = row
       .querySelector<HTMLElement>("[data-export-field]")
       ?.dataset["exportField"] as ExportField | undefined;
+    const id = row.dataset["customExportColumnId"];
+    const kind = row.querySelector<HTMLSelectElement>('[data-field="kind"]');
     const enabled = row.querySelector<HTMLInputElement>('[data-field="enabled"]');
     const header = row.querySelector<HTMLInputElement>('[data-field="header"]');
-    if (!field || !enabled || !header) {
+    const formula = row.querySelector<HTMLInputElement>('[data-field="formula"]');
+    if (!enabled || !header) {
       throw new Error("An export column is incomplete.");
     }
-    return { field, enabled: enabled.checked, header: header.value };
+    if (field) return { field, enabled: enabled.checked, header: header.value };
+    if (!id || !kind) throw new Error("An export column is incomplete.");
+    return {
+      id,
+      kind: kind.value as CustomExportColumn["kind"],
+      enabled: enabled.checked,
+      header: header.value,
+      ...(kind.value === "formula" ? { formula: formula?.value ?? "" } : {})
+    };
   });
   const orderedColumns = normalizeOrder
     ? [
@@ -2391,6 +2752,7 @@ function exportValues(normalizeOrder = false): ExportSettings {
       ]
     : columns;
   return {
+    schemaVersion: 2,
     format: element<HTMLSelectElement>("export-format").value as "csv" | "xlsx",
     csv: {
       fieldSeparator: element<HTMLSelectElement>("csv-field-separator")
@@ -2601,6 +2963,194 @@ function setupActions(): void {
   connectionWizard.addEventListener("keydown", (event) =>
     handleDialogKeydown(event, connectionWizard, closeConnectionWizard)
   );
+  const showSavedKutxabankCatalog = async (result: {
+    connections: KutxabankCatalogConnection[]; warnings: FollowUpWarning[]
+  }): Promise<void> => {
+    kutxabankCatalog = result.connections;
+    const refreshFailures = await refreshKutxabankAfterCommit(() => refresh());
+    renderKutxabank();
+    const warnings = [
+      ...(result.warnings.length ? [followUpWarningMessage(result.warnings)] : []),
+      ...(refreshFailures.length ? [t("kutxabank.catalogRefreshFailed",
+        "The cards were saved, but the view could not be refreshed. Reopen this tab to retry.")] : [])
+    ];
+    showToast([t("kutxabank.catalogSaved", "Available cards saved locally."), ...warnings].join(" "),
+      warnings.length ? "warning" : false);
+  };
+  const saveAvailableKutxabankCards = async (): Promise<void> => {
+    await showSavedKutxabankCatalog(await window.kakebo.saveKutxabankCatalog());
+  };
+  window.kakebo.onKutxabankCatalogUpdated(result => {
+    void showSavedKutxabankCatalog(result).catch((error: unknown) => showToast(errorMessage(error), "warning"));
+  });
+  window.kakebo.onKutxabankCatalogError(code => {
+    showToast(errorMessage(new Error(code)), "warning");
+  });
+  const reloadKutxabankCatalog = async (): Promise<void> => {
+    kutxabankCatalog = await window.kakebo.listKutxabankCatalog();
+    renderKutxabank();
+  };
+  for (const radio of document.querySelectorAll<HTMLInputElement>('input[name="kutxabank-period"]'))
+    radio.addEventListener("change", renderKutxabank);
+  for (const id of ["kutxabank-catalog-from", "kutxabank-catalog-to"])
+    element<HTMLInputElement>(id).addEventListener("change", renderKutxabank);
+  onClick(element<HTMLButtonElement>("kutxabank-catalog-sync"), async () => {
+    if (rejectConcurrentOperation()) return;
+    activeOperationCount += 1;
+    kutxabankBusy = true;
+    renderKutxabank();
+    try {
+      const range = kutxabankDateRange();
+      const result = await window.kakebo.syncKutxabankCatalog({
+        ...range, period: kutxabankPeriod()
+      });
+      const summary = element<HTMLElement>("kutxabank-catalog-result");
+      const warnings = result.cardWarnings ?? [];
+      summary.textContent = `${tf("kutxabank.summary", "{rows} rows read · {inserted} new · {duplicates} already stored · {updated} updated", {
+        rows: result.rows, inserted: result.inserted, duplicates: result.duplicates, updated: result.updated
+      })} ${warnings.map(warning => {
+        const card = kutxabankCatalog.flatMap(connection => connection.cards).find(item => item.id === warning.accountId);
+        return `${card?.alias ?? warning.accountId}: ${t(`kutxabank.cardWarning.${warning.code}`, warning.code)}`;
+      }).join("; ")}`.trim();
+      summary.hidden = false;
+      const refreshFailures = await refreshKutxabankAfterCommit(() => refresh(), reloadKutxabankCatalog);
+      const followUpWarnings = [
+        ...(result.warnings.length ? [followUpWarningMessage(result.warnings)] : []),
+        ...(refreshFailures.length ? [t("kutxabank.syncRefreshFailed",
+          "Movements were saved, but the view could not be refreshed. Reopen this tab to retry.")] : [])
+      ];
+      const hasWarnings = warnings.length > 0 || followUpWarnings.length > 0;
+      showToast([
+        hasWarnings
+          ? t("kutxabank.completedWithWarnings", "Movements were imported, but follow-up tasks need attention.")
+          : t("kutxabank.completed", "Card movements were imported and exported."),
+        ...followUpWarnings
+      ].join(" "), hasWarnings ? "warning" : false);
+    } catch (error) { showToast(errorMessage(error), true); }
+    finally { activeOperationCount -= 1; kutxabankBusy = false; renderKutxabank(); }
+  });
+  onClick(element<HTMLButtonElement>("kutxabank-open"), async () => {
+    if (rejectConcurrentOperation()) return;
+    kutxabankBusy = true;
+    renderKutxabank();
+    try {
+      await window.kakebo.openKutxabank();
+      showToast(t("kutxabank.opened", "Bank window opened. Sign in there if needed; available cards will update automatically."));
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      kutxabankBusy = false;
+      renderKutxabank();
+    }
+  });
+  onClick(element<HTMLButtonElement>("kutxabank-refresh"), async () => {
+    if (rejectConcurrentOperation()) return;
+    kutxabankBusy = true;
+    renderKutxabank();
+    try {
+      await saveAvailableKutxabankCards();
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      kutxabankBusy = false;
+      renderKutxabank();
+    }
+  });
+  onClick(element<HTMLButtonElement>("kutxabank-forget-device"), async () => {
+    try {
+      if (await window.kakebo.forgetKutxabankDevice())
+        showToast(t("kutxabank.forget.done", "Saved bank browser data deleted."));
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    }
+  });
+  const loadReconciliation = async (): Promise<void> => {
+    const dateFrom = element<HTMLInputElement>("reconciliation-date-from").value;
+    const dateTo = element<HTMLInputElement>("reconciliation-date-to").value;
+    if (!dateFrom || !dateTo || dateFrom > dateTo) throw new Error("dateRange");
+    const result = await window.kakebo.listReconciliation({ dateFrom, dateTo });
+    reconciliationMovements = result.movements;
+    element<HTMLElement>("reconciliation-truncated").hidden = !result.truncated;
+    renderReconciliation();
+  };
+  onClick(element<HTMLButtonElement>("reconciliation-load"), async () => {
+    if (rejectConcurrentOperation()) return;
+    reconciliationBusy = true;
+    renderReconciliation();
+    try {
+      await loadReconciliation();
+    } catch (error) {
+      showToast(error instanceof Error && error.message === "dateRange"
+        ? t("kutxabank.validation.dateRange", "Choose a valid date range.")
+        : errorMessage(error), true);
+    } finally {
+      reconciliationBusy = false;
+      renderReconciliation();
+    }
+  });
+  for (const id of ["reconciliation-first", "reconciliation-second"] as const) {
+    element<HTMLSelectElement>(id).addEventListener("change", renderReconciliation);
+  }
+  onClick(element<HTMLButtonElement>("reconciliation-confirm"), async () => {
+    if (rejectConcurrentOperation()) return;
+    const first = selectedReconciliationMovement("reconciliation-first");
+    const second = selectedReconciliationMovement("reconciliation-second");
+    if (!first || !second) return;
+    const kind = element<HTMLSelectElement>("reconciliation-kind").value as "settlement" | "duplicate";
+    const input = buildReconciliationConfirmation(first.movementKey, second.movementKey, kind);
+    const confirmed = await confirmInApp(
+      t("reconciliation.confirmTitle", "Confirm this treatment?"),
+      `${reconciliationMovementLabel(first)}\n${reconciliationMovementLabel(second)}`,
+      t("reconciliation.confirm", "Confirm treatment")
+    );
+    if (!confirmed) return;
+    activeOperationCount += 1;
+    reconciliationBusy = true;
+    renderReconciliation();
+    try {
+      const result = await window.kakebo.confirmReconciliation(input);
+      const failures = await refreshKutxabankAfterCommit(() => refresh(), loadReconciliation);
+      const warnings = result.warnings.length > 0 ? followUpWarningMessage(result.warnings) : "";
+      showToast(
+        failures.length > 0 || warnings
+          ? `${t("reconciliation.savedWithWarnings", "The treatment was saved, but follow-up tasks need attention.")} ${warnings}`.trim()
+          : t("reconciliation.saved", "Movement treatment saved."),
+        failures.length > 0 || Boolean(warnings) ? "warning" : false
+      );
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      activeOperationCount -= 1;
+      reconciliationBusy = false;
+      renderReconciliation();
+    }
+  });
+  onClick(element<HTMLButtonElement>("reconciliation-undo"), async () => {
+    if (rejectConcurrentOperation()) return;
+    const first = selectedReconciliationMovement("reconciliation-first");
+    if (!first) return;
+    const { reference } = buildReconciliationUndo(first);
+    activeOperationCount += 1;
+    reconciliationBusy = true;
+    renderReconciliation();
+    try {
+      const result = await window.kakebo.undoReconciliation(reference);
+      const failures = await refreshKutxabankAfterCommit(() => refresh(), loadReconciliation);
+      const warnings = result.warnings.length > 0 ? followUpWarningMessage(result.warnings) : "";
+      showToast(
+        failures.length > 0 || warnings
+          ? `${t("reconciliation.undoneWithWarnings", "The treatment was undone, but follow-up tasks need attention.")} ${warnings}`.trim()
+          : t("reconciliation.undone", "Movement treatment undone."),
+        failures.length > 0 || Boolean(warnings) ? "warning" : false
+      );
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      activeOperationCount -= 1;
+      reconciliationBusy = false;
+      renderReconciliation();
+    }
+  });
   element<HTMLSelectElement>("sync-preset").addEventListener("change", (event) =>
     applyPreset((event.currentTarget as HTMLSelectElement).value)
   );
@@ -3119,6 +3669,24 @@ function setupActions(): void {
       element<HTMLSelectElement>("export-format").value;
   });
 
+  onClick(element<HTMLButtonElement>("add-export-column"), () => {
+    const settings = exportValues();
+    state.exportSettings = {
+      ...settings,
+      columns: [
+        ...settings.columns,
+        {
+          id: crypto.randomUUID(),
+          kind: "manual",
+          header: t("export.newColumnHeader", "Custom column"),
+          enabled: true
+        }
+      ]
+    };
+    renderExportSettings();
+    return Promise.resolve();
+  });
+
   onClick(element<HTMLButtonElement>("save-export-settings"), async () => {
     const save = element<HTMLButtonElement>("save-export-settings");
     save.disabled = true;
@@ -3371,8 +3939,14 @@ async function initialize(): Promise<void> {
     });
   });
   await refresh();
+  kutxabankCatalog = await window.kakebo.listKutxabankCatalog();
   element<HTMLInputElement>("date-from").value = state.defaultDateFrom;
   element<HTMLInputElement>("date-to").value = state.defaultDateTo;
+  element<HTMLInputElement>("kutxabank-catalog-from").value = state.defaultDateFrom;
+  element<HTMLInputElement>("kutxabank-catalog-to").value = state.defaultDateTo;
+  renderKutxabank();
+  element<HTMLInputElement>("reconciliation-date-from").value = state.defaultDateFrom;
+  element<HTMLInputElement>("reconciliation-date-to").value = state.defaultDateTo;
   refreshCurrentPageTitle();
 }
 

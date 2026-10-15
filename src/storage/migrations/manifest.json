@@ -35,10 +35,34 @@
   },
   {
     "version": 14,
-    "filename": "014_account_hidden_state.sql"
+    "filename": "014_transaction_reconciliation.sql"
   },
   {
     "version": 15,
-    "filename": "015_local_account_removal_audit.sql"
+    "filename": "015_separate_kutxabank_cards.sql"
+  },
+  {
+    "version": 16,
+    "filename": "016_card_balance.sql"
+  },
+  {
+    "version": 17,
+    "filename": "017_card_identity_fingerprint.sql"
+  },
+  {
+    "version": 18,
+    "filename": "018_reconciliation_events.sql"
+  },
+  {
+    "version": 19,
+    "filename": "019_deleted_card_export_preference.sql"
+  },
+  {
+    "version": 20,
+    "filename": "020_account_hidden_state.sql"
+  },
+  {
+    "version": 21,
+    "filename": "021_local_account_removal_audit.sql"
   }
 ]

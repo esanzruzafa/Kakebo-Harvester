@@ -1,0 +1,123 @@
+import { randomUUID } from "node:crypto";
+import type { AppEnvironment } from "../config.js";
+import type { SqliteDatabase } from "../storage/database.js";
+import { assertIsoDate } from "../utils/dates.js";
+import { normalizeDecimal } from "./transaction-mapper.js";
+
+export interface ReconciliationMovement {
+  movementKey: string;
+  date: string | null;
+  account: string;
+  source: string;
+  description: string;
+  amount: string;
+  currency: string;
+  status: string;
+  reference: string | null;
+}
+
+interface StoredMovement {
+  movement_key: string;
+  account_id: string;
+  amount: string;
+  currency: string;
+  provider: string;
+  status: string;
+}
+
+export class SourceReconciliationService {
+  constructor(private readonly database: SqliteDatabase, private readonly environment: AppEnvironment) {}
+
+  list(dateFrom: string, dateTo: string): ReconciliationMovement[] {
+    assertIsoDate(dateFrom, "Fecha inicial");
+    assertIsoDate(dateTo, "Fecha final");
+    if (dateFrom > dateTo) throw new Error("INVALID_QUERY");
+    return this.database.prepare(`SELECT t.movement_key AS movementKey,
+      COALESCE(t.booking_date, substr(t.transaction_datetime, 1, 10), t.value_date) AS date,
+      COALESCE(NULLIF(a.account_alias, ''), a.display_name, a.name, c.alias,
+        t.card_alias_snapshot, c.id) AS account,
+      t.provider AS source, COALESCE(t.description_raw, '') AS description,
+      t.amount, t.currency, t.status, r.reference
+      FROM transactions t LEFT JOIN accounts a ON a.id=t.account_id
+      LEFT JOIN cards c ON c.id=t.account_id
+      LEFT JOIN transaction_reconciliations r ON r.movement_key=t.movement_key
+      WHERE t.environment=? AND COALESCE(t.booking_date, substr(t.transaction_datetime, 1, 10), t.value_date) BETWEEN ? AND ?
+        AND (t.status IN ('booked', 'unknown') OR r.reference IS NOT NULL)
+      ORDER BY date DESC, t.movement_key LIMIT 501`).all(this.environment, dateFrom, dateTo) as ReconciliationMovement[];
+  }
+
+  confirm(firstKey: string, secondKey: string, kind: "settlement" | "duplicate"): string {
+    return this.database.transaction(() => {
+      if (firstKey === secondKey || !["settlement", "duplicate"].includes(kind)) throw new Error("INVALID_RECONCILIATION");
+      const read = this.database.prepare(`SELECT movement_key,account_id,amount,currency,provider,status
+        FROM transactions WHERE movement_key=? AND environment=?`);
+      const first=read.get(firstKey,this.environment) as StoredMovement | undefined;
+      const second=read.get(secondKey,this.environment) as StoredMovement | undefined;
+      if (!first || !second || first.account_id === second.account_id || first.currency !== second.currency ||
+        [first.status,second.status].some(status=>status !== "booked" && status !== "unknown")) throw new Error("INVALID_RECONCILIATION");
+      const firstAmount=normalizeDecimal(first.amount).amount;
+      const secondAmount=normalizeDecimal(second.amount).amount;
+      const providers=new Set([first.provider,second.provider]);
+      if (kind === "duplicate") {
+        if (firstAmount !== secondAmount || !providers.has("manual-card") || !providers.has("kutxabank-browser")) throw new Error("INVALID_RECONCILIATION");
+      } else {
+        const opposite=firstAmount.startsWith("-") ? firstAmount.slice(1) : `-${firstAmount}`;
+        const aisAmount=first.provider === "enable-banking" ? firstAmount : secondAmount;
+        if (firstAmount === "0" || opposite !== secondAmount || !providers.has("enable-banking") ||
+          !aisAmount.startsWith("-") ||
+          !(providers.has("kutxabank-browser") || providers.has("manual-card"))) throw new Error("INVALID_RECONCILIATION");
+      }
+      if (this.database.prepare(`SELECT 1 FROM transaction_reconciliations WHERE movement_key IN (?,?)`).get(firstKey,secondKey))
+        throw new Error("ALREADY_RECONCILED");
+      const reference=randomUUID();
+      const confirmedAt=new Date().toISOString();
+      const insert=this.database.prepare(`INSERT INTO transaction_reconciliations
+        (movement_key,reference,kind,representative,amount_snapshot,currency_snapshot,confirmed_at) VALUES(?,?,?,?,?,?,?)`);
+      for (const [index,row] of [first,second].entries()) insert.run(row.movement_key,reference,kind,
+        kind === "duplicate" && index === 1 ? 0 : 1,row.amount,row.currency,confirmedAt);
+      this.database.prepare(`INSERT INTO transaction_reconciliation_events
+        (id, reference, action, kind, first_movement_key, second_movement_key,
+         first_amount_snapshot, second_amount_snapshot, currency_snapshot, confirmed_at,
+         environment, recorded_at)
+        VALUES (?, ?, 'confirm', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(randomUUID(), reference, kind, firstKey, secondKey, first.amount, second.amount,
+          first.currency, confirmedAt, this.environment, confirmedAt);
+      return reference;
+    })();
+  }
+
+  undo(reference: string): void {
+    this.database.transaction(() => {
+      const rows = this.database.prepare(`SELECT r.movement_key, r.kind, r.amount_snapshot,
+        r.currency_snapshot, r.confirmed_at FROM transaction_reconciliations r
+        JOIN transactions t ON t.movement_key = r.movement_key
+        WHERE r.reference = ? AND t.environment = ? ORDER BY r.confirmed_at, r.movement_key`)
+        .all(reference, this.environment) as Array<{ movement_key: string; kind: "settlement" | "duplicate";
+          amount_snapshot: string; currency_snapshot: string; confirmed_at: string }>;
+      if (rows.length !== 2 || rows[0]?.kind !== rows[1]?.kind) throw new Error("INVALID_RECONCILIATION");
+      const confirmation = this.database.prepare(`SELECT first_movement_key, second_movement_key, confirmed_at
+        FROM transaction_reconciliation_events WHERE reference = ? AND action = 'confirm' AND environment = ?`)
+        .get(reference, this.environment) as { first_movement_key: string; second_movement_key: string;
+          confirmed_at: string } | undefined;
+      // Audit keys are immutable; active keys can change through ON UPDATE CASCADE.
+      if (confirmation && rows.some(row => row.movement_key === confirmation.first_movement_key) &&
+          rows.some(row => row.movement_key === confirmation.second_movement_key)) {
+        rows.sort((a, b) => Number(b.movement_key === confirmation.first_movement_key) -
+          Number(a.movement_key === confirmation.first_movement_key));
+      }
+      const [first, second] = rows as [typeof rows[number], typeof rows[number]];
+      const deleted = this.database.prepare(`DELETE FROM transaction_reconciliations WHERE reference=?
+        AND movement_key IN (SELECT movement_key FROM transactions WHERE environment=?)`).run(reference, this.environment);
+      if (deleted.changes !== 2) throw new Error("INVALID_RECONCILIATION");
+      this.database.prepare(`INSERT INTO transaction_reconciliation_events
+        (id, reference, action, kind, first_movement_key, second_movement_key,
+         first_amount_snapshot, second_amount_snapshot, currency_snapshot, confirmed_at,
+         environment, recorded_at)
+        VALUES (?, ?, 'undo', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(randomUUID(), reference, first.kind, first.movement_key, second.movement_key,
+          first.amount_snapshot, second.amount_snapshot, first.currency_snapshot,
+          confirmation?.confirmed_at ?? first.confirmed_at,
+          this.environment, new Date().toISOString());
+    })();
+  }
+}

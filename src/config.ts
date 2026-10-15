@@ -69,6 +69,7 @@ const envSchema = z.object({
   APP_TLS_PFX_PASSPHRASE_PATH: z.string().min(1).optional(),
   CATEGORIZATION_RULES_PATH: z.string().min(1).optional(),
   ACCOUNTS_CONFIG_PATH: z.string().min(1).optional(),
+  CARDS_CONFIG_PATH: z.string().min(1).optional(),
   CATEGORIES_CONFIG_PATH: z.string().min(1).optional(),
   EXPORT_SETTINGS_PATH: z.string().min(1).optional(),
   CARD_IMPORT_PROFILES_PATH: z.string().min(1).optional(),
@@ -116,6 +117,7 @@ export interface AppConfig {
   tlsPfxPassphrasePath?: string;
   categorizationRulesPath: string;
   accountsConfigPath: string;
+  cardsConfigPath: string;
   categoriesConfigPath: string;
   exportSettingsPath: string;
   cardImportProfilesPath: string;
@@ -391,6 +393,7 @@ export function loadConfig(
       env.ACCOUNTS_CONFIG_PATH ?? "config/accounts.json",
       baseDirectory
     ),
+    cardsConfigPath: absolutePath(env.CARDS_CONFIG_PATH ?? "config/cards.json", baseDirectory),
     categoriesConfigPath: absolutePath(
       env.CATEGORIES_CONFIG_PATH ?? "config/categories.json",
       baseDirectory

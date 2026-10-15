@@ -469,6 +469,22 @@ describe("local account removal persistence", () => {
     insertConnection(database, "sandbox-connection", "sandbox");
     insertAccount(database, "account", "sandbox-connection");
     insertHistory(database, "account");
+    database.prepare(`INSERT INTO transaction_reconciliations
+      (movement_key, reference, kind, representative, amount_snapshot, currency_snapshot, confirmed_at)
+      VALUES ('account-movement', 'rollback-reference', 'duplicate', 1, '10', 'EUR', ?)`)
+      .run(new Date().toISOString());
+    insertAccount(database, "sibling", "sandbox-connection");
+    insertHistory(database, "sibling");
+    database.prepare(`INSERT INTO transaction_reconciliations
+      (movement_key, reference, kind, representative, amount_snapshot, currency_snapshot, confirmed_at)
+      VALUES ('sibling-movement', 'rollback-reference', 'duplicate', 0, '10', 'EUR', ?)`)
+      .run(new Date().toISOString());
+    database.prepare(`INSERT INTO transaction_reconciliation_events
+      (id, reference, action, kind, first_movement_key, second_movement_key,
+       first_amount_snapshot, second_amount_snapshot, currency_snapshot, confirmed_at, environment, recorded_at)
+      VALUES ('rollback-event', 'rollback-reference', 'confirm', 'duplicate',
+       'account-movement', 'sibling-movement', '10', '10', 'EUR', ?, 'sandbox', ?)`)
+      .run(new Date().toISOString(), new Date().toISOString());
 
     const pending = await beginLocalAccountRemoval({
       database,
@@ -478,6 +494,12 @@ describe("local account removal persistence", () => {
     });
     expect(database.prepare("SELECT COUNT(*) AS count FROM accounts WHERE id = 'account'").get()).toEqual({ count: 0 });
     pending.rollback();
+    expect(database.prepare("SELECT reference FROM transaction_reconciliations WHERE movement_key = 'account-movement'").get())
+      .toEqual({ reference: "rollback-reference" });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM transaction_reconciliations WHERE reference = 'rollback-reference'").get())
+      .toEqual({ count: 2 });
+    expect(database.prepare("SELECT id FROM transaction_reconciliation_events WHERE id = 'rollback-event'").get())
+      .toEqual({ id: "rollback-event" });
     expect(database.prepare("SELECT COUNT(*) AS count FROM accounts WHERE id = 'account'").get()).toEqual({ count: 1 });
     expect(database.prepare("SELECT COUNT(*) AS count FROM transactions WHERE account_id = 'account'").get()).toEqual({ count: 1 });
     database.close();

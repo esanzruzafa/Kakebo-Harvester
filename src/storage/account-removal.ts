@@ -74,6 +74,7 @@ const rollbackTables = [
 ] as const;
 
 const rollbackTableName = (table: string): string => `account_removal_rollback_${table}`;
+const reconciliationRollbackTables = ["transaction_reconciliations", "transaction_reconciliation_events"] as const;
 
 export function removeLocalAccount(
   input: RemoveLocalAccountInput
@@ -173,6 +174,20 @@ export function beginLocalAccountRemoval(
 }
 
 function createAccountRollbackStore(database: SqliteDatabase, accountId: string): void {
+  for (const table of reconciliationRollbackTables) {
+    database.exec(`DROP TABLE IF EXISTS temp.${rollbackTableName(table)}`);
+  }
+  database.prepare(`CREATE TEMP TABLE ${rollbackTableName("transaction_reconciliations")} AS
+    SELECT * FROM transaction_reconciliations WHERE reference IN (
+      SELECT r.reference FROM transaction_reconciliations r
+      JOIN transactions t ON t.movement_key = r.movement_key WHERE t.account_id = ?
+    )`).run(accountId);
+  database.prepare(`CREATE TEMP TABLE ${rollbackTableName("transaction_reconciliation_events")} AS
+    SELECT * FROM transaction_reconciliation_events WHERE reference IN (
+      SELECT reference FROM ${rollbackTableName("transaction_reconciliations")}
+    ) OR first_movement_key IN (SELECT movement_key FROM transactions WHERE account_id = ?)
+      OR second_movement_key IN (SELECT movement_key FROM transactions WHERE account_id = ?)`)
+    .run(accountId, accountId);
   for (const [table, column] of rollbackTables) {
     const rollbackTable = rollbackTableName(table);
     database.exec(`DROP TABLE IF EXISTS temp.${rollbackTable}`);
@@ -198,9 +213,15 @@ function restoreAccountRows(database: SqliteDatabase): void {
   database.prepare(
     `INSERT INTO card_import_source_rows SELECT * FROM ${rollbackTableName("card_import_source_rows")}`
   ).run();
+  for (const table of reconciliationRollbackTables) {
+    database.prepare(`INSERT OR IGNORE INTO ${table} SELECT * FROM ${rollbackTableName(table)}`).run();
+  }
 }
 
 function dropAccountRollbackStore(database: SqliteDatabase): void {
+  for (const table of reconciliationRollbackTables) {
+    database.exec(`DROP TABLE IF EXISTS temp.${rollbackTableName(table)}`);
+  }
   for (const [table] of [...rollbackTables, ["card_import_source_rows", "profile_id"]] as const) {
     database.exec(`DROP TABLE IF EXISTS temp.${rollbackTableName(table)}`);
   }

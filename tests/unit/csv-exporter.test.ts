@@ -5,14 +5,20 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   symlink,
   writeFile
 } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { unzipSync } from "fflate";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { unzipSync, zipSync } from "fflate";
+import { readSheet } from "read-excel-file/node";
+import writeXlsxFile, { type SheetData } from "write-excel-file/node";
 import {
   clearGeneratedExportFiles,
   countGeneratedExportFiles,
@@ -31,11 +37,632 @@ import { testConfig } from "../helpers.js";
 let root: string | undefined;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  syncBuiltinESMExports();
   if (root) await rm(root, { recursive: true, force: true });
   root = undefined;
 });
 
 describe("CSV export", () => {
+  it.each(["csv", "xlsx"] as const)("archives the opposite format when retrying a pre-install %s transaction", async (format) => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-format-recovery-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    try {
+      const settings = createDefaultExportSettings(",", ";");
+      const store = new ExportSettingsStore(config.exportSettingsPath, settings);
+      settings.format = format === "csv" ? "xlsx" : "csv";
+      await store.save(settings);
+      const exporter = new CsvExporter(config, database);
+      const oldOutput = await exporter.export();
+      const oldBytes = await readFile(oldOutput.path);
+      const statePath = `${config.exportSettingsPath}.state.json`;
+      const oldState = await readFile(statePath);
+      settings.format = format;
+      await store.save(settings);
+      const output = await exporter.export();
+      const generated = await readFile(output.path);
+      const state = JSON.parse(await readFile(statePath, "utf8")) as unknown;
+      await rm(join(config.exportDirectory, "archive"), { recursive: true });
+      await rm(output.path);
+      await writeFile(oldOutput.path, oldBytes);
+      await writeFile(statePath, oldState);
+      const temporaryOutput = ".kakebo_movements.999.111.tmp";
+      await writeFile(join(config.exportDirectory, temporaryOutput), generated);
+      await writeFile(`${statePath}.pending`, JSON.stringify({
+        state, settings, temporaryOutput,
+        outputHash: createHash("sha256").update(generated).digest("hex")
+      }));
+      const realRm = fsPromises.rm;
+      let blockedPath = join(config.exportDirectory, temporaryOutput);
+      const removal = vi.spyOn(fsPromises, "rm").mockImplementation(async (path, options) => {
+        if (String(path) === blockedPath) throw new Error("Simulated recovery cleanup failure");
+        return realRm(path, options);
+      });
+      syncBuiltinESMExports();
+      await expect(exporter.export()).rejects.toThrow();
+      await expect(access(`${statePath}.pending`)).resolves.toBeUndefined();
+      expect(await readFile(statePath)).toEqual(oldState);
+      blockedPath = `${statePath}.pending`;
+      await expect(exporter.export()).rejects.toThrow();
+      await expect(access(join(config.exportDirectory, temporaryOutput))).rejects.toMatchObject({ code: "ENOENT" });
+      removal.mockRestore();
+      syncBuiltinESMExports();
+      await exporter.export();
+      await expect(access(oldOutput.path)).rejects.toMatchObject({ code: "ENOENT" });
+      const archives = await readdir(join(config.exportDirectory, "archive"));
+      expect(archives).toHaveLength(1);
+      expect(await readFile(join(config.exportDirectory, "archive", archives[0] ?? "missing-archive"))).toEqual(oldBytes);
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each(["csv", "xlsx"] as const)("restores a stranded %s rollback when generated files are missing", async (format) => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-rollback-recovery-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    try {
+      const settings = createDefaultExportSettings(",", ";");
+      settings.format = format;
+      await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+      const exporter = new CsvExporter(config, database);
+      const output = await exporter.export();
+      const original = await readFile(output.path);
+      const statePath = `${config.exportSettingsPath}.state.json`;
+      const state = JSON.parse(await readFile(statePath, "utf8")) as unknown;
+      const rollbackOutput = `kakebo_movements.${format}.999.111.rollback`;
+      await rename(output.path, join(config.exportDirectory, rollbackOutput));
+      await writeFile(`${statePath}.pending`, JSON.stringify({
+        state, settings, rollbackOutput,
+        temporaryOutput: ".kakebo_movements.999.111.tmp",
+        outputHash: "0".repeat(64)
+      }));
+      await exporter.export();
+      if (format === "csv") expect(await readFile(output.path)).toEqual(original);
+      else expect(await readSheet(output.path)).toEqual(await readSheet(original));
+      await expect(access(`${statePath}.pending`)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(config.exportDirectory, rollbackOutput))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each(["csv", "xlsx"] as const)("keeps the %s journal if normal rollback cleanup fails", async (format) => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-cleanup-recovery-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    try {
+      const settings = createDefaultExportSettings(",", ";");
+      settings.format = format;
+      await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+      const exporter = new CsvExporter(config, database);
+      const output = await exporter.export();
+      const realRm = fsPromises.rm;
+      const removal = vi.spyOn(fsPromises, "rm").mockImplementation(async (path, options) => {
+        if (String(path).endsWith(".rollback")) throw new Error("Simulated rollback cleanup failure");
+        return realRm(path, options);
+      });
+      syncBuiltinESMExports();
+      await expect(exporter.export()).rejects.toThrow();
+      const pendingPath = `${config.exportSettingsPath}.state.json.pending`;
+      await expect(access(pendingPath)).resolves.toBeUndefined();
+      await expect(access(output.path)).resolves.toBeUndefined();
+      removal.mockRestore();
+      syncBuiltinESMExports();
+      await exporter.export();
+      await expect(access(pendingPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await readdir(config.exportDirectory)).filter((name) => name.endsWith(".rollback"))).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each(["csv", "xlsx"] as const)(
+    "preserves custom values by movement key in %s exports and initializes only new rows",
+    async (format) => {
+      root = await mkdtemp(join(tmpdir(), "kakebo-export-custom-values-"));
+      const config = testConfig(root);
+      const database = createDatabase(config.databasePath);
+      const now = new Date().toISOString();
+      database
+        .prepare(
+          `INSERT INTO bank_connections (
+             id, provider, environment, bank_name, bank_country, psu_type,
+             alias, status, created_at
+           ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                     'personal', 'Demo', 'AUTHORIZED', ?)`
+        )
+        .run(now);
+      database
+        .prepare(
+          `INSERT INTO accounts (
+             id, bank_connection_id, provider_account_id, name, active,
+             first_seen_at, last_seen_at
+           ) VALUES ('account', 'connection', 'provider', 'Account', 1, ?, ?)`
+        )
+        .run(now, now);
+      const insertMovement = database.prepare(
+        `INSERT INTO transactions (
+           id, movement_key, reconciliation_key, provider, environment,
+           bank_connection_id, account_id, status, booking_date, amount, currency,
+           direction, description_raw, description_normalized, reviewed,
+           first_seen_at, last_seen_at, imported_at, raw_fingerprint
+         ) VALUES (?, ?, ?, 'enable-banking', 'sandbox', 'connection', 'account',
+                   'booked', ?, '-12.34', 'EUR', 'expense', ?, ?, 0, ?, ?, ?, ?)`
+      );
+      const addMovement = (id: string, description: string): void => {
+        insertMovement.run(
+          id,
+          `movement-${id}`,
+          `reconcile-${id}`,
+          "2026-09-01",
+          description,
+          description.toUpperCase(),
+          now,
+          now,
+          now,
+          `raw-${id}`
+        );
+      };
+      addMovement("one", "Coffee");
+
+      const settings = createDefaultExportSettings(",", ";");
+      settings.format = format;
+      settings.columns.push(
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          kind: "formula",
+          header: "Formula label",
+          enabled: true,
+          formula: 'concat("=", upper(description))'
+        },
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          kind: "manual",
+          header: "Manual note",
+          enabled: true
+        },
+        {
+          id: "33333333-3333-4333-8333-333333333333",
+          kind: "formula",
+          header: "Tiny number",
+          enabled: true,
+          formula: "amount / 1000000000"
+        }
+      );
+      const settingsStore = new ExportSettingsStore(config.exportSettingsPath, settings);
+      if (format === "xlsx") {
+        await settingsStore.save({
+          ...settings,
+          csv: { ...settings.csv, fieldSeparator: "|" }
+        });
+      }
+      await settingsStore.save(settings);
+      const exporter = new CsvExporter(config, database);
+      const first = await exporter.export();
+
+      if (format === "csv") {
+        const lines = (await readFile(first.path, "utf8")).replace(/^\uFEFF/u, "").trim().split(/\r?\n/u);
+        const header = lines[0]?.split(";") ?? [];
+        const formulaIndex = header.indexOf("Formula label");
+        const manualIndex = header.indexOf("Manual note");
+        const row = lines[1]?.split(";") ?? [];
+        row[formulaIndex] = "Edited formula";
+        row[manualIndex] = "Edited manual";
+        lines[1] = row.join(";");
+        await writeFile(first.path, `${lines.join("\r\n")}\r\n`);
+      } else {
+        const header = settings.columns.filter((column) => column.enabled);
+        const data: SheetData = [
+          header.map((column) => ({ value: column.header, type: String })),
+          header.map((column) => ({
+            value: "field" in column
+              ? column.field === "movementKey" ? "movement-one" : "source value"
+              : column.kind === "formula" ? "Edited formula" : "  Edited manual  ",
+            type: String
+          }))
+        ];
+        await writeXlsxFile(data, { sheet: "Movements" }).toFile(first.path);
+      }
+
+      if (format === "xlsx") {
+        const statePath = `${config.exportSettingsPath}.state.json`;
+        const state = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+        state.fingerprint = createHash("sha256")
+          .update(JSON.stringify({ format: settings.format, csv: settings.csv, columns: settings.columns }))
+          .digest("hex")
+          .slice(0, 12);
+        await writeFile(statePath, JSON.stringify(state));
+        const firstInactiveChange = {
+          ...settings,
+          csv: { ...settings.csv, fieldSeparator: "|" }
+        };
+        await settingsStore.save(firstInactiveChange);
+        await settingsStore.save({
+          ...firstInactiveChange,
+          csv: { ...firstInactiveChange.csv, dateFormat: "dd/mm/yyyy" }
+        });
+      }
+
+      const recoveryStatePath = `${config.exportSettingsPath}.state.json`;
+      const priorState = await readFile(recoveryStatePath);
+      addMovement("two", "Tea");
+      const second = await exporter.export();
+      const installedOutput = await readFile(second.path);
+      const installedState = JSON.parse(await readFile(recoveryStatePath, "utf8")) as Record<string, unknown>;
+      const recoveryTemporaryName = ".kakebo_movements.999.111.tmp";
+      const pendingState = {
+        state: installedState,
+        settings,
+        outputHash: createHash("sha256").update(installedOutput).digest("hex"),
+        temporaryOutput: recoveryTemporaryName,
+        rollbackOutput: `kakebo_movements.${format}.999.111.rollback`
+      };
+      await writeFile(`${recoveryStatePath}.pending`, JSON.stringify(pendingState));
+      await writeFile(recoveryStatePath, priorState);
+      const recovered = await exporter.export().then(() => true, () => false);
+      if (!recovered) database.close();
+      expect(recovered).toBe(true);
+      await expect(access(`${recoveryStatePath}.pending`)).rejects.toMatchObject({ code: "ENOENT" });
+
+      const temporaryRecoveryOutput = await readFile(second.path);
+      await writeFile(join(config.exportDirectory, pendingState.rollbackOutput), installedOutput);
+      await rename(second.path, join(config.exportDirectory, recoveryTemporaryName));
+      await writeFile(`${recoveryStatePath}.pending`, JSON.stringify({
+        ...pendingState,
+        outputHash: createHash("sha256").update(temporaryRecoveryOutput).digest("hex")
+      }));
+      await writeFile(recoveryStatePath, priorState);
+      await exporter.export();
+      await expect(access(join(config.exportDirectory, recoveryTemporaryName))).rejects.toMatchObject({ code: "ENOENT" });
+      const clearedRollback = await access(join(config.exportDirectory, pendingState.rollbackOutput)).then(() => false, () => true);
+      if (!clearedRollback) database.close();
+      expect(clearedRollback).toBe(true);
+
+      const recoveredOutput = await readFile(second.path);
+      const recoveredState = await readFile(recoveryStatePath);
+      let editedOutput: Uint8Array;
+      if (format === "csv") {
+        editedOutput = Buffer.from(recoveredOutput.toString("utf8").replace("Edited manual", "Recovered edit"));
+      } else {
+        const workbook = unzipSync(recoveredOutput);
+        workbook["xl/sharedStrings.xml"] = Buffer.from(
+          Buffer.from(workbook["xl/sharedStrings.xml"] ?? []).toString("utf8").replace("  Edited manual  ", "Recovered edit")
+        );
+        editedOutput = zipSync(workbook);
+      }
+      await writeFile(second.path, editedOutput);
+      await writeFile(`${recoveryStatePath}.pending`, JSON.stringify({
+        ...pendingState,
+        outputHash: createHash("sha256").update(recoveredOutput).digest("hex")
+      }));
+      await writeFile(recoveryStatePath, priorState);
+      const recoversEditedOutput = await exporter.export().then(() => true, () => false);
+      if (!recoversEditedOutput) database.close();
+      expect(recoversEditedOutput).toBe(true);
+      if (format === "csv") expect(await readFile(second.path, "utf8")).toContain("Recovered edit");
+      else expect((await readSheet(second.path)).flat()).toContain("Recovered edit");
+      await writeFile(second.path, recoveredOutput);
+      await writeFile(recoveryStatePath, recoveredState);
+
+      await writeFile(`${recoveryStatePath}.pending`, JSON.stringify({
+        ...pendingState,
+        state: { ...installedState, movementKeys: ["movement-one"] },
+        outputHash: "0".repeat(64)
+      }));
+      await writeFile(recoveryStatePath, priorState);
+      const rejectsUnverifiedRecovery = await exporter.export().then(() => false, () => true);
+      expect(rejectsUnverifiedRecovery).toBe(true);
+      expect(await readFile(second.path)).toEqual(recoveredOutput);
+      expect(await readFile(recoveryStatePath)).toEqual(priorState);
+      await expect(access(`${recoveryStatePath}.pending`)).resolves.toBeUndefined();
+      await rm(`${recoveryStatePath}.pending`);
+      await writeFile(recoveryStatePath, recoveredState);
+      const baselineSettings = await settingsStore.load();
+      for (const changedHeader of [false, true]) {
+        const changedSettings = {
+          ...baselineSettings,
+          columns: baselineSettings.columns.map((column) =>
+            !("field" in column) && column.kind === "formula" && column.header === "Formula label"
+              ? { ...column, formula: '"Updated formula"', header: changedHeader ? "Changed formula header" : column.header }
+              : column
+          )
+        };
+        await settingsStore.save(changedSettings);
+        await exporter.export();
+        const changedOutput = await readFile(second.path);
+        const changedState = JSON.parse(await readFile(recoveryStatePath, "utf8")) as Record<string, unknown>;
+        await writeFile(second.path, recoveredOutput);
+        await writeFile(recoveryStatePath, recoveredState);
+        await writeFile(join(config.exportDirectory, recoveryTemporaryName), changedOutput);
+        await writeFile(`${recoveryStatePath}.pending`, JSON.stringify({
+          ...pendingState,
+          settings: changedSettings,
+          state: changedState,
+          outputHash: createHash("sha256").update(changedOutput).digest("hex")
+        }));
+        await exporter.export();
+        if (format === "csv") expect(await readFile(second.path, "utf8")).toContain("Updated formula");
+        else expect((await readSheet(second.path)).flat()).toContain("Updated formula");
+        await expect(access(join(config.exportDirectory, recoveryTemporaryName))).rejects.toMatchObject({ code: "ENOENT" });
+        await settingsStore.save(baselineSettings);
+        await writeFile(second.path, recoveredOutput);
+        await writeFile(recoveryStatePath, recoveredState);
+      }
+      const rejectedCustomEdits: boolean[] = [];
+      if (format === "csv") {
+        const rows = (await readFile(second.path, "utf8"))
+          .replace(/^\uFEFF/u, "")
+          .trim()
+          .split(/\r?\n/u)
+          .map((line) => line.split(";"));
+        const header = rows[0] ?? [];
+        const formulaIndex = header.indexOf("Formula label");
+        const manualIndex = header.indexOf("Manual note");
+        const movementIndex = header.indexOf("MovementKey");
+        const tinyNumberIndex = header.indexOf("Tiny number");
+        const values = new Map(rows.slice(1).map((row) => [row[movementIndex], row]));
+        expect(values.get("movement-one")?.[formulaIndex]).toBe("Edited formula");
+        expect(values.get("movement-one")?.[manualIndex]).toBe("Edited manual");
+        expect(values.get("movement-two")?.[formulaIndex]).toBe("'=TEA");
+        expect(values.get("movement-two")?.[manualIndex]).toBe("");
+        expect(values.get("movement-two")?.[tinyNumberIndex]).toMatch(/^-\d+(?:,\d+)?e-\d+$/u);
+        const validCsv = await readFile(second.path, "utf8");
+        const withBlankRows = validCsv.replace(/\r\n/u, "\r\n\r\n") + "\r\n";
+        await writeFile(second.path, withBlankRows);
+        const acceptsBlankRows = await exporter.export().then(() => true, () => false);
+        if (!acceptsBlankRows) database.close();
+        expect(acceptsBlankRows).toBe(true);
+        expect(await readFile(second.path, "utf8")).toContain("Edited manual");
+        const statePath = `${config.exportSettingsPath}.state.json`;
+        const validState = await readFile(statePath);
+        const invalidCsvFiles = [
+          validCsv.replace("Edited manual", '5" screen"'),
+          (() => {
+            const lines = validCsv.trimEnd().split(/\r?\n/u);
+            lines.splice(2, 0, lines[1] ?? "");
+            return `${lines.join("\r\n")}\r\n`;
+          })(),
+          (() => {
+            const lines = validCsv.trimEnd().split(/\r?\n/u);
+            lines[1] = (lines[1] ?? "").split(";").slice(0, -1).join(";");
+            return `${lines.join("\r\n")}\r\n`;
+          })(),
+          (() => {
+            const lines = validCsv.trimEnd().split(/\r?\n/u);
+            lines[0] = (lines[0] ?? "").replace("MovementKey", "Edited movement key");
+            return `${lines.join("\r\n")}\r\n`;
+          })(),
+          (() => {
+            const lines = validCsv.trimEnd().split(/\r?\n/u);
+            const row = (lines[1] ?? "").split(";");
+            row[movementIndex] = "unknown-movement-key";
+            row[manualIndex] = "Latest manual edit";
+            lines[1] = row.join(";");
+            return `${lines.join("\r\n")}\r\n`;
+          })(),
+          '"unterminated'
+        ];
+        for (const invalidCsv of invalidCsvFiles) {
+          await writeFile(second.path, invalidCsv);
+          const rejected = await exporter.export().then(() => false, () => true);
+          const unchanged = await readFile(second.path, "utf8").then((content) => content === invalidCsv);
+          rejectedCustomEdits.push(rejected && unchanged);
+          await writeFile(second.path, validCsv);
+          await writeFile(statePath, validState);
+        }
+        const latestCsv = Buffer.from(validCsv.replace("Edited manual", "Latest manual edit"), "utf8");
+        const latestManualIndex = latestCsv.indexOf(Buffer.from("Latest manual edit", "utf8"));
+        expect(latestManualIndex).toBeGreaterThanOrEqual(0);
+        const invalidUtf8Csv = Buffer.concat([
+          latestCsv.subarray(0, latestManualIndex),
+          Buffer.from([0xff]),
+          latestCsv.subarray(latestManualIndex + 1)
+        ]);
+        await writeFile(second.path, invalidUtf8Csv);
+        const rejectedInvalidUtf8 = await exporter.export().then(() => false, () => true);
+        const unchangedInvalidUtf8 = Buffer.compare(await readFile(second.path), invalidUtf8Csv) === 0;
+        rejectedCustomEdits.push(rejectedInvalidUtf8 && unchangedInvalidUtf8);
+        await writeFile(second.path, validCsv);
+        await writeFile(statePath, validState);
+      } else {
+        const rows = await readSheet(second.path, { trim: false });
+        const header = rows[0]?.map(String) ?? [];
+        const formulaIndex = header.indexOf("Formula label");
+        const manualIndex = header.indexOf("Manual note");
+        const movementIndex = header.indexOf("MovementKey");
+        const values = new Map(rows.slice(1).map((row) => [String(row[movementIndex]), row]));
+        expect(values.get("movement-one")?.[formulaIndex]).toBe("Edited formula");
+        expect(values.get("movement-one")?.[manualIndex]).toBe("  Edited manual  ");
+        expect(values.get("movement-two")?.[formulaIndex]).toBe("=TEA");
+        expect(values.get("movement-two")?.[manualIndex]).toBeNull();
+        const statePath = `${config.exportSettingsPath}.state.json`;
+        const validOutput = await readFile(second.path);
+        const validState = await readFile(statePath);
+        const verifyRejectedXlsxFile = async (): Promise<void> => {
+          const malformedOutput = await readFile(second.path);
+          const rejected = await exporter.export().then(() => false, () => true);
+          const unchanged = Buffer.compare(await readFile(second.path), malformedOutput) === 0;
+          rejectedCustomEdits.push(rejected && unchanged);
+          await writeFile(second.path, validOutput);
+          await writeFile(statePath, validState);
+        };
+        const verifyRejectedXlsx = async (
+          data: SheetData,
+          sheet = "Movements"
+        ): Promise<void> => {
+          await writeXlsxFile(data, { sheet }).toFile(second.path);
+          await verifyRejectedXlsxFile();
+        };
+        const rowsForEditing = await readSheet(second.path, "Movements", { trim: false });
+        const toSheetData = (): SheetData => rowsForEditing.map((row) => row.map((value) => ({
+          value: String(value ?? ""),
+          type: String
+        })));
+        const changedHeader = toSheetData();
+        const headerRow = changedHeader[0];
+        if (headerRow) headerRow[0] = { value: "Modified movement key", type: String };
+        await verifyRejectedXlsx(changedHeader);
+        await verifyRejectedXlsx(toSheetData(), "Renamed movements");
+        const duplicateKey = toSheetData();
+        duplicateKey.splice(2, 0, duplicateKey[1] ?? []);
+        await verifyRejectedXlsx(duplicateKey);
+        const blankMovementKey = toSheetData();
+        const blankMovementRow = blankMovementKey[1];
+        if (blankMovementRow) blankMovementRow[movementIndex] = { value: "", type: String };
+        await verifyRejectedXlsx(blankMovementKey);
+        const nonStringMovementKey = toSheetData();
+        const nonStringMovementRow = nonStringMovementKey[1];
+        if (nonStringMovementRow) nonStringMovementRow[movementIndex] = { value: 42, type: Number };
+        await verifyRejectedXlsx(nonStringMovementKey);
+        const unknownMovementKey = toSheetData();
+        const unknownMovementRow = unknownMovementKey[1];
+        if (unknownMovementRow) {
+          unknownMovementRow[movementIndex] = { value: "unknown-movement-key", type: String };
+          unknownMovementRow[manualIndex] = { value: "Latest manual edit", type: String };
+        }
+        await verifyRejectedXlsx(unknownMovementKey);
+
+        const columnLetters = (index: number): string => {
+          let value = index + 1;
+          let letters = "";
+          while (value > 0) {
+            value -= 1;
+            letters = String.fromCharCode(65 + (value % 26)) + letters;
+            value = Math.floor(value / 26);
+          }
+          return letters;
+        };
+        const manualCell = `${columnLetters(manualIndex)}2`;
+        const impreciseWorkbook = unzipSync(validOutput);
+        const worksheet = Buffer.from(impreciseWorkbook["xl/worksheets/sheet1.xml"] ?? []).toString("utf8");
+        const cellPattern = new RegExp(`<c\\b[^>]*\\br="${manualCell}"[^>]*>[\\s\\S]*?<\\/c>`, "u");
+        const stringCell = worksheet.match(cellPattern)?.[0];
+        expect(stringCell).toBeDefined();
+        const numericCell = stringCell
+          ?.replace(/\s+t="s"/u, "")
+          .replace(/<v>[^<]*<\/v>/u, "<v>72561318574551.59</v>");
+        expect(numericCell).not.toBe(stringCell);
+        const impreciseWorksheet = worksheet.replace(cellPattern, numericCell ?? "");
+        expect(impreciseWorksheet).not.toBe(worksheet);
+        impreciseWorkbook["xl/worksheets/sheet1.xml"] = Buffer.from(impreciseWorksheet);
+        await writeFile(second.path, zipSync(impreciseWorkbook));
+        const lossyNumericRows = await readSheet(second.path, "Movements", { trim: false });
+        expect(lossyNumericRows[1]?.[manualIndex]).toBe(72561318574551.6);
+        await verifyRejectedXlsxFile();
+
+        const workbook = unzipSync(await readFile(second.path));
+        const styles = Buffer.from(workbook["xl/styles.xml"] ?? []).toString("utf8");
+        expect(styles).not.toContain("#,##0.###############");
+      }
+      database.close();
+      if (format === "csv") expect(rejectedCustomEdits).toEqual([true, true, true, true, true, true, true]);
+      else expect(rejectedCustomEdits).toEqual([true, true, true, true, true, true, true]);
+    }
+  );
+
+  it.each(["csv", "xlsx"] as const)("recovers resaved noncustom %s exports without movement keys", async (format) => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-keyless-recovery-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = format;
+    settings.columns = settings.columns.map((column) =>
+      "field" in column && column.field === "movementKey" ? { ...column, enabled: false } : column
+    );
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+    const exporter = new CsvExporter(config, database);
+    const output = await exporter.export();
+    const statePath = `${config.exportSettingsPath}.state.json`;
+    const original = await readFile(output.path);
+    const state = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    await writeFile(`${statePath}.pending`, JSON.stringify({
+      state, settings,
+      outputHash: createHash("sha256").update(original).digest("hex"),
+      temporaryOutput: ".kakebo_movements.999.111.tmp"
+    }));
+    if (format === "csv") await writeFile(output.path, Buffer.concat([original, Buffer.from("\r\n")]));
+    else await writeXlsxFile([
+      settings.columns.filter((column) => column.enabled).map((column) => ({ value: column.header, type: String }))
+    ], { sheet: "Movements" }).toFile(output.path);
+    const recovered = await exporter.export().then(() => true, () => false);
+    database.close();
+    expect(recovered).toBe(true);
+    await expect(access(`${statePath}.pending`)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("allows an unsafe amount when a formula only mentions it in a string literal", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-formula-literal-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const now = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO bank_connections (
+           id, provider, environment, bank_name, bank_country, psu_type,
+           alias, status, created_at
+         ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES',
+                   'personal', 'Demo', 'AUTHORIZED', ?)`
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO accounts (
+           id, bank_connection_id, provider_account_id, name, active,
+           first_seen_at, last_seen_at
+         ) VALUES ('account', 'connection', 'provider', 'Account', 1, ?, ?)`
+      )
+      .run(now, now);
+    database
+      .prepare(
+        `INSERT INTO transactions (
+           id, movement_key, reconciliation_key, provider, environment,
+           bank_connection_id, account_id, status, booking_date, amount, currency,
+           direction, description_raw, description_normalized, reviewed,
+           first_seen_at, last_seen_at, imported_at, raw_fingerprint
+         ) VALUES (
+           'transaction', 'movement', 'reconcile', 'enable-banking', 'sandbox',
+           'connection', 'account', 'booked', '2026-09-01', '72561318574551.59',
+           'EUR', 'income', 'Coffee', 'COFFEE', 0, ?, ?, ?, 'raw'
+         )`
+      )
+      .run(now, now, now);
+    const settings = createDefaultExportSettings(",", ";");
+    settings.format = "csv";
+    settings.columns.push({
+      id: "11111111-1111-4111-8111-111111111111",
+      kind: "formula",
+      header: "Literal",
+      enabled: true,
+      formula: 'concat("amount: ", description)'
+    }, {
+      id: "22222222-2222-4222-8222-222222222222",
+      kind: "formula",
+      header: "Coalesced",
+      enabled: true,
+      formula: "coalesce(description, amount)"
+    });
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+
+    const result = await new CsvExporter(config, database).export();
+
+    await expect(readFile(result.path, "utf8")).resolves.toContain("amount: Coffee");
+    await expect(readFile(result.path, "utf8")).resolves.toContain("Coffee");
+    settings.columns.push({
+      id: "33333333-3333-4333-8333-333333333333",
+      kind: "formula",
+      header: "Amount copy",
+      enabled: true,
+      formula: "amount * 1"
+    });
+    await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+    await expect(new CsvExporter(config, database).export()).rejects.toThrow(
+      "Kakebo Harvester could not generate the export file."
+    );
+    database.close();
+  });
+
   it.runIf(platform() !== "win32")(
     "creates XLSX exports with owner-only permissions on POSIX",
     async () => {
@@ -66,6 +693,8 @@ describe("CSV export", () => {
 
   it("does not coerce unsafe decimal amounts into spreadsheet numbers", () => {
     expect(exactSpreadsheetNumber("1234.56")).toBe(1234.56);
+    expect(exactSpreadsheetNumber("72561318574551.59")).toBeNull();
+    expect(exactSpreadsheetNumber("72561318574551.60")).toBeNull();
     expect(exactSpreadsheetNumber("9007199254740993.00")).toBeNull();
   });
 
@@ -97,7 +726,8 @@ describe("CSV export", () => {
         ),
         "rollback"
       ),
-      writeFile(`${config.exportSettingsPath}.state.json`, "{}")
+      writeFile(`${config.exportSettingsPath}.state.json`, "{}"),
+      writeFile(`${config.exportSettingsPath}.state.json.pending`, "{}")
     ]);
 
     await expect(countGeneratedExportFiles(config)).resolves.toBe(1);
@@ -106,6 +736,7 @@ describe("CSV export", () => {
     await expect(readFile(`${config.exportSettingsPath}.state.json`)).rejects.toMatchObject({
       code: "ENOENT"
     });
+    await expect(access(`${config.exportSettingsPath}.state.json.pending`)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("refuses to delete generated files through a directory link", async () => {
@@ -397,6 +1028,7 @@ describe("CSV export", () => {
       "Kakebo Harvester could not generate the export file."
     );
     expect(await readFile(first.path, "utf8")).toBe(original);
+    await expect(access(`${config.exportSettingsPath}.state.json.pending`)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(join(config.exportDirectory, "archive"), "utf8")).toBe(
       "blocked"
     );

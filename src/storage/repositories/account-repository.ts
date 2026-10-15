@@ -259,6 +259,27 @@ export class AccountRepository {
       const transactionsRaw = this.database
         .prepare("DELETE FROM transactions_raw WHERE account_id = ?")
         .run(account.id).changes;
+      this.database
+        .prepare(
+          `DELETE FROM transaction_reconciliation_events
+           WHERE reference IN (
+             SELECT r.reference FROM transaction_reconciliations r
+             JOIN transactions t ON t.movement_key = r.movement_key
+             WHERE t.account_id = ?
+           )
+              OR first_movement_key IN (SELECT movement_key FROM transactions WHERE account_id = ?)
+              OR second_movement_key IN (SELECT movement_key FROM transactions WHERE account_id = ?)`
+        )
+        .run(account.id, account.id, account.id);
+      this.database
+        .prepare(
+          `DELETE FROM transaction_reconciliations WHERE reference IN (
+             SELECT r.reference FROM transaction_reconciliations r
+             JOIN transactions t ON t.movement_key = r.movement_key
+             WHERE t.account_id = ?
+           )`
+        )
+        .run(account.id);
       const transactions = this.database
         .prepare("DELETE FROM transactions WHERE account_id = ?")
         .run(account.id).changes;
@@ -598,6 +619,7 @@ export class AccountRepository {
          FROM accounts a
          JOIN bank_connections c ON c.id = a.bank_connection_id
          WHERE a.hidden = 0
+           AND c.provider IN ('enable-banking', 'manual-card')
          ORDER BY c.bank_name, account_name`
       )
       .all() as Array<{
@@ -628,7 +650,9 @@ export class AccountRepository {
       currency: row.currency,
       productType: row.product_type,
       alias: row.account_alias ?? "",
-      providerActive: row.active === 1 && row.provider === "enable-banking",
+      providerActive:
+        row.active === 1 &&
+        (row.provider === "enable-banking" || row.provider === "kutxabank-browser"),
       syncEnabled: row.sync_enabled === 1,
       exportEnabled: row.export_enabled === 1,
       lastError:
