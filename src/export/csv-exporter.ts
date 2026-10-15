@@ -3,6 +3,7 @@ import {
   chmod,
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   rename,
@@ -11,18 +12,27 @@ import {
   writeFile
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { basename, dirname, extname, join } from "node:path";
 import writeXlsxFile, {
   type Cell,
   type SheetData
 } from "write-excel-file/node";
+import { readSheet } from "read-excel-file/node";
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
 import { ExportError } from "../errors.js";
 import {
+  evaluateCustomFormula,
+  type CustomFormulaValue
+} from "./custom-formula.js";
+import {
   ExportSettingsStore,
   createDefaultExportSettings,
   exportSettingsFingerprint,
+  exportSettingsFingerprintCandidates,
+  exportSettingsSchema,
+  type CustomExportColumn,
   type ExportField,
   type ExportSettings
 } from "../settings/export-settings-store.js";
@@ -61,6 +71,7 @@ interface ExportState {
   movementKeys?: string[] | undefined;
   sourceMovementKeys?: Record<HighlightSource, string[]> | undefined;
   highlightedMovementKeys?: Record<HighlightSource, string[]> | undefined;
+  customValues?: Record<string, Record<string, ExportValue | { date: string }>> | undefined;
 }
 
 export type HighlightSource = "banking" | "cards";
@@ -70,6 +81,7 @@ export interface ExportOptions {
 }
 
 type ExportValue = string | number | boolean | null;
+type CustomExportValue = ExportValue | Date;
 
 const exportStateSchema = z.object({
   fingerprint: z.string().regex(/^[a-f0-9]{12}$/u),
@@ -80,8 +92,21 @@ const exportStateSchema = z.object({
     .optional(),
   highlightedMovementKeys: z
     .object({ banking: z.array(z.string()), cards: z.array(z.string()) })
-    .optional()
+    .optional(),
+  customValues: z.record(z.string(), z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null(), z.object({ date: z.iso.datetime() })]))).optional()
 });
+
+const pendingExportStateSchema = z.object({
+  retryBeforeInstall: z.literal(true).optional(),
+  state: exportStateSchema,
+  settings: exportSettingsSchema,
+  outputHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  rollbackOutput: z.string().regex(/^kakebo_movements\.(?:csv|xlsx)\.\d+\.\d+\.rollback$/u).optional(),
+  temporaryOutput: z.string().regex(/^\.kakebo_movements\.\d+\.\d+\.tmp$/u)
+}).refine((pending) => pending.state.format === pending.settings.format &&
+  pending.state.fingerprint === exportSettingsFingerprint(pending.settings) &&
+  (pending.rollbackOutput === undefined || pending.rollbackOutput.startsWith(`kakebo_movements.${pending.state.format}.`)));
+type PendingExportState = z.infer<typeof pendingExportStateSchema>;
 
 const HIGHLIGHT_COLORS: Record<HighlightSource, string> = {
   banking: "#e6efe9",
@@ -137,7 +162,7 @@ function safeSpreadsheetText(value: string): string {
   const formulaLike =
     /^[=+@]/u.test(trimmedStart) ||
     (/^-/u.test(trimmedStart) &&
-      !/^-\d+(?:[.,]\d+)?$/u.test(trimmedStart));
+      !/^-\d+(?:[.,]\d+)?(?:e[+-]?\d+)?$/iu.test(trimmedStart));
   return formulaLike ? `'${value}` : value;
 }
 
@@ -201,9 +226,42 @@ export function exactSpreadsheetNumber(value: string): number | null {
   }
   const number = Number(scaled) / 10 ** fraction.length;
   const roundTrip = Math.round(number * 10 ** fraction.length);
-  return Number.isSafeInteger(roundTrip) && BigInt(roundTrip) === scaled
-    ? number
-    : null;
+  if (!Number.isSafeInteger(roundTrip) || BigInt(roundTrip) !== scaled) return null;
+  const source = normalizedDecimal(value.trim());
+  const converted = normalizedDecimal(number.toString());
+  return source && converted && source.coefficient === converted.coefficient &&
+    source.scale === converted.scale ? number : null;
+}
+
+function normalizedDecimal(value: string): { coefficient: bigint; scale: number } | null {
+  const match = /^([+-]?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/iu.exec(value);
+  if (!match) return null;
+  const sign = match[1] === "-" ? -1n : 1n;
+  const fraction = match[3] ?? "";
+  const exponent = Number(match[4] ?? "0");
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1000) return null;
+  let coefficient = sign * BigInt(`${match[2]}${fraction}`);
+  let scale = fraction.length - exponent;
+  if (scale < 0) {
+    coefficient *= 10n ** BigInt(-scale);
+    scale = 0;
+  }
+  while (scale > 0 && coefficient % 10n === 0n) {
+    coefficient /= 10n;
+    scale -= 1;
+  }
+  return { coefficient, scale };
+}
+
+function parseExactSpreadsheetNumber(value: string): number {
+  const number = Number(value);
+  const source = normalizedDecimal(value);
+  const converted = normalizedDecimal(number.toString());
+  if (!Number.isFinite(number) || !source || !converted ||
+      source.coefficient !== converted.coefficient || source.scale !== converted.scale) {
+    throw new Error("The existing XLSX export contains a number that cannot be represented without losing precision.");
+  }
+  return number;
 }
 
 function formatMoney(
@@ -277,6 +335,224 @@ function rowValue(
     : value;
 }
 
+function formulaValues(row: ExportRow): Record<ExportField, CustomFormulaValue> {
+  return {
+    movementKey: row.movement_key,
+    date: row.movement_date,
+    valueDate: row.value_date,
+    bank: row.bank_name,
+    account: row.account_name,
+    accountAlias: row.account_alias,
+    productType: row.product_type,
+    description: row.description_raw,
+    merchant: row.merchant_name,
+    counterparty: row.counterparty_name,
+    amount: exactSpreadsheetNumber(row.amount),
+    expenseAmount: exactSpreadsheetNumber(expenseContribution({
+      amount: row.amount,
+      treatment: row.economic_treatment,
+      representative: row.representative === 1
+    })),
+    economicTreatment: row.economic_treatment,
+    reconciliationReference: row.reconciliation_reference,
+    direction: row.direction,
+    status: row.status,
+    categoryAuto: row.category_auto,
+    subcategoryAuto: row.subcategory_auto,
+    reviewed: row.reviewed === 1,
+    source: row.provider,
+    importedAt: row.imported_at
+  };
+}
+
+function customValue(
+  row: ExportRow,
+  column: CustomExportColumn,
+  previous: ReadonlyMap<string, ReadonlyMap<string, CustomExportValue>>
+): CustomExportValue {
+  const persisted = previous.get(row.movement_key)?.get(column.id);
+  if (persisted !== undefined) return persisted;
+  if (column.kind === "manual") return "";
+  if (!column.formula) throw new Error("Formula export columns require a formula.");
+  return evaluateCustomFormula(column.formula, formulaValues(row), (identifier) => {
+    if (identifier === "amount" && exactSpreadsheetNumber(row.amount) === null) {
+      throw new Error("Custom formulas cannot use an amount that is not exactly representable.");
+    }
+    if (identifier === "expenseAmount" && exactSpreadsheetNumber(expenseContribution({
+      amount: row.amount,
+      treatment: row.economic_treatment,
+      representative: row.representative === 1
+    })) === null) {
+      throw new Error("Custom formulas cannot use an amount that is not exactly representable.");
+    }
+  });
+}
+
+function safeCustomValue(value: CustomExportValue): CustomExportValue {
+  return value;
+}
+
+function csvCustomValue(value: CustomExportValue, decimalSeparator: "." | ","): ExportValue {
+  const normalized = value instanceof Date ? value.toISOString() : value;
+  if (typeof normalized === "number" && decimalSeparator === ",") return String(normalized).replace(".", ",");
+  return typeof normalized === "string" ? safeSpreadsheetText(normalized) : normalized;
+}
+
+function readCustomValue(value: unknown): CustomExportValue {
+  if (value === null || value instanceof Date) return value;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  return "";
+}
+
+function parseCsv(content: string, separator: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let value = "";
+  let quoted = false;
+  let afterQuote = false;
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index] ?? "";
+    if (quoted) {
+      if (character === '"' && content[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else if (character === '"') {
+        quoted = false;
+        afterQuote = true;
+      } else {
+        value += character;
+      }
+      continue;
+    }
+    if (afterQuote) {
+      if (character === separator) {
+        row.push(value);
+        value = "";
+        afterQuote = false;
+      } else if (character === "\n" || character === "\r") {
+        if (character === "\r" && content[index + 1] === "\n") index += 1;
+        row.push(value);
+        rows.push(row);
+        row = [];
+        value = "";
+        afterQuote = false;
+      } else {
+        throw new Error("The CSV export contains invalid characters after a quoted field.");
+      }
+      continue;
+    }
+    if (character === '"') {
+      if (value.length > 0) {
+        throw new Error("The CSV export contains a quote inside an unquoted field.");
+      }
+      quoted = true;
+    } else if (character === separator) {
+      row.push(value);
+      value = "";
+    } else if (character === "\n" || character === "\r") {
+      if (character === "\r" && content[index + 1] === "\n") index += 1;
+      row.push(value);
+      rows.push(row);
+      row = [];
+      value = "";
+    } else {
+      value += character;
+    }
+  }
+  if (quoted) throw new Error("The CSV export contains an unterminated quoted field.");
+  if (value.length > 0 || row.length > 0 || afterQuote) {
+    row.push(value);
+    rows.push(row);
+  }
+  return rows;
+}
+
+async function previousCustomValues(
+  path: string,
+  settings: ExportSettings,
+  allowedMovementKeys: ReadonlySet<string>,
+  validateRows = false
+): Promise<Map<string, Map<string, CustomExportValue>>> {
+  const columns = settings.columns.filter((column) => column.enabled);
+  const movementKeyIndex = columns.findIndex(
+    (column) => "field" in column && column.field === "movementKey"
+  );
+  const customColumns = columns
+    .map((column, index) => ({ column, index }))
+    .filter(
+      (entry): entry is { column: CustomExportColumn; index: number } =>
+        !("field" in entry.column)
+    );
+  if (movementKeyIndex < 0 && (!validateRows || customColumns.length > 0)) {
+    if (validateRows) throw new Error("The interrupted export cannot be verified without movement keys.");
+    return new Map();
+  }
+  if (customColumns.length === 0 && !validateRows) return new Map();
+
+  let rows: readonly (readonly unknown[])[];
+  if (settings.format === "csv") {
+    const csvContent = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(path));
+    rows = parseCsv(csvContent.replace(/^\uFEFF/u, ""), settings.csv.fieldSeparator);
+  } else {
+    rows = await readSheet(path, "Movements", {
+      trim: false,
+      parseNumber: parseExactSpreadsheetNumber
+    });
+  }
+  const expectedHeaders = columns.map((column) =>
+    settings.format === "csv" ? safeSpreadsheetText(column.header) : column.header
+  );
+  const header = rows[0] ?? [];
+  if (header.length !== expectedHeaders.length ||
+      header.some((value, index) => value !== expectedHeaders[index])) {
+    throw new Error("The existing export header does not match the configured columns.");
+  }
+  const values = new Map<string, Map<string, CustomExportValue>>();
+  for (const row of rows.slice(1)) {
+    if (row.every((value) => value === null || value === undefined || value === "")) continue;
+    if (row.length !== expectedHeaders.length) {
+      throw new Error("The existing export contains a row with an invalid number of fields.");
+    }
+    if (movementKeyIndex < 0) continue;
+    const movementKey = row[movementKeyIndex];
+    if (typeof movementKey !== "string" || movementKey.trim().length === 0) {
+      const hasOtherData = row.some((value, index) =>
+        index !== movementKeyIndex && value !== null && value !== undefined && value !== ""
+      );
+      if (hasOtherData) {
+        throw new Error("The existing export contains a populated row without a valid movement key.");
+      }
+      continue;
+    }
+    if (!allowedMovementKeys.has(movementKey)) {
+      throw new Error("The existing export contains an unknown movement key.");
+    }
+    if (values.has(movementKey)) {
+      throw new Error("The existing export contains a duplicate movement key.");
+    }
+    values.set(
+      movementKey,
+      new Map(
+        customColumns.map(({ column, index }) => [column.id, readCustomValue(row[index] ?? "")])
+      )
+    );
+  }
+  return values;
+}
+
+function stateCustomValues(values: ReadonlyMap<string, ReadonlyMap<string, CustomExportValue>>): Record<string, Record<string, ExportValue | { date: string }>> {
+  return Object.fromEntries([...values].map(([movementKey, columns]) => [
+    movementKey,
+    Object.fromEntries([...columns].map(([id, value]) => [id, value instanceof Date ? { date: value.toISOString() } : value]))
+  ]));
+}
+
+function customValuesFromState(state: ExportState | undefined): Map<string, Map<string, CustomExportValue>> {
+  return new Map(Object.entries(state?.customValues ?? {}).map(([key, values]) => [key, new Map(Object.entries(values).map(([id, value]) => [id, typeof value === "object" && value !== null ? new Date(value.date) : value]))]));
+}
+
 function escapeCsv(value: ExportValue, separator: string): string {
   const text = value === null ? "" : String(value);
   if (text.includes(separator) || /["\r\n]/u.test(text)) {
@@ -302,18 +578,78 @@ async function readExportState(path: string): Promise<ExportState | undefined> {
   }
 }
 
-async function writeExportState(path: string, state: ExportState): Promise<void> {
+async function writeExportState(path: string, state: ExportState | PendingExportState): Promise<void> {
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   await mkdir(dirname(path), { recursive: true });
   try {
     await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, {
       encoding: "utf8",
-      mode: 0o600
+      mode: 0o600,
+      flush: true
     });
     await rename(temporary, path);
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);
   }
+}
+
+async function outputHash(path: string): Promise<string> {
+  return createHash("sha256").update(await readFile(path)).digest("hex");
+}
+
+async function recoverPendingExportState(config: AppConfig, statePath: string): Promise<void> {
+  const pendingPath = `${statePath}.pending`;
+  let pending: PendingExportState;
+  try {
+    pending = pendingExportStateSchema.parse(JSON.parse(await readFile(pendingPath, "utf8")) as unknown);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  const destination = join(config.exportDirectory, `kakebo_movements.${pending.state.format}`);
+  const temporary = join(config.exportDirectory, pending.temporaryOutput);
+  if (pending.retryBeforeInstall) {
+    await rm(temporary, { force: true });
+    await rm(pendingPath);
+    return;
+  }
+  if (await pathExists(temporary)) {
+    if (await outputHash(temporary) !== pending.outputHash) {
+      throw new Error("The interrupted export temporary file does not match its pending state.");
+    }
+    if (await pathExists(destination) || await pathExists(join(
+      config.exportDirectory, `kakebo_movements.${pending.state.format === "csv" ? "xlsx" : "csv"}`
+    ))) {
+      // Installation has not happened: retry the regular profile/archive pipeline.
+      // Persist this phase so a crash after deleting the temporary cannot commit its uninstalled state.
+      await writeExportState(pendingPath, { ...pending, retryBeforeInstall: true });
+      await rm(temporary);
+      await rm(pendingPath);
+      return;
+    }
+    await rename(temporary, destination);
+  } else if (await pathExists(destination)) {
+    if (await outputHash(destination) !== pending.outputHash) {
+      const editedValues = await previousCustomValues(
+        destination, pending.settings, new Set(pending.state.movementKeys ?? []), true
+      );
+      pending.state.customValues = {
+        ...pending.state.customValues,
+        ...stateCustomValues(editedValues)
+      };
+    }
+  } else {
+    if (pending.rollbackOutput && await pathExists(join(config.exportDirectory, pending.rollbackOutput))) {
+      // The failed transaction removed its generated file but could not restore the prior output.
+      await rename(join(config.exportDirectory, pending.rollbackOutput), destination);
+      await rm(pendingPath);
+      return;
+    }
+    throw new Error("The interrupted export cannot be recovered from its generated file.");
+  }
+  await writeExportState(statePath, pending.state);
+  if (pending.rollbackOutput) await rm(join(config.exportDirectory, pending.rollbackOutput), { force: true });
+  await rm(pendingPath);
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -487,7 +823,8 @@ export class CsvExporter {
   private async writeCsv(
     temporary: string,
     rows: ExportRow[],
-    settings: ExportSettings
+    settings: ExportSettings,
+    previous: ReadonlyMap<string, ReadonlyMap<string, CustomExportValue>>
   ): Promise<void> {
     const columns = settings.columns.filter((column) => column.enabled);
     const separator = settings.csv.fieldSeparator;
@@ -500,7 +837,12 @@ export class CsvExporter {
       ...rows.map((row) =>
         columns
           .map((column) =>
-            escapeCsv(rowValue(row, column.field, settings, false), separator)
+            escapeCsv(
+              "field" in column
+                ? rowValue(row, column.field, settings, false)
+                : csvCustomValue(customValue(row, column, previous), settings.csv.decimalSeparator),
+              separator
+            )
           )
           .join(separator)
       )
@@ -523,7 +865,8 @@ export class CsvExporter {
     temporary: string,
     rows: ExportRow[],
     settings: ExportSettings,
-    highlightedKeys: Record<HighlightSource, ReadonlySet<string>>
+    highlightedKeys: Record<HighlightSource, ReadonlySet<string>>,
+    previous: ReadonlyMap<string, ReadonlyMap<string, CustomExportValue>>
   ): Promise<void> {
     const columns = settings.columns.filter((column) => column.enabled);
     const header: Cell[] = columns.map((column) => ({
@@ -543,7 +886,7 @@ export class CsvExporter {
           const background = isNew
             ? { backgroundColor: HIGHLIGHT_COLORS[source] }
             : {};
-          if (column.field === "amount" || column.field === "expenseAmount") {
+          if ("field" in column && (column.field === "amount" || column.field === "expenseAmount")) {
             const amount = column.field === "amount" ? row.amount : expenseContribution({
               amount: row.amount, treatment: row.economic_treatment, representative: row.representative === 1
             });
@@ -565,7 +908,7 @@ export class CsvExporter {
               ...background
             };
           }
-          if (column.field === "date" || column.field === "valueDate") {
+          if ("field" in column && (column.field === "date" || column.field === "valueDate")) {
             const rawDate = column.field === "date" ? row.movement_date : row.value_date;
             if (!rawDate) return null;
             const date = spreadsheetDate(rawDate);
@@ -578,9 +921,14 @@ export class CsvExporter {
                   ...background
                 };
           }
-          const value = rowValue(row, column.field, settings, true);
+          const value = "field" in column
+            ? rowValue(row, column.field, settings, true)
+            : safeCustomValue(customValue(row, column, previous));
+          if (value instanceof Date) {
+            return { value, type: Date, format: "yyyy-mm-dd", ...background };
+          }
           if (typeof value === "number") {
-            return { value, type: Number, format: "#,##0.00", ...background };
+            return { value, type: Number, ...background };
           }
           if (typeof value === "boolean") {
             return { value, type: Boolean, ...background };
@@ -611,6 +959,10 @@ export class CsvExporter {
     const rows = this.rows();
     const settings = await this.settingsStore.ensure();
     const fingerprint = exportSettingsFingerprint(settings);
+    const compatibleFingerprints = exportSettingsFingerprintCandidates(
+      settings,
+      await this.settingsStore.loadBackup()
+    );
     const destination = exportOutputPath(this.config, settings);
     const temporary = join(
       this.config.exportDirectory,
@@ -622,11 +974,15 @@ export class CsvExporter {
     let backupPath: string | undefined;
     let destinationStaged = false;
     let destinationInstalled = false;
+    let pendingWritten = false;
     let committed = false;
     try {
       await mkdir(this.config.exportDirectory, { recursive: true });
+      await recoverPendingExportState(this.config, statePath);
       const previous = await readExportState(statePath);
-      const compatible = previous?.fingerprint === fingerprint && previous.format === settings.format;
+      const compatible = previous !== undefined &&
+        compatibleFingerprints.includes(previous.fingerprint) &&
+        previous.format === settings.format;
       const currentKeys = sourceKeys(rows);
       const knownKeys = compatible && previous.sourceMovementKeys
         ? previous.sourceMovementKeys
@@ -647,12 +1003,52 @@ export class CsvExporter {
         const current = new Set(currentKeys[source]);
         highlighted[source] = new Set([...highlighted[source]].filter((key) => current.has(key)));
       }
+      const customValues = compatible ? customValuesFromState(previous) : new Map<string, Map<string, CustomExportValue>>();
+      if (compatible && (await pathExists(destination))) {
+        const allowedMovementKeys = new Set(previous.movementKeys ?? [
+          ...(previous.sourceMovementKeys?.banking ?? []),
+          ...(previous.sourceMovementKeys?.cards ?? []),
+          ...Object.keys(previous.customValues ?? {})
+        ]);
+        for (const [key, values] of await previousCustomValues(destination, settings, allowedMovementKeys)) customValues.set(key, values);
+      }
+      const customColumns = settings.columns.filter((column): column is CustomExportColumn => !('field' in column) && column.enabled);
+      for (const row of rows) {
+        const values = customValues.get(row.movement_key) ?? new Map<string, CustomExportValue>();
+        for (const column of customColumns) values.set(column.id, customValue(row, column, customValues));
+        customValues.set(row.movement_key, values);
+      }
       if (settings.format === "csv") {
-        await this.writeCsv(temporary, rows, settings);
+        await this.writeCsv(temporary, rows, settings, customValues);
       } else {
-        await this.writeXlsx(temporary, rows, settings, highlighted);
+        await this.writeXlsx(temporary, rows, settings, highlighted, customValues);
         if (process.platform !== "win32") await chmod(temporary, 0o600);
       }
+      const nextState: ExportState = {
+        fingerprint,
+        format: settings.format,
+        movementKeys: rows.map((row) => row.movement_key),
+        sourceMovementKeys: knownKeys,
+        highlightedMovementKeys: {
+          banking: [...highlighted.banking],
+          cards: [...highlighted.cards]
+        },
+        customValues: stateCustomValues(customValues)
+      };
+      const generatedFile = await open(temporary, "r+");
+      try {
+        await generatedFile.sync();
+      } finally {
+        await generatedFile.close();
+      }
+      await writeExportState(`${statePath}.pending`, {
+        state: nextState,
+        settings: exportSettingsSchema.parse(settings),
+        outputHash: await outputHash(temporary),
+        temporaryOutput: basename(temporary),
+        rollbackOutput: basename(rollback)
+      });
+      pendingWritten = true;
       if (compatible) {
         backupPath = await backupCurrentOutput(
           this.config,
@@ -671,20 +1067,12 @@ export class CsvExporter {
       }
       await rename(temporary, destination);
       destinationInstalled = true;
-      await writeExportState(statePath, {
-        fingerprint,
-        format: settings.format,
-        movementKeys: rows.map((row) => row.movement_key),
-        sourceMovementKeys: knownKeys,
-        highlightedMovementKeys: {
-          banking: [...highlighted.banking],
-          cards: [...highlighted.cards]
-        }
-      });
+      await writeExportState(statePath, nextState);
       committed = true;
       if (destinationStaged) {
-        await rm(rollback, { force: true }).catch(() => undefined);
+        await rm(rollback, { force: true });
       }
+      await rm(`${statePath}.pending`, { force: true });
       return { path: destination, rows: rows.length };
     } catch (error) {
       const rollbackFailures: unknown[] = [];
@@ -709,6 +1097,11 @@ export class CsvExporter {
         }
         if (backupPath) {
           await rm(backupPath, { force: true }).catch((cleanupError: unknown) =>
+            rollbackFailures.push(cleanupError)
+          );
+        }
+        if (pendingWritten && rollbackFailures.length === 0) {
+          await rm(`${statePath}.pending`, { force: true }).catch((cleanupError: unknown) =>
             rollbackFailures.push(cleanupError)
           );
         }
@@ -796,6 +1189,9 @@ export async function clearGeneratedExportFiles(
     force: true
   }).catch((error: unknown) => failures.push(error));
   await rm(`${config.exportSettingsPath}.state.json`, { force: true }).catch(
+    (error: unknown) => failures.push(error)
+  );
+  await rm(`${config.exportSettingsPath}.state.json.pending`, { force: true }).catch(
     (error: unknown) => failures.push(error)
   );
   if (failures.length > 0) {
