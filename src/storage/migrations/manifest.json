@@ -56,5 +56,13 @@
   {
     "version": 19,
     "filename": "019_deleted_card_export_preference.sql"
+  },
+  {
+    "version": 20,
+    "filename": "020_account_hidden_state.sql"
+  },
+  {
+    "version": 21,
+    "filename": "021_local_account_removal_audit.sql"
   }
 ]

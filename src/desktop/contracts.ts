@@ -24,6 +24,7 @@ import type {
   SyncRunResult
 } from "../sync/sync-runner.js";
 import type {
+  AccountRemovalOperationResult,
   CardImportOperationResult,
   ConnectionOperationResult,
   DisconnectOperationResult,
@@ -127,6 +128,12 @@ export interface SelectedCardFile {
   name: string;
 }
 
+export interface AccountRemovalDesktopResult {
+  removal: AccountRemovalOperationResult;
+  bootstrap: DesktopBootstrap | null;
+  warnings: Array<{ step: "bootstrap-refresh"; message: string }>;
+}
+
 export interface KutxabankInspection {
   cards: Array<{ selectionToken: string; last4: string; alias?: string;
     balance?: { text: string; isRed: boolean } }>;
@@ -219,6 +226,10 @@ export interface KakeboDesktopApi {
     decision: "continue" | "stop";
   }) => Promise<boolean>;
   saveAccounts: (accounts: EditableAccount[]) => Promise<EditableAccount[]>;
+  removeAccount: (input: {
+    id: string;
+    mode: "keep-history" | "delete-history";
+  }) => Promise<AccountRemovalDesktopResult>;
   saveCategorization: (input: {
     categories: CategoryDefinition[];
     exclusions: CategorizationConfiguration["exclusions"];

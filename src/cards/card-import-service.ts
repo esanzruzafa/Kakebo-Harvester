@@ -449,6 +449,7 @@ function ensureLocalAccount(
          name = excluded.name,
          display_name = excluded.display_name,
          active = 1,
+         hidden = 0,
          last_seen_at = excluded.last_seen_at,
          sync_enabled = 0`
     )
@@ -483,7 +484,7 @@ function refreshStoredLocalAccount(
     database
       .prepare(
         `UPDATE accounts
-         SET name = ?, display_name = ?, last_seen_at = ?
+         SET name = ?, display_name = ?, hidden = 0, last_seen_at = ?
          WHERE id = ? AND bank_connection_id = ?`
       )
       .run(profile.cardName, profile.cardName, now, ids.accountId, ids.connectionId);

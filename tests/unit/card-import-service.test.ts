@@ -48,6 +48,27 @@ function workbookRows(
 }
 
 describe("CardImportService", () => {
+  it("unhides a manual card account when its profile is imported again", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-card-rediscovery-"));
+    const config = testConfig(root);
+    const database = createDatabase(config.databasePath);
+    const profiles = createDefaultCardImportProfiles();
+    const profile = profiles[0];
+    if (!profile) throw new Error("The default card profile is missing.");
+    await new CardImportProfilesStore(config.cardImportProfilesPath).save(profiles);
+    await new CategorizationRulesStore(config.categorizationRulesPath).save([]);
+    const statementPath = join(root, "card.xlsx");
+    await writeXlsxFile(workbookRows([["20/06/2026", "Coffee", "20/06/2026", "-4,50"]])).toFile(statementPath);
+    const importer = new CardImportService(config, database);
+    await importer.import({ files: [{ path: statementPath, profileId: profile.id }] });
+    database.prepare("UPDATE accounts SET hidden = 1 WHERE provider_account_id = ?").run(profile.id);
+
+    await importer.import({ files: [{ path: statementPath, profileId: profile.id }] });
+
+    expect(database.prepare("SELECT hidden FROM accounts WHERE provider_account_id = ?").get(profile.id)).toEqual({ hidden: 0 });
+    database.close();
+  });
+
   it("recognizes a one-row statement updated in place", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-card-updated-source-"));
     const config = testConfig(root);

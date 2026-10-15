@@ -19,6 +19,87 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("rolls back legacy lineage repair when a later migration fails", async () => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-lineage-rollback-"));
+    const config = testConfig(root);
+    const legacy = new Database(config.databasePath);
+    const manifest = JSON.parse(readFileSync(resolve("src/storage/migrations/manifest.json"), "utf8")) as
+      Array<{ version: number; filename: string }>;
+    for (const entry of manifest.filter(item => item.version <= 13))
+      legacy.exec(readFileSync(resolve("src/storage/migrations", entry.filename), "utf8"));
+    legacy.exec(readFileSync(resolve("src/storage/migrations/020_account_hidden_state.sql"), "utf8"));
+    legacy.exec("CREATE TABLE transaction_reconciliation_events (sentinel TEXT); INSERT INTO transaction_reconciliation_events VALUES ('preserve')");
+    legacy.pragma("user_version = 14");
+    legacy.close();
+
+    expect(() => createDatabase(config.databasePath)).toThrow("No se ha podido abrir o migrar SQLite");
+    const unchanged = new Database(config.databasePath);
+    try {
+      expect(unchanged.pragma("user_version", { simple: true })).toBe(14);
+      expect(unchanged.prepare("SELECT sentinel FROM transaction_reconciliation_events").all())
+        .toEqual([{ sentinel: "preserve" }]);
+      expect(unchanged.prepare("SELECT name FROM sqlite_master WHERE name IN ('cards', 'transaction_reconciliations')").all())
+        .toEqual([]);
+      expect((unchanged.pragma("table_info(accounts)") as Array<{ name: string }>).filter(column => column.name === "hidden"))
+        .toHaveLength(1);
+    } finally {
+      unchanged.close();
+    }
+  });
+
+  it.each([14, 15, 19])("preserves account history when upgrading schema %i from its original migration lineage", async (version) => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-lineage-migration-"));
+    const config = testConfig(root);
+    const legacy = new Database(config.databasePath);
+    legacy.function("kakebo_has_card_pan", { deterministic: true },
+      (value: string): number => Number(containsCardPan(value)));
+    legacy.function("kakebo_redact_card_pan", { deterministic: true },
+      (value: string | null): string | null => redactCardPan(value));
+    const manifest = JSON.parse(readFileSync(resolve("src/storage/migrations/manifest.json"), "utf8")) as
+      Array<{ version: number; filename: string }>;
+    for (const entry of manifest.filter(item => item.version <= (version === 19 ? 19 : 13)))
+      legacy.exec(readFileSync(resolve("src/storage/migrations", entry.filename), "utf8"));
+    if (version !== 19) legacy.exec(readFileSync(resolve("src/storage/migrations/020_account_hidden_state.sql"), "utf8"));
+    if (version === 15) {
+      legacy.exec(readFileSync(resolve("src/storage/migrations/021_local_account_removal_audit.sql"), "utf8"));
+      legacy.exec(`INSERT INTO local_account_removal_audit_events VALUES ('audit', 'local-account-removal', 'hidden', '2026-10-01')`);
+    }
+    legacy.pragma(`user_version = ${version}`);
+    legacy.exec(`INSERT INTO bank_connections
+      (id, provider, environment, bank_name, bank_country, psu_type, alias, status, created_at)
+      VALUES ('bank', 'enable-banking', 'sandbox', 'Demo', 'ES', 'personal', 'Demo', 'LOCAL', '2026-10-01');
+      INSERT INTO accounts (id, bank_connection_id, provider_account_id, account_alias, first_seen_at, last_seen_at)
+      VALUES ('account', 'bank', 'provider-account', 'Savings', '2026-10-01', '2026-10-01');
+      INSERT INTO balances (id, account_id, amount, currency, extracted_at)
+      VALUES ('balance', 'account', '123.45', 'EUR', '2026-10-01');
+      INSERT INTO transactions (id, movement_key, reconciliation_key, provider, environment,
+        bank_connection_id, account_id, status, amount, currency, direction, first_seen_at,
+        last_seen_at, imported_at, raw_fingerprint)
+      VALUES ('movement', 'key', 'reconciliation', 'enable-banking', 'sandbox', 'bank',
+        'account', 'booked', '-12.34', 'EUR', 'expense', '2026-10-01', '2026-10-01', '2026-10-01', 'fingerprint');`);
+    if (version !== 19) legacy.exec("UPDATE accounts SET hidden = 1");
+    legacy.close();
+
+    const migrated = createDatabase(config.databasePath);
+    try {
+      expect(migrated.pragma("user_version", { simple: true })).toBe(latestDatabaseVersion);
+      expect(migrated.prepare("SELECT account_alias, hidden FROM accounts").all())
+        .toEqual([{ account_alias: "Savings", hidden: version === 19 ? 0 : 1 }]);
+      expect(migrated.prepare("SELECT amount FROM balances").all()).toEqual([{ amount: "123.45" }]);
+      expect(migrated.prepare("SELECT movement_key, amount FROM transactions").all())
+        .toEqual([{ movement_key: "key", amount: "-12.34" }]);
+      expect(migrated.prepare("SELECT id FROM local_account_removal_audit_events").all())
+        .toEqual(version === 15 ? [{ id: "audit" }] : []);
+      expect(migrated.prepare("SELECT name FROM sqlite_master WHERE name = 'transaction_reconciliations'").get())
+        .toEqual({ name: "transaction_reconciliations" });
+      expect(migrated.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      migrated.close();
+    }
+    const reopened = createDatabase(config.databasePath);
+    reopened.close();
+  });
+
   it("upgrades a v16 card catalog without losing balances or preventing same-digit cards", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-card-fingerprint-migration-"));
     const config = testConfig(root);

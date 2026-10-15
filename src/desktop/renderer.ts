@@ -7,6 +7,15 @@ import type {
   SelectedCardFile
 } from "./contracts.js";
 import {
+  type AccountRemovalMode
+} from "./account-removal-dialog.js";
+import {
+  bindAccountRemovalDialogInteractions,
+  runAccountRemovalFromDialog
+} from "./account-removal-dialog-interaction.js";
+import { renderAccountRemovalDialog } from "./account-removal-dialog-view.js";
+import { formatRawCleanupWarnings } from "./account-removal-warning.js";
+import {
   adjacentMovableIndex,
   rowDropInsertionIndex
 } from "./row-drop.js";
@@ -42,6 +51,7 @@ import {
   refreshKutxabankAfterCommit,
 } from "./kutxabank-ui-state.js";
 import {
+  hasSurvivingAccountDraft,
   mergeEditableDrafts,
   type EditableDrafts
 } from "./dirty-refresh.js";
@@ -112,6 +122,19 @@ function followUpWarningMessage(warnings: FollowUpWarning[]): string {
         ? tf("warning.export", "Export: {message}", {
             message: warning.message
           })
+        : warning.step === "bootstrap-refresh"
+          ? tf(
+              "warning.bootstrapRefresh",
+              "Refresh: {message}",
+              {
+                message: warning.message === "account-removal-refresh-required"
+                  ? t(
+                    "warning.accountRemovalRefreshRequired",
+                    "The account was removed. Refresh the app to reload local data."
+                  )
+                  : warning.message
+              }
+            )
         : warning.step === "audit"
           ? t("warning.audit", "Movements were saved, but the audit record could not be finalized.")
         : warning.step === "cards-config"
@@ -120,7 +143,7 @@ function followUpWarningMessage(warnings: FollowUpWarning[]): string {
             "warning.accountsConfig",
             "Account configuration: {message}",
             { message: warning.message }
-          )
+            )
     )
     .join(" · ");
 }
@@ -396,14 +419,17 @@ function focusableElements(container: HTMLElement): HTMLElement[] {
 }
 
 function updateOverlayInertState(): void {
-  const confirmation = element<HTMLElement>("app-modal");
-  const wizard = element<HTMLElement>("connection-wizard");
   const shell = document.querySelector<HTMLElement>(".app-shell");
   if (!shell) throw new Error("Missing application shell.");
-  const confirmationOpen = !confirmation.hidden;
-  const wizardOpen = !wizard.hidden;
-  shell.inert = confirmationOpen || wizardOpen;
-  wizard.inert = confirmationOpen;
+  const overlays = [...document.querySelectorAll<HTMLElement>(".app-modal")];
+  shell.inert = overlays.some((overlay) => !overlay.hidden);
+  for (const overlay of overlays) {
+    if (overlay.id === "connection-wizard") {
+      overlay.inert = overlays.some(
+        (candidate) => candidate !== overlay && !candidate.hidden
+      );
+    }
+  }
 }
 
 function handleDialogKeydown(
@@ -504,6 +530,47 @@ async function confirmInApp(
       danger: true
     })) === "confirm"
   );
+}
+
+function displayAccountRemovalDialog(
+  account: EditableAccount
+): Promise<AccountRemovalMode | undefined> {
+  const previousFocus =
+    document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  const view = renderAccountRemovalDialog(document, account, t);
+  document.body.append(view.modal);
+  updateOverlayInertState();
+  return new Promise((resolve) => {
+    let dispose = (): void => undefined;
+    const finish = (mode: AccountRemovalMode | undefined): void => {
+      dispose();
+      view.modal.remove();
+      updateOverlayInertState();
+      resolve(mode);
+    };
+    dispose = bindAccountRemovalDialogInteractions({
+      modal: view.modal,
+      controls: [...view.modeInputs, view.cancel, view.confirm],
+      modeInputs: view.modeInputs,
+      cancel: view.cancel,
+      confirm: view.confirm,
+      previousFocus,
+      activeElement: () => document.activeElement,
+      finish
+    });
+    view.modeInputs[0]?.focus();
+  });
+}
+
+function showAccountRemovalDialog(
+  account: EditableAccount
+): Promise<AccountRemovalMode | undefined> {
+  const result = modalQueue.then(() => displayAccountRemovalDialog(account));
+  modalQueue = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
 }
 
 function connectionCountryLabel(country: string): string {
@@ -1199,7 +1266,16 @@ function renderAccounts(): void {
     aliasInput.dataset["field"] = "alias";
     aliasInput.maxLength = 120;
     aliasInput.placeholder = account.account;
-    aliasCell.append(aliasInput);
+    const remove = button(
+      tf("accountRemoval.action", "Remove {account}", {
+        account: account.alias || account.account
+      }),
+      "button secondary"
+    );
+    onClick(remove, async () => {
+      await removeAccountFromUi(account);
+    });
+    aliasCell.append(aliasInput, remove);
 
     const syncCell = row.insertCell();
     const syncInput = checkbox(
@@ -2294,6 +2370,74 @@ async function refresh(
     } else {
       rememberSavedTab(tab);
     }
+  }
+}
+
+function applyAccountRemovalBootstrap(bootstrap: DesktopBootstrap): void {
+  const dirtyTabs = new Set<EditableTab>(unsavedTabs());
+  const drafts = captureEditableDrafts(dirtyTabs);
+  const priorSnapshots = new Map(savedTabSnapshots);
+  state = dirtyTabs.size > 0
+    ? { ...bootstrap, ...mergeEditableDrafts(bootstrap, drafts) }
+    : bootstrap;
+  applyTranslations();
+  renderAll();
+  for (const tab of editableTabs) {
+    const preserveDraft =
+      dirtyTabs.has(tab) &&
+      (tab !== "accounts" || hasSurvivingAccountDraft(bootstrap.accounts, drafts.accounts));
+    if (preserveDraft) {
+      const snapshot = tab === "accounts"
+        ? JSON.stringify(bootstrap.accounts)
+        : priorSnapshots.get(tab);
+      if (snapshot === undefined) savedTabSnapshots.delete(tab);
+      else savedTabSnapshots.set(tab, snapshot);
+    } else {
+      rememberSavedTab(tab);
+    }
+  }
+}
+
+async function removeAccountFromUi(account: EditableAccount): Promise<void> {
+  if (rejectConcurrentOperation()) return;
+  const mode = await showAccountRemovalDialog(account);
+  if (!mode) return;
+  activeOperationCount += 1;
+  const save = element<HTMLButtonElement>("save-accounts");
+  save.disabled = true;
+  try {
+    const result = await runAccountRemovalFromDialog({
+      account,
+      openDialog: () => Promise.resolve(mode),
+      removeAccount: window.kakebo.removeAccount,
+      refreshBootstrap: window.kakebo.bootstrap,
+      applyBootstrap: (bootstrap) => applyAccountRemovalBootstrap(bootstrap)
+    });
+    if (!result) return;
+    const hasWarnings =
+      result.removal.warnings.length > 0 ||
+      result.removal.rawCleanup.warnings.length > 0 ||
+      result.warnings.length > 0;
+    showToast(
+      hasWarnings
+        ? `${t(
+            "toast.accountRemovedWithWarnings",
+            "The account was removed, but follow-up tasks need attention."
+          )} ${[
+            followUpWarningMessage([
+              ...result.removal.warnings,
+              ...result.warnings
+            ]),
+            formatRawCleanupWarnings(result.removal.rawCleanup.warnings, t)
+          ].filter(Boolean).join(" · ")}`
+        : t("toast.accountRemoved", "The account was removed from this local data set."),
+      hasWarnings ? "warning" : false
+    );
+  } catch (error) {
+    showToast(errorMessage(error), true);
+  } finally {
+    activeOperationCount -= 1;
+    if (save.isConnected) save.disabled = false;
   }
 }
 

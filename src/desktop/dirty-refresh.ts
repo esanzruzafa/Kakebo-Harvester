@@ -18,6 +18,22 @@ export interface EditableDesktopState {
 
 export type EditableDrafts = Partial<EditableDesktopState>;
 
+export function hasSurvivingAccountDraft(
+  accounts: EditableAccount[],
+  drafts: EditableAccount[] | undefined
+): boolean {
+  if (!drafts) return false;
+  const savedAccounts = new Map(accounts.map((account) => [account.id, account]));
+  return drafts.some((draft) => {
+    const saved = savedAccounts.get(draft.id);
+    return saved !== undefined && (
+      draft.alias !== saved.alias ||
+      draft.syncEnabled !== saved.syncEnabled ||
+      draft.exportEnabled !== saved.exportEnabled
+    );
+  });
+}
+
 export function mergeEditableDrafts(
   fresh: EditableDesktopState,
   drafts: EditableDrafts

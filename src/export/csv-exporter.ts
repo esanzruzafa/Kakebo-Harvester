@@ -78,6 +78,7 @@ export type HighlightSource = "banking" | "cards";
 
 export interface ExportOptions {
   highlightSource?: HighlightSource | undefined;
+  discardPreviousOutput?: boolean | undefined;
 }
 
 type ExportValue = string | number | boolean | null;
@@ -662,6 +663,17 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+async function assertUnlinkedExportDirectory(directory: string): Promise<void> {
+  try {
+    if ((await lstat(directory)).isSymbolicLink()) {
+      throw new ExportError("Refusing to regenerate exports through a symbolic link directory.");
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+}
+
 async function archiveOutput(
   config: AppConfig,
   path: string,
@@ -977,6 +989,9 @@ export class CsvExporter {
     let pendingWritten = false;
     let committed = false;
     try {
+      if (options.discardPreviousOutput) {
+        await assertUnlinkedExportDirectory(this.config.exportDirectory);
+      }
       await mkdir(this.config.exportDirectory, { recursive: true });
       await recoverPendingExportState(this.config, statePath);
       const previous = await readExportState(statePath);
@@ -984,16 +999,16 @@ export class CsvExporter {
         compatibleFingerprints.includes(previous.fingerprint) &&
         previous.format === settings.format;
       const currentKeys = sourceKeys(rows);
-      const knownKeys = compatible && previous.sourceMovementKeys
+      const knownKeys = !options.discardPreviousOutput && compatible && previous.sourceMovementKeys
         ? previous.sourceMovementKeys
         : currentKeys;
-      const highlighted = compatible && previous.highlightedMovementKeys
+      const highlighted = !options.discardPreviousOutput && compatible && previous.highlightedMovementKeys
         ? {
             banking: new Set(previous.highlightedMovementKeys.banking),
             cards: new Set(previous.highlightedMovementKeys.cards)
           }
         : { banking: new Set<string>(), cards: new Set<string>() };
-      if (options.highlightSource && compatible && previous.sourceMovementKeys) {
+      if (!options.discardPreviousOutput && options.highlightSource && compatible && previous.sourceMovementKeys) {
         const source = options.highlightSource;
         const prior = new Set(knownKeys[source]);
         highlighted[source] = new Set(currentKeys[source].filter((key) => !prior.has(key)));
@@ -1011,6 +1026,12 @@ export class CsvExporter {
           ...Object.keys(previous.customValues ?? {})
         ]);
         for (const [key, values] of await previousCustomValues(destination, settings, allowedMovementKeys)) customValues.set(key, values);
+      }
+      if (options.discardPreviousOutput) {
+        const survivingKeys = new Set(rows.map((row) => row.movement_key));
+        for (const key of customValues.keys()) {
+          if (!survivingKeys.has(key)) customValues.delete(key);
+        }
       }
       const customColumns = settings.columns.filter((column): column is CustomExportColumn => !('field' in column) && column.enabled);
       for (const row of rows) {
@@ -1049,7 +1070,15 @@ export class CsvExporter {
         rollbackOutput: basename(rollback)
       });
       pendingWritten = true;
-      if (compatible) {
+      if (options.discardPreviousOutput) {
+        await Promise.all(
+          ["csv", "xlsx"].map(async (extension) =>
+            await rm(join(this.config.exportDirectory, `kakebo_movements.${extension}`), {
+              force: true
+            })
+          )
+        );
+      } else if (compatible) {
         backupPath = await backupCurrentOutput(
           this.config,
           destination,

@@ -98,8 +98,15 @@ describe("desktop run repository", () => {
     expect(
       repository.countBetween(new Date(2020, 0, 1), new Date(2030, 0, 1))
     ).toBe(1);
+    database
+      .prepare(`INSERT INTO local_account_removal_audit_events (id, action, outcome, occurred_at)
+        VALUES ('removal-audit', 'local-account-removal', 'deleted', ?)`)
+      .run(now);
     expect(repository.clear()).toBe(1);
     expect(repository.list()).toEqual([]);
+    expect(
+      database.prepare("SELECT COUNT(*) AS total FROM local_account_removal_audit_events").get()
+    ).toEqual({ total: 0 });
     expect(
       database.prepare("SELECT COUNT(*) AS total FROM balances").get()
     ).toEqual({ total: 1 });

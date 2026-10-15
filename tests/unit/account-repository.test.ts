@@ -23,6 +23,67 @@ afterEach(async () => {
 });
 
 describe("account synchronization eligibility", () => {
+  it("purges reconciliations across accounts and events with historical movement keys", () => {
+    const database = createDatabase(":memory:");
+    database.exec(`
+      INSERT INTO bank_connections
+        (id, provider, environment, bank_name, bank_country, psu_type, alias, status, created_at)
+        VALUES ('connection', 'enable-banking', 'sandbox', 'Bank', 'ES', 'personal', 'Bank', 'AUTHORIZED', 'now');
+      INSERT INTO accounts
+        (id, bank_connection_id, provider_account_id, name, first_seen_at, last_seen_at)
+        VALUES ('removed', 'connection', 'removed', 'Removed', 'now', 'now'),
+               ('retained', 'connection', 'retained', 'Retained', 'now', 'now');
+      INSERT INTO transactions
+        (id, movement_key, reconciliation_key, provider, environment, bank_connection_id,
+         account_id, status, amount, currency, direction, first_seen_at, last_seen_at,
+         imported_at, raw_fingerprint)
+        VALUES ('first', 'first', 'first', 'enable-banking', 'sandbox', 'connection',
+                'removed', 'booked', '10', 'EUR', 'credit', 'now', 'now', 'now', 'first'),
+               ('second', 'second', 'second', 'enable-banking', 'sandbox', 'connection',
+                'retained', 'booked', '10', 'EUR', 'credit', 'now', 'now', 'now', 'second');
+      INSERT INTO transaction_reconciliations VALUES
+        ('first', 'pair', 'duplicate', 1, '10', 'EUR', 'now'),
+        ('second', 'pair', 'duplicate', 0, '10', 'EUR', 'now');
+      INSERT INTO transaction_reconciliation_events VALUES
+        ('event', 'pair', 'confirm', 'duplicate', 'old-first', 'old-second',
+         '10', '10', 'EUR', 'now', 'sandbox', 'now');
+    `);
+
+    const result = new AccountRepository(database).purgeLocalAccount("removed", "sandbox");
+
+    expect(result?.transactions).toBe(1);
+    expect(database.prepare("SELECT movement_key FROM transactions").all()).toEqual([{ movement_key: "second" }]);
+    expect(database.prepare("SELECT * FROM transaction_reconciliations").all()).toEqual([]);
+    expect(database.prepare("SELECT * FROM transaction_reconciliation_events").all()).toEqual([]);
+    database.close();
+  });
+
+  it("rejects stale settings updates for a hidden account", () => {
+    const database = createDatabase(":memory:");
+    const now = new Date().toISOString();
+    database.prepare(
+      `INSERT INTO bank_connections (
+         id, provider, environment, bank_name, bank_country, psu_type, alias, status, created_at
+       ) VALUES ('connection', 'enable-banking', 'sandbox', 'Bank', 'ES', 'personal', 'Personal', 'AUTHORIZED', ?)`
+    ).run(now);
+    database.prepare(
+      `INSERT INTO accounts (
+         id, bank_connection_id, provider_account_id, name, hidden, sync_enabled, export_enabled,
+         active, first_seen_at, last_seen_at
+       ) VALUES ('hidden-account', 'connection', 'provider-account', 'Hidden', 1, 0, 0, 1, ?, ?)`
+    ).run(now, now);
+
+    expect(() => new AccountRepository(database).updateSettings([{
+      id: "hidden-account",
+      alias: "stale",
+      syncEnabled: true,
+      exportEnabled: true
+    }])).toThrow("Unknown account: hidden-account");
+    expect(database.prepare("SELECT hidden, sync_enabled, export_enabled FROM accounts WHERE id = 'hidden-account'").get())
+      .toEqual({ hidden: 1, sync_enabled: 0, export_enabled: 0 });
+    database.close();
+  });
+
   it("keeps manually imported card accounts editable for aliases and exports", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-manual-card-editable-"));
     const config = testConfig(root);
