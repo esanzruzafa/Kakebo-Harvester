@@ -73,6 +73,21 @@ describe("CSV export", () => {
         state, settings, temporaryOutput,
         outputHash: createHash("sha256").update(generated).digest("hex")
       }));
+      const realRm = fsPromises.rm;
+      let blockedPath = join(config.exportDirectory, temporaryOutput);
+      const removal = vi.spyOn(fsPromises, "rm").mockImplementation(async (path, options) => {
+        if (String(path) === blockedPath) throw new Error("Simulated recovery cleanup failure");
+        return realRm(path, options);
+      });
+      syncBuiltinESMExports();
+      await expect(exporter.export()).rejects.toThrow();
+      await expect(access(`${statePath}.pending`)).resolves.toBeUndefined();
+      expect(await readFile(statePath)).toEqual(oldState);
+      blockedPath = `${statePath}.pending`;
+      await expect(exporter.export()).rejects.toThrow();
+      await expect(access(join(config.exportDirectory, temporaryOutput))).rejects.toMatchObject({ code: "ENOENT" });
+      removal.mockRestore();
+      syncBuiltinESMExports();
       await exporter.export();
       await expect(access(oldOutput.path)).rejects.toMatchObject({ code: "ENOENT" });
       const archives = await readdir(join(config.exportDirectory, "archive"));

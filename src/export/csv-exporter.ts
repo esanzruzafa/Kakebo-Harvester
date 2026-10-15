@@ -97,6 +97,7 @@ const exportStateSchema = z.object({
 });
 
 const pendingExportStateSchema = z.object({
+  retryBeforeInstall: z.literal(true).optional(),
   state: exportStateSchema,
   settings: exportSettingsSchema,
   outputHash: z.string().regex(/^[a-f0-9]{64}$/u),
@@ -607,6 +608,11 @@ async function recoverPendingExportState(config: AppConfig, statePath: string): 
   }
   const destination = join(config.exportDirectory, `kakebo_movements.${pending.state.format}`);
   const temporary = join(config.exportDirectory, pending.temporaryOutput);
+  if (pending.retryBeforeInstall) {
+    await rm(temporary, { force: true });
+    await rm(pendingPath);
+    return;
+  }
   if (await pathExists(temporary)) {
     if (await outputHash(temporary) !== pending.outputHash) {
       throw new Error("The interrupted export temporary file does not match its pending state.");
@@ -615,8 +621,10 @@ async function recoverPendingExportState(config: AppConfig, statePath: string): 
       config.exportDirectory, `kakebo_movements.${pending.state.format === "csv" ? "xlsx" : "csv"}`
     ))) {
       // Installation has not happened: retry the regular profile/archive pipeline.
-      await rm(pendingPath);
+      // Persist this phase so a crash after deleting the temporary cannot commit its uninstalled state.
+      await writeExportState(pendingPath, { ...pending, retryBeforeInstall: true });
       await rm(temporary);
+      await rm(pendingPath);
       return;
     }
     await rename(temporary, destination);
