@@ -32,13 +32,27 @@ function applyMigrations(database: SqliteDatabase): void {
         `SQLite schema version ${currentVersion} is newer than supported version ${latestDatabaseVersion}.`
       );
     }
+    // PR #25 originally used versions 14/15 before main introduced its own
+    // migrations at those numbers. Identify that lineage inside the write lock.
+    const hasTable = (name: string): boolean => Boolean(database.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?"
+    ).get(name));
+    const accountColumns = database.pragma("table_info(accounts)") as Array<{ name: string }>;
+    const legacyRemovalSchema = (currentVersion === 14 || currentVersion === 15)
+      && accountColumns.some(column => column.name === "hidden")
+      && !hasTable("transaction_reconciliations")
+      && !hasTable("cards")
+      && hasTable("local_account_removal_audit_events") === (currentVersion === 15);
+    const legacyAudit = legacyRemovalSchema && currentVersion === 15;
+    if (legacyRemovalSchema) currentVersion = 13;
     for (const migration of migrations) {
       if (migration.version <= currentVersion) continue;
       const path = fileURLToPath(
         new URL(`migrations/${migration.filename}`, import.meta.url)
       );
       const sql = readFileSync(path, "utf8");
-      database.exec(sql);
+      if (!(legacyRemovalSchema && migration.version === 20)
+        && !(legacyAudit && migration.version === 21)) database.exec(sql);
       database.pragma(`user_version = ${migration.version}`);
       currentVersion = migration.version;
     }

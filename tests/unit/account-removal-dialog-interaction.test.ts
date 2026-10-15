@@ -246,4 +246,26 @@ describe("account removal dialog renderer interactions", () => {
     });
     expect(applyBootstrap).toHaveBeenCalledWith(bootstrap, { preserveUnsaved: true });
   });
+
+  it.each([true, false])("reports only the final refresh outcome when fallback succeeds: %s", async (succeeds) => {
+    const bootstrap = { accounts: [{ id: "remaining" }] };
+    const applied: unknown[] = [];
+    const result = await runAccountRemovalFromDialog({
+      account: account(),
+      openDialog: () => Promise.resolve("keep-history"),
+      removeAccount: () => Promise.resolve({
+        bootstrap: null as typeof bootstrap | null,
+        removal: { warnings: [] },
+        warnings: [{ step: "bootstrap-refresh" as const, message: "account-removal-refresh-required" }]
+      }),
+      refreshBootstrap: () => succeeds
+        ? Promise.resolve(bootstrap)
+        : Promise.reject(new Error("refresh failed")),
+      applyBootstrap: (fresh) => { applied.push(fresh); }
+    });
+    expect(result?.warnings).toEqual(succeeds ? [] : [
+      { step: "bootstrap-refresh", message: "account-removal-refresh-required" }
+    ]);
+    expect(applied).toEqual(succeeds ? [bootstrap] : []);
+  });
 });

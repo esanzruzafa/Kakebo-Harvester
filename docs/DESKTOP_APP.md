@@ -265,6 +265,8 @@ data, connections and sessions, and `desktop_runs` parent records because one
 may describe multiple accounts. After a successful destructive deletion, the
 current export is regenerated. Export failure is reported as a follow-up
 warning and does not reverse the committed local database deletion.
+Previously archived exports are retained and may contain the deleted account's
+history; review those copies separately when removing historical export data.
 
 Raw-file cleanup runs only after the destructive database transaction. It can
 unlink an exclusively owned regular file directly below `rawDataDirectory` or

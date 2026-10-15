@@ -72,4 +72,16 @@ describe("dirty desktop refresh", () => {
       hasSurvivingAccountDraft([account("remaining", "")], [account("remaining", "Unsaved alias")])
     ).toBe(true);
   });
+
+  it("clears removed-only edits even when the capture contains unchanged surviving rows", () => {
+    expect(hasSurvivingAccountDraft([account("remaining", "Saved")], [
+      account("removed", "Unsaved"), account("remaining", "Saved")
+    ])).toBe(false);
+  });
+
+  it.each(["alias", "syncEnabled", "exportEnabled"] as const)("preserves a surviving %s edit", (field) => {
+    const saved = account("remaining", "Saved");
+    const draft = { ...saved, [field]: field === "alias" ? "Edited" : false };
+    expect(hasSurvivingAccountDraft([saved], [account("removed", "Edited"), draft])).toBe(true);
+  });
 });

@@ -23,8 +23,15 @@ export function hasSurvivingAccountDraft(
   drafts: EditableAccount[] | undefined
 ): boolean {
   if (!drafts) return false;
-  const accountIds = new Set(accounts.map((account) => account.id));
-  return drafts.some((draft) => accountIds.has(draft.id));
+  const savedAccounts = new Map(accounts.map((account) => [account.id, account]));
+  return drafts.some((draft) => {
+    const saved = savedAccounts.get(draft.id);
+    return saved !== undefined && (
+      draft.alias !== saved.alias ||
+      draft.syncEnabled !== saved.syncEnabled ||
+      draft.exportEnabled !== saved.exportEnabled
+    );
+  });
 }
 
 export function mergeEditableDrafts(

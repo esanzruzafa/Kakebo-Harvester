@@ -82,6 +82,7 @@ export async function runAccountRemovalFromDialog<Bootstrap, Removal>(input: {
     warnings: Array<{ step: "bootstrap-refresh"; message: string }>;
   }>;
   applyBootstrap: (bootstrap: Bootstrap, options: { preserveUnsaved: true }) => void;
+  refreshBootstrap?: () => Promise<Bootstrap>;
 }): Promise<{
   bootstrap: Bootstrap | null;
   removal: Removal;
@@ -90,6 +91,17 @@ export async function runAccountRemovalFromDialog<Bootstrap, Removal>(input: {
   const mode = await input.openDialog();
   if (!mode) return undefined;
   const result = await input.removeAccount({ id: input.account.id, mode });
+  if (result.bootstrap === null && input.refreshBootstrap) {
+    try {
+      result.bootstrap = await input.refreshBootstrap();
+      result.warnings = [];
+    } catch {
+      result.warnings = [{
+        step: "bootstrap-refresh",
+        message: "account-removal-refresh-required"
+      }];
+    }
+  }
   if (result.bootstrap !== null) {
     input.applyBootstrap(result.bootstrap, { preserveUnsaved: true });
   }

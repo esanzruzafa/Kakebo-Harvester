@@ -995,7 +995,7 @@ export class CsvExporter {
       await mkdir(this.config.exportDirectory, { recursive: true });
       await recoverPendingExportState(this.config, statePath);
       const previous = await readExportState(statePath);
-      const compatible = !options.discardPreviousOutput && previous !== undefined &&
+      const compatible = previous !== undefined &&
         compatibleFingerprints.includes(previous.fingerprint) &&
         previous.format === settings.format;
       const currentKeys = sourceKeys(rows);
@@ -1008,7 +1008,7 @@ export class CsvExporter {
             cards: new Set(previous.highlightedMovementKeys.cards)
           }
         : { banking: new Set<string>(), cards: new Set<string>() };
-      if (options.highlightSource && compatible && previous.sourceMovementKeys) {
+      if (!options.discardPreviousOutput && options.highlightSource && compatible && previous.sourceMovementKeys) {
         const source = options.highlightSource;
         const prior = new Set(knownKeys[source]);
         highlighted[source] = new Set(currentKeys[source].filter((key) => !prior.has(key)));
@@ -1026,6 +1026,12 @@ export class CsvExporter {
           ...Object.keys(previous.customValues ?? {})
         ]);
         for (const [key, values] of await previousCustomValues(destination, settings, allowedMovementKeys)) customValues.set(key, values);
+      }
+      if (options.discardPreviousOutput) {
+        const survivingKeys = new Set(rows.map((row) => row.movement_key));
+        for (const key of customValues.keys()) {
+          if (!survivingKeys.has(key)) customValues.delete(key);
+        }
       }
       const customColumns = settings.columns.filter((column): column is CustomExportColumn => !('field' in column) && column.enabled);
       for (const row of rows) {

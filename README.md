@@ -105,6 +105,8 @@ its local provider session.
   one account. The current export is regenerated afterwards; if regeneration
   fails, the completed local deletion is retained and the application shows a
   warning.
+  Previously archived exports are retained and may still contain the removed
+  account's history; review those copies separately if needed.
 
 When deleting history, Kakebo Harvester may remove an exclusively owned regular
 raw response directly inside the configured raw-data folder or in RawStore's

@@ -2387,7 +2387,9 @@ function applyAccountRemovalBootstrap(bootstrap: DesktopBootstrap): void {
       dirtyTabs.has(tab) &&
       (tab !== "accounts" || hasSurvivingAccountDraft(bootstrap.accounts, drafts.accounts));
     if (preserveDraft) {
-      const snapshot = priorSnapshots.get(tab);
+      const snapshot = tab === "accounts"
+        ? JSON.stringify(bootstrap.accounts)
+        : priorSnapshots.get(tab);
       if (snapshot === undefined) savedTabSnapshots.delete(tab);
       else savedTabSnapshots.set(tab, snapshot);
     } else {
@@ -2408,25 +2410,14 @@ async function removeAccountFromUi(account: EditableAccount): Promise<void> {
       account,
       openDialog: () => Promise.resolve(mode),
       removeAccount: window.kakebo.removeAccount,
+      refreshBootstrap: window.kakebo.bootstrap,
       applyBootstrap: (bootstrap) => applyAccountRemovalBootstrap(bootstrap)
     });
     if (!result) return;
-    const recoveryWarnings: Array<{ step: "bootstrap-refresh"; message: string }> = [];
-    if (result.bootstrap === null) {
-      try {
-        applyAccountRemovalBootstrap(await window.kakebo.bootstrap());
-      } catch {
-        recoveryWarnings.push({
-          step: "bootstrap-refresh",
-          message: "account-removal-refresh-required"
-        });
-      }
-    }
     const hasWarnings =
       result.removal.warnings.length > 0 ||
       result.removal.rawCleanup.warnings.length > 0 ||
-      result.warnings.length > 0 ||
-      recoveryWarnings.length > 0;
+      result.warnings.length > 0;
     showToast(
       hasWarnings
         ? `${t(
@@ -2435,8 +2426,7 @@ async function removeAccountFromUi(account: EditableAccount): Promise<void> {
           )} ${[
             followUpWarningMessage([
               ...result.removal.warnings,
-              ...result.warnings,
-              ...recoveryWarnings
+              ...result.warnings
             ]),
             formatRawCleanupWarnings(result.removal.rawCleanup.warnings, t)
           ].filter(Boolean).join(" · ")}`

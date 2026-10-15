@@ -848,6 +848,81 @@ describe("CSV export", () => {
     database.close();
   });
 
+  it.each(["csv", "xlsx"] as const)("preserves surviving annotations while purging deleted movements from %s", async (format) => {
+    root = await mkdtemp(join(tmpdir(), "kakebo-export-purge-custom-"));
+    const config = { ...testConfig(root), exportKeepBackup: true };
+    const database = createDatabase(config.databasePath);
+    try {
+      const now = new Date().toISOString();
+      database.prepare(`INSERT INTO bank_connections (
+        id, provider, environment, bank_name, bank_country, psu_type, alias, status, created_at
+      ) VALUES ('connection', 'enable-banking', 'sandbox', 'Demo', 'ES', 'personal', 'Demo', 'AUTHORIZED', ?)`).run(now);
+      database.prepare(`INSERT INTO accounts (
+        id, bank_connection_id, provider_account_id, name, active, first_seen_at, last_seen_at
+      ) VALUES ('account', 'connection', 'provider', 'Account', 1, ?, ?)`).run(now, now);
+      const insert = database.prepare(`INSERT INTO transactions (
+        id, movement_key, reconciliation_key, provider, environment, bank_connection_id,
+        account_id, status, booking_date, amount, currency, direction, description_raw,
+        description_normalized, reviewed, first_seen_at, last_seen_at, imported_at, raw_fingerprint
+      ) VALUES (?, ?, ?, 'enable-banking', 'sandbox', 'connection', 'account', 'booked',
+        '2026-09-01', '-12.34', 'EUR', 'expense', 'Coffee', 'COFFEE', 0, ?, ?, ?, ?)`);
+      for (const id of ["survivor", "deleted"]) insert.run(id, id, id, now, now, now, id);
+      const settings = createDefaultExportSettings(",", ";");
+      settings.format = format;
+      const manualId = "22222222-2222-4222-8222-222222222222";
+      settings.columns.push({ id: manualId, kind: "manual", header: "Manual note", enabled: true });
+      await new ExportSettingsStore(config.exportSettingsPath, settings).save(settings);
+      const exporter = new CsvExporter(config, database);
+      const first = await exporter.export();
+      if (format === "csv") {
+        const lines = (await readFile(first.path, "utf8")).replace(/^\uFEFF/u, "").trim().split(/\r?\n/u);
+        const header = lines[0]?.split(";") ?? [];
+        for (let index = 1; index < lines.length; index++) {
+          const cells = (lines[index] ?? "").split(";");
+          cells[header.indexOf("Manual note")] = cells[header.indexOf("MovementKey")] === "deleted" ? "Private deleted note" : "Surviving edit";
+          lines[index] = cells.join(";");
+        }
+        await writeFile(first.path, `${lines.join("\r\n")}\r\n`);
+      } else {
+        const headers = settings.columns.filter((column) => column.enabled);
+        const data: SheetData = [headers.map((column) => ({ value: column.header, type: String }))];
+        for (const id of ["survivor", "deleted"]) data.push(headers.map((column) => ({
+          value: "field" in column ? column.field === "movementKey" ? id : "source value" : id === "deleted" ? "Private deleted note" : "Surviving edit",
+          type: String
+        })));
+        await writeXlsxFile(data, { sheet: "Movements" }).toFile(first.path);
+      }
+      // Persist both annotations, then make a further edit only in the user's file.
+      await exporter.export();
+      const statePath = `${config.exportSettingsPath}.state.json`;
+      const priorState = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+      await writeFile(statePath, JSON.stringify({
+        ...priorState,
+        sourceMovementKeys: { banking: ["deleted"], cards: [] },
+        highlightedMovementKeys: { banking: ["survivor"], cards: [] }
+      }));
+      if (format === "csv") await writeFile(first.path, (await readFile(first.path, "utf8")).replace("Surviving edit", "Latest surviving edit"));
+      else {
+        const workbook = unzipSync(await readFile(first.path));
+        workbook["xl/sharedStrings.xml"] = Buffer.from(Buffer.from(workbook["xl/sharedStrings.xml"] ?? []).toString("utf8").replace("Surviving edit", "Latest surviving edit"));
+        await writeFile(first.path, zipSync(workbook));
+      }
+      await rm(join(config.exportDirectory, "archive"), { recursive: true, force: true });
+      database.prepare("DELETE FROM transactions WHERE id = 'deleted'").run();
+      await exporter.export({ discardPreviousOutput: true, highlightSource: "banking" });
+      const values = format === "csv" ? await readFile(first.path, "utf8") : (await readSheet(first.path)).flat();
+      expect(values).toContain("Latest surviving edit");
+      expect(values).not.toContain("Private deleted note");
+      const state = JSON.parse(await readFile(`${config.exportSettingsPath}.state.json`, "utf8")) as Record<string, unknown>;
+      expect(state.customValues).toEqual({ survivor: { [manualId]: "Latest surviving edit" } });
+      expect(state.sourceMovementKeys).toEqual({ banking: ["survivor"], cards: [] });
+      expect(state.highlightedMovementKeys).toEqual({ banking: [], cards: [] });
+      expect(await readdir(config.exportDirectory)).toEqual([`kakebo_movements.${format}`]);
+    } finally {
+      database.close();
+    }
+  });
+
   it("does not archive the previous export during a privacy purge regeneration", async () => {
     root = await mkdtemp(join(tmpdir(), "kakebo-export-purge-"));
     const config = { ...testConfig(root), exportKeepBackup: true };
